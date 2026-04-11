@@ -16,7 +16,6 @@
 - Current focus: Mobile app beta launch, events platform, admin dashboard, memberships
 - Products: GrowthX member platform, admin dashboard, mobile app, events, AI assistant for hosts
 - 5+ years in software engineering — feels the DSA grind is draining and unfulfilling
-- Considered Master's in Business Analytics but unsure
 
 ## The Dream
 
@@ -39,8 +38,6 @@
 - **Plant dad** — HAD a jade plant named **Midori** 🌱 (RIP)
 - Deeply introspective — journals about goals, emotions, life direction
 - Had a 21-day positive thinking challenge (intention, affirmations, gratitude)
-- On Hinge — looking for a partner
-- Has an anime-watching friend he reconnected with after 1.5 years
 
 ## Emotional Landscape
 
