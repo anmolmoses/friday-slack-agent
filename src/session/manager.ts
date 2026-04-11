@@ -273,7 +273,7 @@ export class SessionManager {
       }
 
       // We don't log the prompt to avoid spamming the logs. unless we are debugging it
-      // log.info("prompt", `thread=${session.threadId} cwd=${targetRepoCwd ?? session.worktreePath ?? "junior"}\n--- PROMPT START ---\n${prompt}\n--- PROMPT END ---`);
+      // log.info("prompt", `thread=${session.threadId} cwd=${targetRepoCwd ?? session.worktreePath ?? "friday"}\n--- PROMPT START ---\n${prompt}\n--- PROMPT END ---`);
 
       const rawHandle = this.spawnClaude(session, prompt, this.config.claude, targetRepoCwd, this.config.slack.botToken);
       const handle = withTimeout(rawHandle, this.config.claude.timeoutMs, () => {

@@ -1,0 +1,12 @@
+{
+  "U09SZ4DM8TH": { "name": "Anmol", "type": "human", "role": "lead" },
+  "U0AKP5PAWEB": { "name": "FRIDAY", "type": "bot", "role": "agent" },
+  "U03PNSJ33S5": { "name": "Pranav Bakre", "type": "human", "role": "engineer" },
+  "U0ABKQ4V065": { "name": "Junior (Pranav's Bot)", "type": "bot", "role": "agent" },
+  "U04U7RS55PS": { "name": "Alok Bhawankar", "type": "human", "role": "engineer" },
+  "U0AKQG4DVD1": { "name": "Delilah (Dash's agent)", "type": "bot", "role": "agent" },
+  "U01AG6F9W69": { "name": "UD", "type": "human", "role": "boss", "NO_REPLY": true },
+  "U01AREQFVMJ": { "name": "AP", "type": "human", "role": "boss", "NO_REPLY": true },
+  "U09U1SL8QA0": { "name": "Harpreet", "type": "human", "role": "community team" },
+  "U0A7JHCLBL0": { "name": "Ameya", "type": "human", "role": "community team" }
+}

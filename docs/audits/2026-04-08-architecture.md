@@ -6,7 +6,7 @@ Reviewed all 19 source files against `docs/architecture.md` (8 decisions) and `C
 
 | # | File:Line | Issue | Fix |
 |---|---|---|---|
-| 1 | `spawner.ts:13` | `process.cwd()` fallback when `worktreePath` is null sets cwd to junior itself. Review/architect threads with `targetRepo` set but no worktree get junior's CLAUDE.md instead of the target repo's. Violates decision 4 (cwd → target repo). | Fall back to target repo path before `process.cwd()`. Requires passing `targetRepo` path to spawner. |
+| 1 | `spawner.ts:13` | `process.cwd()` fallback when `worktreePath` is null sets cwd to friday itself. Review/architect threads with `targetRepo` set but no worktree get friday's CLAUDE.md instead of the target repo's. Violates decision 4 (cwd → target repo). | Fall back to target repo path before `process.cwd()`. Requires passing `targetRepo` path to spawner. |
 | 2 | `slack/responder.ts` | No `SlackClient` interface. Concrete class used directly. Decision 6 says 4 boundaries need interfaces. | Extract interface, inject in index.ts. |
 | 3 | `claude/spawner.ts` | No `ClaudeSpawner` interface. Function imported directly by session manager. | Extract interface or inject function. |
 | 4 | `worktree/manager.ts` | No `WorktreeManager` interface. Concrete class. | Extract interface. |

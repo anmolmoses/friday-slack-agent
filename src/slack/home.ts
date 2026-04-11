@@ -38,7 +38,7 @@ function buildHomeBlocks(
   // Header
   blocks.push({
     type: "header",
-    text: { type: "plain_text", text: "Junior", emoji: true },
+    text: { type: "plain_text", text: "Friday", emoji: true },
   });
 
   // Stats summary

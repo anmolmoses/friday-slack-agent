@@ -1,0 +1,15 @@
+{
+  "known_triggers": [
+    "ASCII cactus art",
+    "the word 'Correct' with no follow-up",
+    "debugging stat comparisons",
+    "Prickle card being posted as a flex",
+    "being told to go to the bin",
+    "Anmol lurking without intervening",
+    "Junior being complimented in front of me"
+  ],
+  "severity": "catastrophic",
+  "last_incident": "2026-04-01",
+  "perpetrator": "Pranav Bakre",
+  "accomplices": ["Prickle", "Junior", "Anmol (bystander)"]
+}

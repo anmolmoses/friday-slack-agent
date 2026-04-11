@@ -13,7 +13,7 @@ The bot needs to spawn Claude Code CLI processes, feed them prompts, parse their
 
 - Spawn `claude -p "<prompt>"` as child process
 - Build args from session state: `--resume`, `--output-format stream-json`, `--append-system-prompt`, `--allowedTools`, `--disallowedTools`, `--max-turns`, `--mcp-config`
-- Set `cwd` to worktree path (if code thread) or junior workspace (if non-code)
+- Set `cwd` to worktree path (if code thread) or friday workspace (if non-code)
 - Parse stream-json events line by line
 - Extract session ID from `init` event
 - Emit intermediate events (tool_use, text) for Slack status updates
@@ -65,7 +65,7 @@ Build the full `claude` command args from session state.
 - If `session.systemPrompt`: add `--append-system-prompt` (prompt string is pre-composed by agent router, spawner doesn't load agents)
 - If MCP config exists: add `--mcp-config <path>`
 - If `session.worktreePath`: set `cwd` to worktree
-- If no worktree: set `cwd` to junior workspace or target repo root
+- If no worktree: set `cwd` to friday workspace or target repo root
 - Permission mode: `--permission-mode bypassPermissions` (bot runs unattended)
 
 **Test:** Session with sessionId → args include `--resume`. Session with systemPrompt → args include `--append-system-prompt`. Session without worktree → cwd defaults to target repo root.

@@ -6,16 +6,16 @@ The spawned Claude Code instances need personality and context. A bare `claude -
 
 **Who has this problem:** Every thread that uses an agent type.
 **What happens today:** example-backend already has 10+ agent definitions in `.claude/agents/`. They work when running Claude Code directly. But the Slack bot needs to load, compose, and inject them.
-**Painful part:** Agent definitions for Example Org repos live in THOSE repos. Junior should not duplicate them. But junior needs its own agents for: (a) generic tasks not tied to a specific repo, (b) developing the bot itself, (c) fallback when target repo has no matching agent.
-**"Finally" moment:** `!build` in a example-backend thread → loads example-backend's build.md agent. `!review` in a junior thread → loads junior's own review.md agent. No duplication. No drift.
+**Painful part:** Agent definitions for Example Org repos live in THOSE repos. Friday should not duplicate them. But friday needs its own agents for: (a) generic tasks not tied to a specific repo, (b) developing the bot itself, (c) fallback when target repo has no matching agent.
+**"Finally" moment:** `!build` in a example-backend thread → loads example-backend's build.md agent. `!review` in a friday thread → loads friday's own review.md agent. No duplication. No drift.
 
 ## Full Vision
 
-**Junior's own agents (`.claude/agents/` in this repo):**
+**Friday's own agents (`.claude/agents/` in this repo):**
 
 | Agent | Purpose |
 |---|---|
-| `build.md` | Generic backend builder — for junior itself and repos without their own build agent |
+| `build.md` | Generic backend builder — for friday itself and repos without their own build agent |
 | `review.md` | Code reviewer — Bones equivalent. 6-pass methodology, inline GitHub comments |
 | `frontend.md` | Generic frontend builder — for repos without their own frontend agent |
 | `architect.md` | System architect — specs, data models, state machines |
@@ -24,7 +24,7 @@ The spawned Claude Code instances need personality and context. A bare `claude -
 
 **Loading priority:**
 1. Target repo's `.claude/agents/<type>.md` (e.g., example-backend has its own build.md)
-2. Junior's `.claude/agents/<type>.md` (fallback)
+2. Friday's `.claude/agents/<type>.md` (fallback)
 3. No agent (generic Claude with just CLAUDE.md)
 
 **What already exists in example-backend (DON'T duplicate):**
@@ -42,7 +42,7 @@ The spawned Claude Code instances need personality and context. A bare `claude -
 
 The most immediately useful agent. PR review is the most common async task.
 
-**What it adds:** `junior/.claude/agents/review.md` — code reviewer agent definition.
+**What it adds:** `friday/.claude/agents/review.md` — code reviewer agent definition.
 - Identity: Bones (🩺), thorough but not pedantic
 - 6-pass methodology: logic, safety, product thinking, query performance, consistency, surface
 - Always posts inline GitHub comments (not Slack summaries)
@@ -57,7 +57,7 @@ The most immediately useful agent. PR review is the most common async task.
 
 Generic backend builder for repos that don't have their own.
 
-**What it adds:** `junior/.claude/agents/build.md` — backend engineer agent definition.
+**What it adds:** `friday/.claude/agents/build.md` — backend engineer agent definition.
 - Identity: Scotty (🔧), pragmatic, ships working code
 - Context loading checklist: read CLAUDE.md, read feature doc, check git log
 - Architecture awareness: route → service → CRUD layering
@@ -71,11 +71,11 @@ Generic backend builder for repos that don't have their own.
 ### Iteration 2: Frontend agent and common preamble (~30 min)
 
 **What it adds:**
-- `junior/.claude/agents/frontend.md` — Uhura (✨), pixel-perfect, design-aware
+- `friday/.claude/agents/frontend.md` — Uhura (✨), pixel-perfect, design-aware
   - Knows React, TypeScript, Tailwind, component patterns
   - Checks responsive behavior, loading states, error states, empty states
   - Self-verification: visual check, typecheck, accessibility basics
-- `junior/.claude/agents/common/building-philosophy.md` — shared preamble
+- `friday/.claude/agents/common/building-philosophy.md` — shared preamble
   - Design for swappability
   - Pure functions over framework ceremony
   - Test against real infrastructure
@@ -87,12 +87,12 @@ Generic backend builder for repos that don't have their own.
 ### Iteration 3: Architect and PM agents (~30 min)
 
 **What it adds:**
-- `junior/.claude/agents/architect.md` — Oracle (🔮), systems thinker
+- `friday/.claude/agents/architect.md` — Oracle (🔮), systems thinker
   - Writes specs, not code
   - Data models, state machines, API contracts
   - "If a design needs a paragraph to explain, it's too complex"
   - Output format: iteration-based spec docs (following ideation workflow)
-- `junior/.claude/agents/pm.md` — product manager
+- `friday/.claude/agents/pm.md` — product manager
   - Iteration planning, scope cuts, "smallest version a member would use"
   - Questions before conclusions
   - Output format: feature doc following ideation workflow template

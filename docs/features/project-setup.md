@@ -74,7 +74,7 @@ interface Config {
 ## Directory Structure
 
 ```
-junior/
+friday/
   src/
     index.ts              -- entry point: start Slack app, wire everything
     config.ts             -- env loading, config validation

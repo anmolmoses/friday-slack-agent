@@ -26,7 +26,7 @@ Users need to control thread behavior beyond just sending messages. Reset a brok
 
 Two options were considered and rejected:
 
-1. **Slack slash commands** (`/junior-build`) — requires registering each command with Slack's API, adds latency, limits to predefined commands, needs a callback URL.
+1. **Slack slash commands** (`/friday-build`) — requires registering each command with Slack's API, adds latency, limits to predefined commands, needs a callback URL.
 2. **`/` prefix in message text** — **Slack intercepts messages starting with `/` as slash commands.** You can't type `!build fix auth` in a Slack message — Slack tries to find a registered `!build` command and errors out.
 
 Instead, use `!` prefix:

@@ -13,7 +13,7 @@ The bot needs to receive Slack messages and route them to the right session. A m
 
 - Receive all relevant Slack events via Socket Mode (no public URL needed)
 - Route messages to the correct thread session
-- Handle app_mentions (`@Junior`) and direct thread replies
+- Handle app_mentions (`@Friday`) and direct thread replies
 - Ignore bot's own messages (no echo loops)
 - Ignore messages in threads the bot isn't part of (unless mentioned)
 - Extract thread context: who sent it, what channel, parent message

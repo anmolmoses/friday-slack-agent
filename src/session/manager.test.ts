@@ -85,7 +85,7 @@ const testConfig: Config = {
   slack: { botToken: "xoxb-test", appToken: "xapp-test", signingSecret: "s" },
   claude: { maxTurns: 25, timeoutMs: 300000, permissionMode: "bypassPermissions" },
   repos: [
-    { name: "junior", path: "/tmp/junior", defaultBase: "main" },
+    { name: "friday", path: "/tmp/friday", defaultBase: "main" },
     { name: "frontend", path: "/tmp/frontend", defaultBase: "main" },
   ],
   session: { staleTimeoutMs: 86400000, cleanupIntervalMs: 900000 },
@@ -389,12 +389,12 @@ describe("SessionManager", () => {
       await new Promise((r) => setTimeout(r, 10));
 
       await manager.handleMessage(
-        makeEvent({ command: "repo", text: "junior" }),
+        makeEvent({ command: "repo", text: "friday" }),
       );
 
       const session = await store.get("thread-1");
-      expect(session!.targetRepo).toBe("junior");
-      expect(onCmd.mock.calls[0][1]).toContain("junior");
+      expect(session!.targetRepo).toBe("friday");
+      expect(onCmd.mock.calls[0][1]).toContain("friday");
     });
 
     it("reports error for invalid repo", async () => {
@@ -411,7 +411,7 @@ describe("SessionManager", () => {
 
       const response = onCmd.mock.calls[0][1] as string;
       expect(response).toContain("Unknown repo");
-      expect(response).toContain("junior");
+      expect(response).toContain("friday");
       expect(response).toContain("frontend");
     });
   });

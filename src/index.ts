@@ -119,5 +119,5 @@ setInterval(() => {
     sessionManager.handleMessage(event);
   }, store, selfBotId);
 
-  log.info("boot", "Junior is running (Socket Mode)");
+  log.info("boot", "Friday is running (Socket Mode)");
 })();

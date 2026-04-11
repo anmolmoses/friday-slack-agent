@@ -1,8 +1,9 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "junior",
+      "name": "friday",
       "dependencies": {
         "@playwright/mcp": "^0.0.70",
         "@slack/bolt": "^4.3.0",

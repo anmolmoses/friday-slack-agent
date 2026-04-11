@@ -2,21 +2,21 @@
 
 ## Problem
 
-When Junior spawns a `claude -p` process, that process has zero knowledge of the Slack conversation it's responding to. It doesn't know its own name, can't see prior messages in the thread, can't see images users shared, and has no way to send files back. `--resume` gives Claude its own conversation history, but not the Slack thread's.
+When Friday spawns a `claude -p` process, that process has zero knowledge of the Slack conversation it's responding to. It doesn't know its own name, can't see prior messages in the thread, can't see images users shared, and has no way to send files back. `--resume` gives Claude its own conversation history, but not the Slack thread's.
 
 **Who has this problem:** Every spawned Claude instance — they respond in a vacuum without thread context.
 **Painful part:** Without context, Claude hallucinates thread history, doesn't recognize other bots' messages, and gives generic responses to thread-specific questions.
-**"Finally" moment:** Claude knows it's Junior, sees the full thread history (including images), and can upload screenshots back to Slack.
+**"Finally" moment:** Claude knows it's Friday, sees the full thread history (including images), and can upload screenshots back to Slack.
 
 ## What It Does
 
 Before every Claude spawn, the session manager builds a prompt preamble with:
 
-1. **Identity** — Junior's persona (SOUL.md + IDENTITY.md from `~/.openclaw/workspace/`)
+1. **Identity** — Friday's persona (SOUL.md + IDENTITY.md from `~/.openclaw/workspace/`)
 2. **Bot user ID** — so Claude recognizes its own messages in thread history
 3. **Channel & thread metadata** — channel name, thread_ts, with instruction not to search Slack
 4. **Thread history** — all prior messages fetched via `conversations.replies`, labeled by role
-5. **Image attachments** — downloaded to `/tmp/junior-files/<threadId>/`, paths appended to prompt
+5. **Image attachments** — downloaded to `/tmp/friday-files/<threadId>/`, paths appended to prompt
 6. **Historical file annotations** — `[shared image: filename.png]` in thread history
 
 ## Architecture
@@ -65,11 +65,11 @@ Every Claude spawn receives a prompt shaped like:
 ```
 <identity>
 # IDENTITY.md - Who Am I?
-- Name: Junior
+- Name: Friday
 - Vibe: Witty but direct. Indiana Jones Jr. energy.
 ...
 
-# SOUL.md — Junior
+# SOUL.md — Friday
 [full persona: core truths, communication style, failure signals, decision rules]
 
 Your Slack user ID is U12345. Messages from this user ID in the thread are yours.
@@ -84,12 +84,12 @@ Do NOT use Slack search or read tools to find this thread.
 
 <thread-context>
 User(U678): can you review the auth middleware?
-Junior (you): Sure, I'll take a look.
+Friday (you): Sure, I'll take a look.
 User(U901): [shared image: screenshot.png] here's what I see
 </thread-context>
 
 The user shared images. They are saved at these paths — use the Read tool to view them:
-- /tmp/junior-files/1773749331.950109/screenshot.png
+- /tmp/friday-files/1773749331.950109/screenshot.png
 
 [actual user message here]
 ```
@@ -106,10 +106,10 @@ The orchestrator already has the bot token and thread_ts. Fetching via `conversa
 `resolveChannelName()` caches channel ID → name to avoid repeated API calls for messages in the same channel.
 
 ### Identity matching by user_id only
-Slack's `bot_id` field is on ALL bot messages, not just ours. Only `m.user === botUserId` correctly identifies Junior's messages. Other bots (Friday, Doraemon) show as regular users in thread context.
+Slack's `bot_id` field is on ALL bot messages, not just ours. Only `m.user === botUserId` correctly identifies Friday's messages. Other bots (Friday, Doraemon) show as regular users in thread context.
 
 ### Image files downloaded to /tmp
-Images are downloaded with the bot token as auth, saved to `/tmp/junior-files/<threadId>/`. Claude can `Read` these files natively. Only image MIME types (png, jpeg, gif, webp) are downloaded.
+Images are downloaded with the bot token as auth, saved to `/tmp/friday-files/<threadId>/`. Claude can `Read` these files natively. Only image MIME types (png, jpeg, gif, webp) are downloaded.
 
 ### Env vars for outbound Slack access
 Spawned Claude processes get `SLACK_CHANNEL`, `SLACK_THREAD_TS`, `SLACK_BOT_TOKEN` as env vars. This lets `bin/slack-upload.sh` work without any configuration — Claude just runs the script.

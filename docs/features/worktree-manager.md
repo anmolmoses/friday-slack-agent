@@ -2,7 +2,7 @@
 
 ## Problem
 
-When a Slack thread needs to edit code in a target repo (example-backend, example-frontend), it needs its own git worktree so concurrent threads don't collide on file state. The worktree manager creates, tracks, and cleans up worktrees in target repos — not in junior's own workspace.
+When a Slack thread needs to edit code in a target repo (example-backend, example-frontend), it needs its own git worktree so concurrent threads don't collide on file state. The worktree manager creates, tracks, and cleans up worktrees in target repos — not in friday's own workspace.
 
 **Who has this problem:** Any thread that does code work on a shared repo.
 **What happens today:** Nothing — no code isolation.

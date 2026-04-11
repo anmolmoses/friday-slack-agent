@@ -1,8 +1,8 @@
-# CLAUDE.md — junior
+# CLAUDE.md — friday
 
 ## Project Overview
 
-junior is a Slack bot that acts as the control plane for Claude Code sessions. It's the successor to the OpenClaw-based agent system (PranavBakre/openclaw-agents) — same role (Junior the orchestrator), rebuilt on Claude Code as a subprocess instead of OpenClaw.
+friday is a Slack bot that acts as the control plane for Claude Code sessions. It's the successor to the OpenClaw-based agent system (PranavBakre/openclaw-agents) — same role (Friday the orchestrator), rebuilt on Claude Code as a subprocess instead of OpenClaw.
 
 The server owns the lifecycle. When a Slack message arrives in a thread, the bot either spawns a new Claude Code CLI process or routes the message to an existing session. Each thread gets its own isolated session with its own worktree, skills, and MCP config.
 
@@ -61,7 +61,7 @@ Slack Bot Server (Node.js / Bun)
 2. **One process per message turn.** Each Slack message spawns a short-lived `claude -p` process. The process exits after responding. No long-lived processes between messages.
 3. **`--resume` for continuity.** Use `--resume <sessionId>` to pick up conversation context. Session IDs are extracted from the first `stream-json` event on stdout.
 4. **Buffer, don't interrupt.** If Claude is mid-execution and new messages arrive, buffer them. Never kill a running process — it risks corrupted session state. Drain the buffer as a combined prompt after the current turn exits.
-5. **Worktrees for target repos only.** Junior's workspace is shared across all threads (learnings accumulate). Worktrees are created in TARGET repos (example-backend, example-frontend) when threads need code isolation. Threads that only read or discuss don't need worktrees.
+5. **Worktrees for target repos only.** Friday's workspace is shared across all threads (learnings accumulate). Worktrees are created in TARGET repos (example-backend, example-frontend) when threads need code isolation. Threads that only read or discuss don't need worktrees.
 6. **Stream events for status.** Parse `--output-format stream-json` events (tool_use, text, result) and post incremental Slack updates. The final `result` event is the response to post.
 7. **Session state is authoritative.** The session map (thread_id -> session) is the single source of truth for whether a thread is idle/busy, what its session ID is, and what messages are pending.
 8. **Cleanup stale threads.** Worktrees and sessions for inactive threads (24h default) must be cleaned up. Check for uncommitted changes before force-removing a worktree.
@@ -76,7 +76,7 @@ Slack Bot Server (Node.js / Bun)
 ## Project Structure
 
 ```
-junior/
+friday/
   src/
     index.ts              -- entry point: start Slack app, wire everything
     config.ts             -- env loading, config validation
@@ -108,7 +108,7 @@ junior/
       health.ts           -- orphan detection
       shutdown.ts         -- graceful bot shutdown
   .claude/
-    agents/               -- agent definitions (junior's own, not target repo's)
+    agents/               -- agent definitions (friday's own, not target repo's)
       common/
         building-philosophy.md
       build.md
@@ -128,8 +128,8 @@ junior/
 
 This project replaces the OpenClaw-based agent workspace at PranavBakre/openclaw-agents. Key things that carry over:
 
-- **Agent squad:** Junior (orchestrator), Scotty (backend builder), Uhura (frontend builder), Bones (code reviewer) — Star Trek naming.
-- **Junior's role:** Architect, orchestrator, rubber duck. Plans, reviews, coordinates — agents code. Does not write production code directly for non-trivial work.
+- **Agent squad:** Friday (orchestrator), Scotty (backend builder), Uhura (frontend builder), Bones (code reviewer) — Star Trek naming.
+- **Friday's role:** Architect, orchestrator, rubber duck. Plans, reviews, coordinates — agents code. Does not write production code directly for non-trivial work.
 - **Sub-agent dispatch pattern:** Share relevant conventions and past mistakes in the prompt when spawning sub-agents. They don't have memory — if you don't share it, they repeat mistakes.
 - **Build -> Review loop:** Build via agent -> push -> Bones reviews -> fix -> re-review -> ship. 3-round escalation to Pranav if Bones keeps finding blockers.
 
@@ -137,7 +137,7 @@ What changes:
 - OpenClaw's SOUL.md / AGENTS.md / TOOLS.md system is replaced by CLAUDE.md + `.claude/` config.
 - Heartbeat polling is replaced by Claude Code hooks and cron.
 - Agent dispatch uses Claude Code's `--resume` and worktrees in target repos instead of OpenClaw's agent workspace system.
-- Agent definitions live in target repos' `.claude/agents/` — don't duplicate them in junior.
+- Agent definitions live in target repos' `.claude/agents/` — don't duplicate them in friday.
 
 ## Build Order
 

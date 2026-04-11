@@ -28,7 +28,7 @@ async function resolveChannelName(app: App, channelId: string): Promise<string> 
 
 /**
  * Build the identity + thread context preamble for Claude.
- * Always includes Junior's persona, channel/thread coordinates, and thread history.
+ * Always includes Friday's persona, channel/thread coordinates, and thread history.
  */
 export async function buildPromptPreamble(
   app: App,
@@ -107,7 +107,7 @@ async function fetchThreadHistory(
     if (messages.length === 0) return null;
 
     const lines = messages.map((m) => {
-      const role = m.isBot ? "Junior (you)" : `User(${m.user})`;
+      const role = m.isBot ? "Friday (you)" : `User(${m.user})`;
       let line = `${role}: ${m.text}`;
       if (m.fileNames.length > 0) {
         const fileNotes = m.fileNames.map((f) => `[shared image: ${f}]`).join(" ");

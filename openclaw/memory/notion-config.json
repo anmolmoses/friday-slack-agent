@@ -1,0 +1,14 @@
+{
+  "notion_page": "323a883f-7564-80d3-aa04-f2333cae8f3d",
+  "page_url": "https://www.notion.so/Friday-s-Brain-323a883f756480d3aa04f2333cae8f3d",
+  "databases": {
+    "tasks": "323a883f-7564-8193-9e3f-ec8eb12c6f67",
+    "bugs": "323a883f-7564-8143-b708-c586642a2e0c",
+    "sprints": "323a883f-7564-816e-b768-c43331992b55",
+    "decisions": "323a883f-7564-81a8-8282-e92e49dff6c9",
+    "escalations": "323a883f-7564-81cd-b271-c56fc954fb65",
+    "daily_ops": "323a883f-7564-816d-bfa5-fbac1bc4ada2"
+  },
+  "created": "2026-03-14",
+  "token": "REDACTED"
+}

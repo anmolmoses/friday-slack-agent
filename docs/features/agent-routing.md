@@ -6,14 +6,14 @@ Different Slack threads need different Claude Code personalities. A thread askin
 
 **Who has this problem:** The session manager — it needs to know which agent to use for each thread.
 **What happens today:** Nothing — all threads would get the same generic Claude.
-**Painful part:** Agent definitions live in the TARGET repo's `.claude/agents/` (not in junior). The bot needs to read them from the right repo, compose them with thread-specific context, and pass them to Claude. Also: when should the agent type change mid-thread?
+**Painful part:** Agent definitions live in the TARGET repo's `.claude/agents/` (not in friday). The bot needs to read them from the right repo, compose them with thread-specific context, and pass them to Claude. Also: when should the agent type change mid-thread?
 **"Finally" moment:** `!build fix the auth middleware` → Claude responds like a senior backend engineer who knows the Example Org monorepo. `!review PR #4900` → Claude responds like a thorough code reviewer who posts inline GitHub comments.
 
 ## Full Vision
 
 - Command selects agent type: `!build`, `!frontend`, `!review`, `!architect`, `!pm`, `!audit`
 - Agent definitions loaded from target repo's `.claude/agents/<type>.md`
-- Fallback to junior's own `.claude/agents/` if target repo doesn't have the agent
+- Fallback to friday's own `.claude/agents/` if target repo doesn't have the agent
 - Agent definition injected via `--append-system-prompt`
 - Agent type persists across turns in a thread
 - Can be changed mid-thread with a new slash command
@@ -67,10 +67,10 @@ Load agent definitions from the filesystem instead of hardcoded strings.
 - `loadAgentDefinition(repoPath, agentType)` → reads `<repoPath>/.claude/agents/<agentType>.md`
 - Parse YAML frontmatter: extract `name`, `description`, `tools`
 - Return `{ prompt: string, allowedTools: string[], description: string }`
-- Fallback: if agent file doesn't exist in target repo, check `junior/.claude/agents/`
+- Fallback: if agent file doesn't exist in target repo, check `friday/.claude/agents/`
 - If neither exists, return null (use generic Claude)
 
-**Test:** Point at example-backend, load "build" → get the full build agent prompt. Load "nonexistent" → returns null. Create a local fallback in junior → fallback works.
+**Test:** Point at example-backend, load "build" → get the full build agent prompt. Load "nonexistent" → returns null. Create a local fallback in friday → fallback works.
 **Defers:** Common preamble, caching, agent type validation.
 
 ### Iteration 2: Common preamble (~20 min)

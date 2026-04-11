@@ -1,6 +1,6 @@
 # Architecture
 
-System architecture for junior — the Slack bot that orchestrates Claude Code sessions.
+System architecture for friday — the Slack bot that orchestrates Claude Code sessions.
 
 ## Tech Stack
 
@@ -68,7 +68,7 @@ Slack (Socket Mode)
 
 ### 1. Control plane / data plane separation
 
-Junior's own workspace (this repo) is the **control plane** — shared across all threads. It holds config, agent definitions, learnings, and the bot server code.
+Friday's own workspace (this repo) is the **control plane** — shared across all threads. It holds config, agent definitions, learnings, and the bot server code.
 
 Target repos (example-backend, example-frontend) are the **data plane** — isolated per thread via git worktrees when code changes are needed.
 

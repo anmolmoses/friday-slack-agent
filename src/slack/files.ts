@@ -27,7 +27,7 @@ export async function downloadSlackFiles(
   const imageFiles = files.filter((f) => IMAGE_TYPES.has(f.mimetype));
   if (imageFiles.length === 0) return [];
 
-  const dir = join("/tmp", "junior-files", threadId);
+  const dir = join("/tmp", "friday-files", threadId);
   await mkdir(dir, { recursive: true });
 
   const paths: string[] = [];
