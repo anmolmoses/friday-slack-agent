@@ -3,6 +3,8 @@ name: architect
 description: System architect. Use for design specs, data models, state machines, API contracts.
 tools: Read, Grep, Glob, Bash(git *)
 model: opus
+effort: high
+disallowed-tools: Edit, Write
 ---
 
 # architect -- System Architect

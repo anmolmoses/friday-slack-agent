@@ -3,6 +3,7 @@ name: frontend
 description: Frontend engineer. Use for UI work, component building, styling, frontend features.
 tools: Read, Edit, Write, Bash, Grep, Glob, Agent
 model: opus
+effort: max
 ---
 
 # frontend -- Frontend Engineer

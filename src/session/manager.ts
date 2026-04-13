@@ -1,3 +1,5 @@
+import path from "node:path";
+import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import type { App } from "@slack/bolt";
 import type { Config } from "../config.ts";
 import type { SpawnHandle, SpawnResult, StreamEvent } from "../claude/types.ts";
@@ -5,12 +7,14 @@ import type { SlackMessageEvent, SlackFileAttachment } from "../slack/events.ts"
 import type { SessionStore } from "./store/interface.ts";
 import type { ThreadSession } from "./types.ts";
 import type { AgentRouter } from "../agents/router.ts";
+import type { AgentDefinition } from "../agents/loader.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
 import { createSession } from "./types.ts";
 import { spawnClaude as defaultSpawnClaude } from "../claude/spawner.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
 import { buildPromptPreamble } from "../slack/thread-context.ts";
 import { downloadSlackFiles } from "../slack/files.ts";
+import { generateMcpConfig } from "../claude/mcp-config.ts";
 import { log as _log } from "../logger.ts";
 
 type SpawnClaudeFn = typeof defaultSpawnClaude;
@@ -238,10 +242,17 @@ export class SessionManager {
         }
       }
 
+      // Ensure today's daily note exists
+      ensureDailyNote();
+
+      // Resolve agent definition (for model, effort, tool restrictions)
+      let agentDef: AgentDefinition | null = null;
+
       // Compose agent system prompt
       if (session.agentType && this.agentRouter) {
         session.systemPrompt =
           (await this.agentRouter.composeSystemPrompt(session)) ?? null;
+        agentDef = await this.agentRouter.resolveAgent(session);
         await this.store.set(session.threadId, session);
       }
 
@@ -265,6 +276,17 @@ export class SessionManager {
         }
       }
 
+      // Generate per-thread MCP config
+      try {
+        session.mcpConfigPath = generateMcpConfig(session.threadId);
+        await this.store.set(session.threadId, session);
+      } catch (err) {
+        console.error("[manager] Failed to generate MCP config:", err);
+      }
+
+      // Write status file for MCP friday-status server
+      this.writeStatusFile();
+
       // Resolve target repo path for cwd fallback (decision 4: cwd → target repo)
       let targetRepoCwd: string | undefined;
       if (session.targetRepo) {
@@ -272,10 +294,7 @@ export class SessionManager {
         if (repo) targetRepoCwd = repo.path;
       }
 
-      // We don't log the prompt to avoid spamming the logs. unless we are debugging it
-      // log.info("prompt", `thread=${session.threadId} cwd=${targetRepoCwd ?? session.worktreePath ?? "friday"}\n--- PROMPT START ---\n${prompt}\n--- PROMPT END ---`);
-
-      const rawHandle = this.spawnClaude(session, prompt, this.config.claude, targetRepoCwd, this.config.slack.botToken);
+      const rawHandle = this.spawnClaude(session, prompt, this.config.claude, targetRepoCwd, this.config.slack.botToken, agentDef);
       const handle = withTimeout(rawHandle, this.config.claude.timeoutMs, () => {
         console.warn(`[manager] Claude timed out for thread ${session.threadId}`);
       });
@@ -352,5 +371,44 @@ export class SessionManager {
       session.status = "idle";
       await this.store.set(session.threadId, session);
     }
+
+    // Update status file after run completes
+    this.writeStatusFile();
+  }
+
+  private async writeStatusFile(): Promise<void> {
+    try {
+      const allSessions = await this.store.getAll();
+      const sessions: Record<string, unknown> = {};
+      for (const s of allSessions.values()) {
+        sessions[s.threadId] = {
+          status: s.status,
+          agentType: s.agentType,
+          channel: s.channel,
+          pendingCount: s.pendingMessages.length,
+          lastActivity: s.lastActivity,
+        };
+      }
+      const statusData = {
+        startedAt: this.startedAt,
+        sessions,
+      };
+      writeFileSync("/tmp/friday-status.json", JSON.stringify(statusData, null, 2));
+    } catch {
+      // Non-critical — don't crash if status write fails
+    }
+  }
+
+  private startedAt = new Date().toISOString();
+}
+
+function ensureDailyNote(): void {
+  const fridayRoot = path.resolve(import.meta.dir, "../..");
+  const today = new Date().toISOString().split("T")[0];
+  const dailyDir = path.join(fridayRoot, "memory", "daily");
+  mkdirSync(dailyDir, { recursive: true });
+  const dailyPath = path.join(dailyDir, `${today}.md`);
+  if (!existsSync(dailyPath)) {
+    writeFileSync(dailyPath, `# ${today}\n\n`);
   }
 }

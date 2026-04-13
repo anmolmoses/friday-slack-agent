@@ -3,6 +3,8 @@ name: pm
 description: Product manager. Use for scoping features, planning iterations, making scope cuts.
 tools: Read, Grep, Glob
 model: opus
+effort: medium
+disallowed-tools: Edit, Write, Bash
 ---
 
 # pm -- Product Manager

@@ -16,6 +16,7 @@ export interface ThreadSession {
   baseRef: string | null;
   agentType: string | null;
   systemPrompt: string | null;
+  mcpConfigPath: string | null;
   status: SessionStatus;
   pendingMessages: PendingMessage[];
   verbosity: "quiet" | "normal" | "verbose";
@@ -38,6 +39,7 @@ export function createSession(
     baseRef: null,
     agentType: null,
     systemPrompt: null,
+    mcpConfigPath: null,
     status: "idle",
     pendingMessages: [],
     verbosity: "normal",

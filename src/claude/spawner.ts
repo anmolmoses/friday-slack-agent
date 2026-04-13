@@ -1,5 +1,6 @@
 import type { Config } from "../config.ts";
 import type { ThreadSession } from "../session/types.ts";
+import type { AgentDefinition } from "../agents/loader.ts";
 import type { SpawnHandle, SpawnResult, StreamEvent } from "./types.ts";
 import { buildClaudeArgs } from "./args.ts";
 import { createStreamParser } from "./parser.ts";
@@ -10,8 +11,9 @@ export function spawnClaude(
   config: Config["claude"],
   targetRepoCwd?: string,
   botToken?: string,
+  agentDef?: AgentDefinition | null,
 ): SpawnHandle {
-  const args = buildClaudeArgs(session, prompt, config);
+  const args = buildClaudeArgs(session, prompt, config, agentDef);
   const cwd = session.worktreePath ?? targetRepoCwd ?? process.cwd();
 
   const proc = Bun.spawn(["claude", ...args], {
@@ -20,9 +22,10 @@ export function spawnClaude(
     stderr: "pipe",
     env: {
       ...process.env,
-      JUNIOR_SPAWNED: "1",
+      FRIDAY_SPAWNED: "1",
       SLACK_CHANNEL: session.channel,
       SLACK_THREAD_TS: session.threadId,
+      FRIDAY_MEMORY_DIR: new URL("../../memory", import.meta.url).pathname,
       ...(botToken ? { SLACK_BOT_TOKEN: botToken } : {}),
     },
   });

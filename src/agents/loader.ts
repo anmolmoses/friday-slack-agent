@@ -3,6 +3,9 @@ export interface AgentDefinition {
   description: string;
   tools: string | null;
   model: string | null;
+  effort: string | null;
+  allowedTools: string[] | null;
+  disallowedTools: string[] | null;
   prompt: string;
 }
 
@@ -16,11 +19,20 @@ export async function loadAgentDefinition(
   const content = await file.text();
   const { frontmatter, body } = parseFrontmatter(content);
 
+  // Parse comma-separated tool lists
+  const parseToolList = (val: string | undefined): string[] | null => {
+    if (!val) return null;
+    return val.split(",").map((t) => t.trim()).filter(Boolean);
+  };
+
   return {
     name: frontmatter["name"] ?? "",
     description: frontmatter["description"] ?? "",
     tools: frontmatter["tools"] ?? null,
     model: frontmatter["model"] ?? null,
+    effort: frontmatter["effort"] ?? null,
+    allowedTools: parseToolList(frontmatter["allowed-tools"]),
+    disallowedTools: parseToolList(frontmatter["disallowed-tools"]),
     prompt: body.trim(),
   };
 }

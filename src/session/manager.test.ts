@@ -75,6 +75,11 @@ mock.module("../lifecycle/timeout.ts", () => ({
   withTimeout: (handle: SpawnHandle, _timeoutMs: number, _onTimeout?: () => void) => handle,
 }));
 
+// Mock MCP config generation to avoid filesystem writes
+mock.module("../claude/mcp-config.ts", () => ({
+  generateMcpConfig: (_threadId: string) => `/tmp/friday-mcp/mock.json`,
+}));
+
 // Import after mocking
 const { SessionManager } = await import("./manager.ts");
 import { InMemorySessionStore } from "./store/memory.ts";
@@ -91,13 +96,15 @@ const testConfig: Config = {
   session: { staleTimeoutMs: 86400000, cleanupIntervalMs: 900000 },
 };
 
+let tsCounter = 0;
 function makeEvent(overrides: Partial<SlackMessageEvent> = {}): SlackMessageEvent {
+  tsCounter++;
   return {
     threadId: "thread-1",
     channel: "C123",
     user: "U123",
     text: "Hello Claude",
-    ts: "1234567890.123456",
+    ts: `1234567890.${String(tsCounter).padStart(6, "0")}`,
     command: null,
     ...overrides,
   };

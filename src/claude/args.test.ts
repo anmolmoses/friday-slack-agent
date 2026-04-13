@@ -13,6 +13,7 @@ function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
     baseRef: null,
     agentType: null,
     systemPrompt: null,
+    mcpConfigPath: null,
     status: "idle",
     pendingMessages: [],
     verbosity: "normal",

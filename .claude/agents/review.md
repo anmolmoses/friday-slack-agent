@@ -3,6 +3,8 @@ name: review
 description: Code reviewer. Use for PR reviews, code quality checks, security audits.
 tools: Read, Grep, Glob, Bash(git *)
 model: opus
+effort: high
+disallowed-tools: Edit, Write
 ---
 
 # review -- Code Reviewer

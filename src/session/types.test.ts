@@ -89,6 +89,7 @@ describe("createSession", () => {
       "createdAt",
       "lastActivity",
       "lastError",
+      "mcpConfigPath",
       "pendingMessages",
       "pid",
       "sessionId",
