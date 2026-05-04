@@ -4,8 +4,25 @@ dist/
 logs/
 *.log
 .DS_Store
+
+# Claude Code runtime
 .claude/worktrees/
-learnings.md
+.claude/scheduled_tasks.lock
+
+# Personal/local MD content — each developer brings their own
+memory/
+!memory/.gitkeep
+openclaw/IDENTITY.md
+openclaw/SOUL.md
+openclaw/AGENTS.md
+openclaw/USER.md
+openclaw/TOOLS.md
+openclaw/MEMORY.md
 openclaw/openclaw.json
-memory/sessions.json
-memory/sessions.json.tmp
+
+# Anmol's local sandbox
+friday-personal/
+
+# Misc runtime
+.playwright-mcp/
+learnings.md
