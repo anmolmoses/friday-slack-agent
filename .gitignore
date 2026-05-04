@@ -7,3 +7,5 @@ logs/
 .claude/worktrees/
 learnings.md
 openclaw/openclaw.json
+memory/sessions.json
+memory/sessions.json.tmp

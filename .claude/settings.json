@@ -26,17 +26,6 @@
           }
         ]
       }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "hooks/save-daily-note.sh",
-            "timeout": 5
-          }
-        ]
-      }
     ]
   }
 }

@@ -169,6 +169,10 @@ bun run cleanup                 # Clean stale worktrees and sessions
 
 # Upload files/screenshots to the current Slack thread
 bin/slack-upload.sh <file-path> [comment]  # Uses SLACK_BOT_TOKEN, SLACK_CHANNEL, SLACK_THREAD_TS env vars (auto-set)
+
+# Read or reply to ANY Slack message by URL (teamgrowthx only — uses SLACK_BOT_TOKEN)
+bin/slack-read-url.sh <slack-url>          # Prints message + full thread
+bin/slack-reply.sh   <slack-url> "<text>"  # Posts a reply in that thread
 ```
 
 ## Documentation Workflow
