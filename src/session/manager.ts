@@ -4,6 +4,7 @@ import type { App } from "@slack/bolt";
 import type { Config } from "../config.ts";
 import type { SpawnHandle, SpawnResult, StreamEvent } from "../claude/types.ts";
 import type { SlackMessageEvent, SlackFileAttachment } from "../slack/events.ts";
+import type { RoutingHint } from "../slack/routing.ts";
 import type { SessionStore } from "./store/interface.ts";
 import type { ThreadSession } from "./types.ts";
 import type { AgentRouter } from "../agents/router.ts";
@@ -12,7 +13,7 @@ import type { WorktreeManager } from "../worktree/manager.ts";
 import { createSession } from "./types.ts";
 import { spawnClaude as defaultSpawnClaude } from "../claude/spawner.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
-import { buildPromptPreamble } from "../slack/thread-context.ts";
+import { buildPromptPreamble, invalidateThreadCache } from "../slack/thread-context.ts";
 import { downloadSlackFiles } from "../slack/files.ts";
 import { generateMcpConfig } from "../claude/mcp-config.ts";
 import { log as _log } from "../logger.ts";
@@ -52,6 +53,9 @@ export class SessionManager {
       for (let i = 0; i < 500; i++) this.seenMessages.delete(entries[i]);
     }
 
+    // Invalidate thread context cache so next prompt gets fresh history
+    invalidateThreadCache(event.threadId);
+
     let session = await this.store.get(event.threadId);
 
     if (!session) {
@@ -80,7 +84,7 @@ export class SessionManager {
     session.lastActivity = Date.now();
     await this.store.set(session.threadId, session);
 
-    this.runClaudeWithAgent(session, event.text, event.ts, event.files);
+    this.runClaudeWithAgent(session, event.text, event.ts, event.files, event.routingHint ?? null);
   }
 
   async getSession(threadId: string): Promise<ThreadSession | undefined> {
@@ -97,6 +101,26 @@ export class SessionManager {
       }
     }
     await this.store.delete(threadId);
+
+    // Kill the per-thread tmux dispatch session and clear the resume state,
+    // so the next repo-work request gets a fresh Claude conversation in a
+    // fresh Terminal window.
+    const safeThread = threadId.replace(/\./g, "-");
+    const tmuxName = `friday-thread-${safeThread}`;
+    try {
+      await Bun.spawn(["/opt/homebrew/bin/tmux", "kill-session", "-t", tmuxName], {
+        stdout: "ignore",
+        stderr: "ignore",
+      }).exited;
+    } catch {
+      // tmux not installed or session not present — both are fine.
+    }
+    try {
+      const { unlinkSync } = await import("node:fs");
+      unlinkSync(`/tmp/friday-dispatch/${safeThread}.sessionid`);
+    } catch {
+      // file might not exist
+    }
   }
 
   private async handleCommand(
@@ -140,6 +164,14 @@ export class SessionManager {
           "`!quiet` — Minimal output",
           "`!normal` — Normal output",
           "`!verbose` — Verbose output",
+          "`!memory <query>` — BM25 search over memory (records recalls)",
+          "`!memstatus` — Recall/corpus stats",
+          "`!promote [N]` — Rank promotion candidates (preview)",
+          "`!dream [light|dry]` — Run light/deep phases; writes to MEMORY.md",
+          "`!dump <text>` — Log daily activity / pending items (parses `remind me on <day>`)",
+          "`!done <id>` — Mark a dump entry done",
+          "`!pending` — Show open dumps (last 7 days)",
+          "`!digest` — Preview the morning digest now",
           "`!help` — Show this help",
         ].join("\n");
         this.onCommandResponse?.(event, helpText);
@@ -201,6 +233,144 @@ export class SessionManager {
         return true;
       }
 
+      case "dump": {
+        const text = event.text.trim();
+        if (!text) {
+          this.onCommandResponse?.(event, "Usage: `!dump <what you did / what's pending>`. Reminders inside: `remind me on monday`, `remind me tomorrow`, `remind me on 2026-05-10`.");
+          return true;
+        }
+        const { addDump } = await import("../dumps/store.ts");
+        const entry = addDump(text);
+        const reminderLine =
+          entry.reminders.length > 0
+            ? `\n_Reminders parsed:_ ${entry.reminders.map((r) => r.date).join(", ")}`
+            : "";
+        this.onCommandResponse?.(event, `Logged \`${entry.id}\`.${reminderLine}`);
+        return true;
+      }
+
+      case "done": {
+        const id = event.text.trim();
+        if (!id) {
+          this.onCommandResponse?.(event, "Usage: `!done <id>` (id from `!pending` or the dump confirmation).");
+          return true;
+        }
+        const { markDone } = await import("../dumps/store.ts");
+        const entry = markDone(id);
+        if (!entry) {
+          this.onCommandResponse?.(event, `No dump with id \`${id}\`.`);
+        } else {
+          this.onCommandResponse?.(event, `✅ \`${id}\` marked done.`);
+        }
+        return true;
+      }
+
+      case "pending": {
+        const { openDumpsSince } = await import("../dumps/store.ts");
+        const open = openDumpsSince(7);
+        if (open.length === 0) {
+          this.onCommandResponse?.(event, "Nothing pending in the last 7 days. ✨");
+          return true;
+        }
+        const body = open
+          .map((e) => `• \`${e.id}\` — ${e.text}`)
+          .join("\n");
+        this.onCommandResponse?.(event, `*Pending (${open.length}):*\n${body}`);
+        return true;
+      }
+
+      case "digest": {
+        const { buildDigest } = await import("../dumps/scheduler.ts");
+        const text = buildDigest();
+        this.onCommandResponse?.(event, text ?? "Nothing to report — clean slate. ✨");
+        return true;
+      }
+
+      case "memory": {
+        const query = event.text.trim();
+        if (!query) {
+          this.onCommandResponse?.(event, "Usage: `!memory <query>`");
+          return true;
+        }
+        const { searchMemory } = await import("../memory/search.ts");
+        const results = searchMemory(query, { limit: 8 });
+        if (results.length === 0) {
+          this.onCommandResponse?.(event, `No matches for "${query}".`);
+          return true;
+        }
+        const body = results
+          .map((r) => {
+            const tags = r.conceptTags?.length ? `  _${r.conceptTags.slice(0, 4).join(", ")}_` : "";
+            const preview = r.snippet.slice(0, 220).replace(/\s+/g, " ");
+            return `• *${r.path}:${r.startLine}-${r.endLine}* (score ${r.score.toFixed(2)})${tags}\n  > ${preview}${r.snippet.length > 220 ? "…" : ""}`;
+          })
+          .join("\n");
+        this.onCommandResponse?.(event, body);
+        return true;
+      }
+
+      case "memstatus": {
+        const { loadRecallStore, loadPhaseSignalStore } = await import("../memory/recall.ts");
+        const { loadCorpus } = await import("../memory/corpus.ts");
+        const recall = loadRecallStore();
+        const signals = loadPhaseSignalStore();
+        const corpus = loadCorpus();
+        const entries = Object.values(recall.entries);
+        const promoted = entries.filter((e) => e.promotedAt).length;
+        const lines = [
+          `*Memory status*`,
+          `• Corpus: ${corpus.length} snippets`,
+          `• Short-term recall: ${entries.length} entries (${promoted} promoted, ${entries.length - promoted} pending)`,
+          `• Phase signals: ${Object.keys(signals.entries).length}`,
+          `• Recall updated: ${recall.updatedAt}`,
+        ];
+        this.onCommandResponse?.(event, lines.join("\n"));
+        return true;
+      }
+
+      case "promote": {
+        this.onCommandResponse?.(event, "Ranking promotion candidates…");
+        (async () => {
+          try {
+            const { rankPromotionCandidates, formatCandidates } = await import("../memory/promote.ts");
+            const limit = Number.parseInt(event.text.trim() || "10", 10) || 10;
+            const candidates = rankPromotionCandidates({ limit });
+            if (candidates.length === 0) {
+              this.onCommandResponse?.(event, "No candidates meet the 0.8 promotion gate.");
+              return;
+            }
+            this.onCommandResponse?.(
+              event,
+              `Top ${candidates.length} candidates:\n\`\`\`\n${formatCandidates(candidates)}\n\`\`\`\nRun \`!dream\` to actually write them to MEMORY.md.`,
+            );
+          } catch (err) {
+            this.onCommandResponse?.(event, `Promote failed: ${err}`);
+          }
+        })();
+        return true;
+      }
+
+      case "dream": {
+        const args = event.text.trim();
+        const lightOnly = /\blight\b/.test(args);
+        const dryRun = /\bdry\b/.test(args);
+        this.onCommandResponse?.(event, `Dreaming (${lightOnly ? "light only" : dryRun ? "dry run" : "full"})… this can take a minute.`);
+        (async () => {
+          try {
+            const { runDream } = await import("../memory/dreaming.ts");
+            const result = await runDream({ lightOnly, dryRun, withNarrative: true });
+            const head = `Dream complete. light=${result.lightHits} rem=${result.remHits} deep=${result.deepPromoted}`;
+            this.onCommandResponse?.(
+              event,
+              `${head}\n\n${result.summary.slice(0, 2500)}`,
+            );
+          } catch (err) {
+            this.onCommandResponse?.(event, `Dream failed: ${err}`);
+          }
+        })();
+        return true;
+      }
+
       default:
         return false;
     }
@@ -211,6 +381,7 @@ export class SessionManager {
     prompt: string,
     latestTs?: string,
     files?: SlackFileAttachment[],
+    routingHint: RoutingHint | null = null,
   ): Promise<void> {
     try {
       // Inject identity + thread context so Claude knows who it is and what was said
@@ -223,6 +394,15 @@ export class SessionManager {
           this.botUserId,
         );
         prompt = `${preamble}\n\n${prompt}`;
+      }
+
+      // Pattern-routing hint — tells Friday what she's been proactively pulled
+      // in for (PR review, bug triage, catchup). The hint instructs her tone
+      // and output structure for that specific trigger.
+      if (routingHint) {
+        const { hintPromptFragment } = await import("../slack/routing.ts");
+        const fragment = hintPromptFragment(routingHint, prompt);
+        if (fragment) prompt = `${fragment}\n\n${prompt}`;
       }
 
       // Download image files from Slack and append their paths to the prompt
@@ -412,3 +592,4 @@ function ensureDailyNote(): void {
     writeFileSync(dailyPath, `# ${today}\n\n`);
   }
 }
+

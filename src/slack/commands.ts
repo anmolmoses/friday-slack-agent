@@ -11,6 +11,14 @@ const KNOWN_COMMANDS = new Set([
   "verbose",
   "normal",
   "help",
+  "memory",
+  "promote",
+  "dream",
+  "memstatus",
+  "dump",
+  "done",
+  "pending",
+  "digest",
 ]);
 
 export interface ParsedCommand {

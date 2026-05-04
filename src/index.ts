@@ -1,22 +1,28 @@
 import { loadConfig } from "./config.ts";
 import { createSlackApp } from "./slack/app.ts";
 import { registerEventHandlers } from "./slack/events.ts";
-import { formatToolStatuses, extractAssistantText } from "./slack/formatting.ts";
+import { formatToolStatuses, extractThinkingStatus } from "./slack/formatting.ts";
 import { SlackResponder } from "./slack/responder.ts";
 import { SessionManager } from "./session/manager.ts";
-import { InMemorySessionStore } from "./session/store/memory.ts";
+import { FileSessionStore } from "./session/store/file.ts";
+import path from "node:path";
 import { setupGracefulShutdown } from "./lifecycle/shutdown.ts";
 import { registerHomeTab } from "./slack/home.ts";
 import { checkOrphanedSessions } from "./lifecycle/health.ts";
 import { cleanupStaleSessions } from "./lifecycle/cleanup.ts";
 import { AgentRouter } from "./agents/router.ts";
 import { WorktreeManager } from "./worktree/manager.ts";
+import { monitorSocketHealth } from "./slack/socket-health.ts";
+import { startNightlyDream } from "./memory/scheduler.ts";
+import { startDumpDigest } from "./dumps/scheduler.ts";
 import { log } from "./logger.ts";
 
 const config = loadConfig();
 const app = createSlackApp(config);
 
-const store = new InMemorySessionStore();
+const store = new FileSessionStore(
+  path.resolve(import.meta.dir, "..", "memory", "sessions.json"),
+);
 const sessionManager = new SessionManager(store, config);
 const agentRouter = new AgentRouter(config.repos, ".claude/agents");
 const worktreeManager = new WorktreeManager(config.repos);
@@ -25,10 +31,30 @@ sessionManager.worktreeManager = worktreeManager;
 sessionManager.slackApp = app;
 const responder = new SlackResponder(app);
 
+// Sentinels Friday may emit instead of a real reply. Treated as "suppress
+// posting" — the openclaw persona documents NO_REPLY as a silent-marker; other
+// upstream tools use the pi_sr variant.
+const SILENCE_SENTINELS = [
+  "NO_REPLY",
+  "___pi_sr_silent_marker___",
+];
+
+function isSilentResponse(text: string): boolean {
+  const t = text.trim();
+  if (!t) return true;
+  return SILENCE_SENTINELS.some(
+    (s) => t === s || t.toUpperCase() === s.toUpperCase() || t.startsWith(`${s}\n`),
+  );
+}
+
 sessionManager.onResponse = (session, response) => {
-  log.info("response", `thread=${session.threadId} len=${response.length}`);
+  const silent = isSilentResponse(response ?? "");
+  log.info(
+    "response",
+    `thread=${session.threadId} len=${response?.length ?? 0}${silent ? " (suppressed)" : ""}`,
+  );
   responder.deleteStatus(session.channel, session.threadId);
-  if (response) {
+  if (response && !silent) {
     responder.postResponse(session.channel, session.threadId, response);
   }
 };
@@ -39,13 +65,20 @@ sessionManager.onEvent = (session, event) => {
   }
   if (session.verbosity === "quiet") return;
   if (event.type === "assistant") {
-    // Show text content as live status (gets overwritten each turn)
-    const text = extractAssistantText(event);
-    if (text) {
-      responder.updateStatus(session.channel, session.threadId, text);
+    // 💭 Thinking — Claude's internal reasoning, if exposed by the stream.
+    // Surfaced first so the user sees "thinking…" before the concrete action.
+    const thinking = extractThinkingStatus(event);
+    if (thinking) {
+      responder.updateStatus(session.channel, session.threadId, `💭 ${thinking}`);
     }
 
-    // Show tool use as status
+    // Mid-stream assistant text is intentionally NOT shown as a status —
+    // it tends to be a partial draft of the final reply, which then gets
+    // double-posted when the result event arrives. Tool use + thinking are
+    // enough signal for "what is Friday doing right now".
+
+    // Tool use — each block becomes a status line. The last one wins visually,
+    // which is fine: the user sees the MOST RECENT action at a glance.
     const statuses = formatToolStatuses(event);
     for (const status of statuses) {
       log.info("tool", `thread=${session.threadId} ${status}`);
@@ -116,8 +149,29 @@ setInterval(() => {
 
   registerEventHandlers(app, (event) => {
     log.info("event", `thread=${event.threadId} user=${event.user} cmd=${event.command ?? "-"} text=${event.text.slice(0, 100)}`);
+    // For auto-routed triggers (PR URL, bug report), ack immediately with 👀
+    // so the sender knows Friday saw it — she may take a bit to produce output.
+    if (event.routingHint === "pr-review" || event.routingHint === "bug-triage") {
+      responder.addReaction(event.channel, event.ts, "eyes");
+    }
+    // Start the rotating-verb heartbeat so the user sees "✽ Pondering…" etc
+    // immediately, and watches it tick every 1.5s until real content replaces
+    // it (tool use, thinking, or the final response).
+    if (!event.command) {
+      responder.startHeartbeat(event.channel, event.threadId);
+    }
     sessionManager.handleMessage(event);
-  }, store, selfBotId);
+  }, store, selfBotId, sessionManager.botUserId);
+
+  // Start HTTP dashboard server
+  if (config.http.enabled) {
+    const { startHttpServer } = await import("./http/server.ts");
+    startHttpServer({ store, config });
+  }
+
+  monitorSocketHealth(app);
+  startNightlyDream({ hour: 3, minute: 0 });
+  startDumpDigest(app);
 
   log.info("boot", "Friday is running (Socket Mode)");
 })();

@@ -1,5 +1,6 @@
 import type { App } from "@slack/bolt";
-import { loadPersona } from "../persona.ts";
+import { SlackApiCache } from "../cache/slack-api-cache.ts";
+import { ThreadContextCache } from "../cache/thread-context-cache.ts";
 
 interface ThreadMessage {
   user: string;
@@ -9,21 +10,33 @@ interface ThreadMessage {
   fileNames: string[];
 }
 
-// Cache channel ID → name so we don't re-fetch every message
-const channelNameCache = new Map<string, string>();
+// Shared cache instances
+const slackApiCache = new SlackApiCache();
+const threadCache = new ThreadContextCache();
+
+// Prune expired entries every 5 minutes
+setInterval(() => {
+  slackApiCache.prune();
+  threadCache.prune();
+}, 5 * 60 * 1000);
 
 async function resolveChannelName(app: App, channelId: string): Promise<string> {
-  const cached = channelNameCache.get(channelId);
-  if (cached) return cached;
+  const cached = slackApiCache.getChannelInfo(channelId);
+  if (cached) return cached.name;
 
   try {
     const info = await app.client.conversations.info({ channel: channelId });
     const name = info.channel?.name ?? channelId;
-    channelNameCache.set(channelId, name);
+    slackApiCache.setChannelInfo(channelId, { id: channelId, name });
     return name;
   } catch {
     return channelId;
   }
+}
+
+/** Invalidate thread cache when a new message arrives. */
+export function invalidateThreadCache(threadId: string): void {
+  threadCache.invalidate(threadId);
 }
 
 /**
@@ -37,16 +50,15 @@ export async function buildPromptPreamble(
   latestTs: string,
   botUserId?: string,
 ): Promise<string> {
-  const [persona, channelName, threadContext] = await Promise.all([
-    loadPersona(),
+  const [channelName, threadContext] = await Promise.all([
     resolveChannelName(app, channel),
     fetchThreadHistory(app, channel, threadTs, latestTs, botUserId),
   ]);
 
+  // Persona is now injected via --append-system-prompt-file in args.ts (system-level).
+  // Here we only provide the slim Slack context so Claude knows where it is.
   const parts: string[] = [
     `<identity>`,
-    persona,
-    ``,
     `Your Slack user ID is ${botUserId ?? "unknown"}. Messages from this user ID in the thread are yours.`,
     `</identity>`,
     ``,
@@ -105,6 +117,14 @@ async function fetchThreadHistory(
       });
 
     if (messages.length === 0) return null;
+
+    // Cache the parsed messages for this thread
+    threadCache.set(threadTs, messages.map((m) => ({
+      user: m.user,
+      text: m.text,
+      ts: m.ts,
+      isBot: m.isBot,
+    })));
 
     const lines = messages.map((m) => {
       const role = m.isBot ? "Friday (you)" : `User(${m.user})`;

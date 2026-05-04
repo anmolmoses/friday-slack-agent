@@ -24,6 +24,12 @@ export function setupGracefulShutdown(
       }
 
       await Promise.all(kills);
+
+      // Flush persistent store before exit
+      const maybeFlush = (store as { flushNow?: () => Promise<void> }).flushNow;
+      if (typeof maybeFlush === "function") {
+        await maybeFlush.call(store);
+      }
     } catch (err) {
       console.error("Error during shutdown:", err);
     }

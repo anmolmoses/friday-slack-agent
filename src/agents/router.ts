@@ -2,14 +2,17 @@ import type { RepoConfig } from "../config.ts";
 import type { ThreadSession } from "../session/types.ts";
 import { loadAgentDefinition } from "./loader.ts";
 import type { AgentDefinition } from "./loader.ts";
+import { AgentCache } from "../cache/agent-cache.ts";
 
 export class AgentRouter {
   private repos: RepoConfig[];
   private fallbackAgentsDir: string;
+  private cache: AgentCache;
 
   constructor(repos: RepoConfig[], fallbackAgentsDir: string) {
     this.repos = repos;
     this.fallbackAgentsDir = fallbackAgentsDir;
+    this.cache = new AgentCache([fallbackAgentsDir]);
   }
 
   async resolveAgent(
@@ -17,7 +20,7 @@ export class AgentRouter {
   ): Promise<AgentDefinition | null> {
     if (!session.agentType) return null;
 
-    // Try target repo first
+    // Try target repo first (not cached — repo agents may change per-repo)
     if (session.targetRepo) {
       const repo = this.repos.find((r) => r.name === session.targetRepo);
       if (repo) {
@@ -27,9 +30,8 @@ export class AgentRouter {
       }
     }
 
-    // Fallback
-    const fallbackPath = `${this.fallbackAgentsDir}/${session.agentType}.md`;
-    return loadAgentDefinition(fallbackPath);
+    // Fallback with cache
+    return this.cache.get(session.agentType);
   }
 
   async composeSystemPrompt(

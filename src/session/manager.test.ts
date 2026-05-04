@@ -60,14 +60,14 @@ function createMockHandle(
   };
 }
 
-let mockSpawnFn: ReturnType<typeof mock<(session: unknown, prompt: unknown, config: unknown) => MockHandle>> = mock(
-  (_session: unknown, _prompt: unknown, _config: unknown) => createMockHandle(),
+let mockSpawnFn: ReturnType<typeof mock<(session: unknown, prompt: unknown, config: unknown, targetRepoCwd?: unknown, botToken?: unknown, agentDef?: unknown) => MockHandle>> = mock(
+  (_session: unknown, _prompt: unknown, _config: unknown, _targetRepoCwd?: unknown, _botToken?: unknown, _agentDef?: unknown) => createMockHandle(),
 );
 
-// Mock spawnClaude
+// Mock spawnClaude — signature must match real: (session, prompt, config, targetRepoCwd?, botToken?, agentDef?)
 mock.module("../claude/spawner.ts", () => ({
-  spawnClaude: (session: unknown, prompt: unknown, config: unknown) =>
-    mockSpawnFn(session, prompt, config),
+  spawnClaude: (session: unknown, prompt: unknown, config: unknown, targetRepoCwd?: unknown, botToken?: unknown, agentDef?: unknown) =>
+    mockSpawnFn(session, prompt, config, targetRepoCwd, botToken, agentDef),
 }));
 
 // Mock withTimeout to pass through the handle as-is (no real timeout)
@@ -89,6 +89,7 @@ import { InMemorySessionStore } from "./store/memory.ts";
 const testConfig: Config = {
   slack: { botToken: "xoxb-test", appToken: "xapp-test", signingSecret: "s" },
   claude: { maxTurns: 25, timeoutMs: 300000, permissionMode: "bypassPermissions" },
+  http: { port: 3000, enabled: false },
   repos: [
     { name: "friday", path: "/tmp/friday", defaultBase: "main" },
     { name: "frontend", path: "/tmp/frontend", defaultBase: "main" },

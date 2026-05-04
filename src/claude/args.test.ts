@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { buildClaudeArgs } from "./args.ts";
 import type { ThreadSession } from "../session/types.ts";
+import type { AgentDefinition } from "../agents/loader.ts";
 import type { Config } from "../config.ts";
 
 function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
@@ -60,17 +61,19 @@ describe("buildClaudeArgs", () => {
     expect(args).not.toContain("--resume");
   });
 
-  it("includes --append-system-prompt when systemPrompt is set", () => {
+  it("includes --append-system-prompt-file when systemPrompt is set", () => {
     const session = makeSession({ systemPrompt: "You are a build agent." });
     const args = buildClaudeArgs(session, "build it", makeConfig());
-    expect(args).toContain("--append-system-prompt");
-    expect(args).toContain("You are a build agent.");
+    expect(args).toContain("--append-system-prompt-file");
+    // System prompt is written to a temp file, not passed inline
+    expect(args).not.toContain("--append-system-prompt");
   });
 
-  it("does not include --append-system-prompt when systemPrompt is null", () => {
+  it("includes --append-system-prompt-file even when systemPrompt is null (memory instructions)", () => {
     const session = makeSession({ systemPrompt: null });
     const args = buildClaudeArgs(session, "do it", makeConfig());
-    expect(args).not.toContain("--append-system-prompt");
+    // Memory instructions.md still gets included
+    expect(args).toContain("--append-system-prompt-file");
   });
 
   it("uses maxTurns from config", () => {
@@ -95,8 +98,7 @@ describe("buildClaudeArgs", () => {
     const args = buildClaudeArgs(session, "go", makeConfig());
     expect(args).toContain("--resume");
     expect(args).toContain("sess-xyz");
-    expect(args).toContain("--append-system-prompt");
-    expect(args).toContain("Be concise.");
+    expect(args).toContain("--append-system-prompt-file");
   });
 
   it("places prompt immediately after -p", () => {
@@ -104,5 +106,113 @@ describe("buildClaudeArgs", () => {
     const pIdx = args.indexOf("-p");
     expect(pIdx).toBeGreaterThanOrEqual(0);
     expect(args[pIdx + 1]).toBe("my prompt");
+  });
+
+  it("includes memory system flags", () => {
+    const args = buildClaudeArgs(makeSession(), "test", makeConfig());
+    expect(args).toContain("--add-dir");
+    expect(args).toContain("--append-system-prompt-file");
+    expect(args).toContain("--exclude-dynamic-system-prompt-sections");
+  });
+
+  it("includes --mcp-config when session has mcpConfigPath", () => {
+    const session = makeSession({ mcpConfigPath: "/tmp/friday-mcp/t1.json" });
+    const args = buildClaudeArgs(session, "test", makeConfig());
+    expect(args).toContain("--mcp-config");
+    expect(args).toContain("/tmp/friday-mcp/t1.json");
+  });
+
+  it("does not include --mcp-config when mcpConfigPath is null", () => {
+    const session = makeSession({ mcpConfigPath: null });
+    const args = buildClaudeArgs(session, "test", makeConfig());
+    expect(args).not.toContain("--mcp-config");
+  });
+
+  describe("agentDef flags", () => {
+    function makeAgentDef(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
+      return {
+        name: "test-agent",
+        description: "test",
+        tools: null,
+        model: null,
+        effort: null,
+        allowedTools: null,
+        disallowedTools: null,
+        prompt: "test prompt",
+        ...overrides,
+      };
+    }
+
+    it("includes --model when agentDef has model", () => {
+      const agentDef = makeAgentDef({ model: "opus" });
+      const args = buildClaudeArgs(makeSession(), "test", makeConfig(), agentDef);
+      expect(args).toContain("--model");
+      expect(args).toContain("claude-opus-4-6");
+    });
+
+    it("resolves sonnet model alias", () => {
+      const agentDef = makeAgentDef({ model: "sonnet" });
+      const args = buildClaudeArgs(makeSession(), "test", makeConfig(), agentDef);
+      expect(args).toContain("claude-sonnet-4-6");
+    });
+
+    it("passes full model name through unchanged", () => {
+      const agentDef = makeAgentDef({ model: "claude-opus-4-6" });
+      const args = buildClaudeArgs(makeSession(), "test", makeConfig(), agentDef);
+      expect(args).toContain("claude-opus-4-6");
+    });
+
+    it("includes --effort when agentDef has effort", () => {
+      const agentDef = makeAgentDef({ effort: "max" });
+      const args = buildClaudeArgs(makeSession(), "test", makeConfig(), agentDef);
+      expect(args).toContain("--effort");
+      expect(args).toContain("max");
+    });
+
+    it("includes --allowedTools for each tool", () => {
+      const agentDef = makeAgentDef({ allowedTools: ["Read", "Bash(git *)"] });
+      const args = buildClaudeArgs(makeSession(), "test", makeConfig(), agentDef);
+      const allowedIdxs = args.reduce<number[]>((acc, v, i) => {
+        if (v === "--allowedTools") acc.push(i);
+        return acc;
+      }, []);
+      expect(allowedIdxs.length).toBe(2);
+      expect(args[allowedIdxs[0] + 1]).toBe("Read");
+      expect(args[allowedIdxs[1] + 1]).toBe("Bash(git *)");
+    });
+
+    it("includes --disallowedTools for each tool", () => {
+      const agentDef = makeAgentDef({ disallowedTools: ["Edit", "Write"] });
+      const args = buildClaudeArgs(makeSession(), "test", makeConfig(), agentDef);
+      const disallowedIdxs = args.reduce<number[]>((acc, v, i) => {
+        if (v === "--disallowedTools") acc.push(i);
+        return acc;
+      }, []);
+      expect(disallowedIdxs.length).toBe(2);
+      expect(args[disallowedIdxs[0] + 1]).toBe("Edit");
+      expect(args[disallowedIdxs[1] + 1]).toBe("Write");
+    });
+
+    it("omits agent flags when agentDef is null", () => {
+      const args = buildClaudeArgs(makeSession(), "test", makeConfig(), null);
+      expect(args).not.toContain("--model");
+      expect(args).not.toContain("--allowedTools");
+      expect(args).not.toContain("--disallowedTools");
+      // Default --effort medium so extended thinking streams are emitted.
+      const idx = args.indexOf("--effort");
+      expect(idx).toBeGreaterThan(-1);
+      expect(args[idx + 1]).toBe("medium");
+    });
+
+    it("defaults to --effort medium unless agentDef overrides", () => {
+      const agentDef = makeAgentDef();
+      const args = buildClaudeArgs(makeSession(), "test", makeConfig(), agentDef);
+      expect(args).not.toContain("--model");
+      expect(args).not.toContain("--allowedTools");
+      expect(args).not.toContain("--disallowedTools");
+      const idx = args.indexOf("--effort");
+      expect(idx).toBeGreaterThan(-1);
+      expect(args[idx + 1]).toBe("medium");
+    });
   });
 });

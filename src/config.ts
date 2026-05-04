@@ -20,6 +20,10 @@ export interface Config {
     staleTimeoutMs: number;
     cleanupIntervalMs: number;
   };
+  http: {
+    port: number;
+    enabled: boolean;
+  };
   redis?: {
     url: string;
   };
@@ -55,6 +59,10 @@ export function loadConfig(): Config {
       cleanupIntervalMs: Number(
         optional("SESSION_CLEANUP_INTERVAL_MS", "900000")
       ),
+    },
+    http: {
+      port: Number(optional("HTTP_PORT", "3000")),
+      enabled: optional("HTTP_ENABLED", "true") === "true",
     },
     redis: process.env.REDIS_URL ? { url: process.env.REDIS_URL } : undefined,
   };
