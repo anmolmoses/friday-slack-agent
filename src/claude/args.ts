@@ -11,19 +11,38 @@ const PROMPT_TMP_DIR = "/tmp/friday-prompts";
 let cachedPersonaContent: string | null = null;
 
 function loadPersonaContent(): string {
-  if (cachedPersonaContent) return cachedPersonaContent;
+  if (cachedPersonaContent !== null) return cachedPersonaContent;
 
   const personaFiles = ["IDENTITY.md", "SOUL.md", "AGENTS.md", "USER.md", "TOOLS.md"];
-  const openlawDir = path.join(FRIDAY_ROOT, "openclaw");
+  // Persona files moved out of openclaw/ to friday-personal/ in commit f16882d
+  // (May 2026) so each developer's identity stays gitignored. Try the new
+  // location first, fall back to the legacy one for un-migrated checkouts.
+  const candidateDirs = [
+    path.join(FRIDAY_ROOT, "friday-personal"),
+    path.join(FRIDAY_ROOT, "openclaw"),
+  ];
   const parts: string[] = [];
+  const missing: string[] = [];
 
   for (const file of personaFiles) {
-    const filePath = path.join(openlawDir, file);
-    if (existsSync(filePath)) {
-      try {
-        parts.push(readFileSync(filePath, "utf-8").trim());
-      } catch { /* skip */ }
+    let loaded = false;
+    for (const dir of candidateDirs) {
+      const filePath = path.join(dir, file);
+      if (existsSync(filePath)) {
+        try {
+          parts.push(readFileSync(filePath, "utf-8").trim());
+          loaded = true;
+          break;
+        } catch { /* try next dir */ }
+      }
     }
+    if (!loaded) missing.push(file);
+  }
+
+  if (missing.length > 0) {
+    console.warn(
+      `[persona] missing persona files: ${missing.join(", ")} — searched ${candidateDirs.join(", ")}. Friday will run without these sections.`,
+    );
   }
 
   cachedPersonaContent = parts.join("\n\n");

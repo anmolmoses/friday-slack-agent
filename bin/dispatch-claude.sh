@@ -69,6 +69,23 @@ LOG_FILE="$LOG_DIR/$JOB_ID.log"
 PROMPT_FILE="$STATE_DIR/$THREAD_SAFE-$(date -u +%H%M%S%N || date -u +%H%M%S).prompt"
 printf "%s" "$PROMPT" > "$PROMPT_FILE"
 
+wait_for_claude_ready() {
+  # Poll the pane until Claude's REPL has finished booting. The
+  # "bypass permissions on" footer is the last thing rendered, so its
+  # appearance is a reliable readiness signal across welcome and --resume
+  # screens. Time out at ~20s.
+  local deadline=$(( $(date +%s) + 20 ))
+  while [ $(date +%s) -lt $deadline ]; do
+    local pane
+    pane="$("$TMUX_BIN" capture-pane -t "$TMUX_SESSION" -p 2>/dev/null || true)"
+    if printf '%s' "$pane" | grep -q "bypass permissions"; then
+      return 0
+    fi
+    sleep 0.3
+  done
+  return 1
+}
+
 start_claude_in_pane() {
   # If we have a saved Claude session id from a prior tmux life (rare —
   # only if tmux was killed externally but state file survived), --resume
@@ -79,22 +96,46 @@ start_claude_in_pane() {
   fi
   "$TMUX_BIN" send-keys -t "$TMUX_SESSION" \
     "claude --permission-mode bypassPermissions${resume_arg}" Enter
-  # Give the REPL ~2.5s to boot before pasting the prompt.
-  sleep 2.5
+  if ! wait_for_claude_ready; then
+    echo "Error: Claude REPL did not become ready within 20s in tmux session $TMUX_SESSION" >&2
+    return 1
+  fi
 }
 
 paste_prompt() {
   local file="$1"
   local buf="friday-prompt-$JOB_ID"
-  "$TMUX_BIN" load-buffer -b "$buf" "$file"
-  # -p uses bracketed paste mode so multi-line prompts go in as one paste.
-  # -d deletes the buffer after.
-  "$TMUX_BIN" paste-buffer -b "$buf" -t "$TMUX_SESSION" -d -p
-  # Bracketed-paste end-marker takes a beat to be processed by Claude's REPL;
-  # without this sleep the immediately-following Enter gets eaten and the
-  # user has to press Enter manually to submit.
-  sleep 0.4
-  "$TMUX_BIN" send-keys -t "$TMUX_SESSION" C-m
+  # Marker for verifying the paste actually landed: first ~30 chars of the
+  # prompt, whitespace-collapsed. Multi-line prompts get bracketed-pasted
+  # by Claude as "[Pasted #N, +K lines]" which hides the literal text, so
+  # we ALSO compare pane snapshots before/after as a fallback signal.
+  local marker
+  marker="$(head -c 400 "$file" | tr '\n\t' '  ' | tr -s ' ' | sed 's/^ *//' | head -c 30)"
+
+  local attempt
+  for attempt in 1 2 3; do
+    local before
+    before="$("$TMUX_BIN" capture-pane -t "$TMUX_SESSION" -p 2>/dev/null || true)"
+    "$TMUX_BIN" load-buffer -b "$buf" "$file"
+    # -p uses bracketed paste mode so multi-line prompts go in as one paste.
+    # -d deletes the buffer after.
+    "$TMUX_BIN" paste-buffer -b "$buf" -t "$TMUX_SESSION" -d -p
+    # Bracketed-paste end-marker takes a beat to be processed by Claude's REPL;
+    # without this sleep the immediately-following Enter gets eaten and the
+    # user has to press Enter manually to submit.
+    sleep 0.6
+    local after
+    after="$("$TMUX_BIN" capture-pane -t "$TMUX_SESSION" -p 2>/dev/null || true)"
+    if printf '%s' "$after" | grep -qF "$marker" || [ "$before" != "$after" ]; then
+      "$TMUX_BIN" send-keys -t "$TMUX_SESSION" C-m
+      return 0
+    fi
+    echo "Warning: paste attempt $attempt did not land in $TMUX_SESSION; retrying" >&2
+    sleep 0.8
+  done
+
+  echo "Error: prompt paste failed after 3 attempts in tmux session $TMUX_SESSION" >&2
+  return 1
 }
 
 ensure_claude_alive() {

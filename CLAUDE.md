@@ -16,6 +16,7 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 
 | Question | Read this |
 |---|---|
+| What skills/agents/commands does each target repo have? | [docs/repo-capabilities.md](docs/repo-capabilities.md) |
 | System architecture, data flow, module dependencies? | [docs/architecture.md](docs/architecture.md) |
 | How does Slack event handling work? | [docs/features/slack-event-handler.md](docs/features/slack-event-handler.md) |
 | Thread context, persona, images, file upload, browser? | [docs/features/thread-context.md](docs/features/thread-context.md) |

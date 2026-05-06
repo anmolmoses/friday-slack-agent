@@ -47,13 +47,41 @@ export const THINKING_VERBS: readonly string[] = [
   "Topsy-turvying", "Transfiguring", "Transmuting", "Twisting", "Undulating",
   "Unfurling", "Unravelling", "Vibing", "Waddling", "Wandering",
   "Warping", "Whatchamacalliting", "Whirlpooling", "Whirring", "Whisking",
-  "Wibbling", "Working", "Wrangling", "Xenoniting", "Zesting", "Zigzagging",
+  "Wibbling", "Working", "Wrangling", "Xenoniting", "Zesting",
+  "Zigzagging",
+  "Looksmaxxing", "Softmaxxing", "Hardmaxxing", "Gymmaxxing", "Skinmaxxing",
+  "Hairmaxxing", "Beardmaxxing", "Jawmaxxing", "Mewingmaxxing", "Heightmaxxing",
+  "Fashionmaxxing", "Fragrancemaxxing", "Scentmaxxing", "Pheromonemaxxing", "Auramaxxing",
+  "Rizzmaxxing", "Charismamaxxing", "Socialmaxxing", "Statusmaxxing", "Moneymaxxing",
+  "Careermaxxing", "Networkmaxxing", "LinkedInmaxxing", "Productivitymaxxing", "Focusmaxxing",
+  "Studymaxxing", "Brainmaxxing", "Sleepmaxxing", "Healthmaxxing", "Testosteronemaxxing",
+  "T-maxxing", "Monkmaxxing", "Winterarcmaxxing", "Dopaminemaxxing", "Facemaxxing",
+  "Bodymaxxing", "Leanmaxxing", "Musclemaxxing", "Aestheticmaxxing", "Groomingmaxxing",
+  "Hygienemaxxing", "Teethmaxxing", "Smilemaxxing", "Posturemaxxing", "Voicemaxxing",
+  "Eyebrowmaxxing", "Lashmaxxing", "Lipmaxxing", "Nosemaxxing", "Eyeareamaxxing",
+  "Huntereyesmaxxing", "Tanmaxxing", "Skullmaxxing", "Datemaxxing", "Hingemaxxing",
+  "Tindermaxxing", "Textmaxxing", "DMmaxxing", "Flirtmaxxing", "Confidencemaxxing",
+  "Vibemaxxing", "Personalitymaxxing", "Humormaxxing", "Storymaxxing", "Yapmaxxing",
+  "Yappingmaxxing", "Mysterymaxxing", "Silencemaxxing", "NPCmaxxing", "Sigma-maxxing",
+  "Wealthmaxxing", "Incomemaxxing", "Salarymaxxing", "Jobmaxxing", "Interviewmaxxing",
+  "Resumemaxxing", "Portfoliomaxxing", "Skillmaxxing", "Foundermaxxing", "Startupmaxxing",
+  "Cloutmaxxing", "Brandmaxxing", "Twittermaxxing", "Xmaxxing", "Contentmaxxing",
+  "Viralmaxxing", "Influencemaxxing", "Disciplinemaxxing", "Habitmaxxing", "Routine-maxxing",
+  "Timemaxxing", "Deepworkmaxxing", "Notionmaxxing", "Calendarmaxxing", "Ankimaxxing",
+  "Leetcodemaxxing", "DSAmaxxing", "Systemdesignmaxxing", "Readingmaxxing", "Journalingmaxxing",
+  "Meditationmaxxing", "Prayermaxxing", "Faithmaxxing", "NoFapmaxxing", "Grindmaxxing",
+  "Brainrotmaxxing", "Skibidimaxxing", "Gyattmaxxing", "Ohiomaxxing", "Fanumtaxmaxxing",
+  "Rizzlermaxxing", "Chronicallyonlinemaxxing", "Slopmaxxing", "Meme-maxxing", "Ironymaxxing",
+  "Cringemaxxing", "Delusionmaxxing", "Copemaxxing", "Hopemaxxing", "Joymaxxing",
+  "Sillymaxxing", "Goblinmaxxing", "Gremlinmaxxing", "Buildmaxxing", "Shippingmaxxing",
+  "Bugfixmaxxing", "Tokenmaxxing", "Promptmaxxing", "Survivalmaxxing", "Officemaxxing",
+  "Proteinmaxxing",
 ] as const;
 
 /**
  * Stable, per-thread-per-event verb picker. Using Date.now() >> 2 rotates the
  * pick every ~4 seconds so consecutive thinking updates within one turn tend
- * to share a verb (less flicker) while different turns get fresh verbs.
+ * to share a verb (less flicker) while different turns get fresh verbs.whe
  */
 export function pickThinkingVerb(seed?: number): string {
   const s = seed ?? Math.floor(Date.now() / 4000);

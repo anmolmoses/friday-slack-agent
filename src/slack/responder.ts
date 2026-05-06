@@ -25,6 +25,29 @@ function renderHeartbeat(verb: string): string {
   return `✽ _${verb}…_`;
 }
 
+// Friday should return one of these sentinels (or empty/whitespace) as her
+// final assistant text when she has already replied via the slack_post_message
+// MCP tool during the turn, OR when the message genuinely needs no reply
+// (noise / already handled). Without this, the recap-style memory note that
+// Friday writes after posting via MCP gets posted to Slack as a duplicate.
+const SKIP_REPLY_SENTINELS = [
+  "NO_SLACK_MESSAGE",
+  "NO_SLACK_REPLY",
+  "[NO_REPLY]",
+];
+
+export function shouldSkipFinalPost(text: string): boolean {
+  if (!text) return true;
+  const trimmed = text.trim();
+  if (!trimmed) return true;
+  // Match a sentinel that occupies the entire response (allow surrounding
+  // punctuation/markdown like "**NO_SLACK_MESSAGE**" or "_NO_SLACK_MESSAGE_").
+  const stripped = trimmed.replace(/^[*_`>\s]+|[*_`\s.!]+$/g, "");
+  return SKIP_REPLY_SENTINELS.some(
+    (s) => stripped.toUpperCase() === s.toUpperCase(),
+  );
+}
+
 export class SlackResponder {
   private app: App;
   private statusMessages = new Map<string, StatusEntry>();
@@ -38,6 +61,9 @@ export class SlackResponder {
     threadTs: string,
     text: string,
   ): Promise<void> {
+    if (shouldSkipFinalPost(text)) {
+      return;
+    }
     const slackified = toSlackMrkdwn(text);
     const chunks = splitResponse(slackified);
     for (const chunk of chunks) {

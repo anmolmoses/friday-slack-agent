@@ -151,4 +151,50 @@ THREAD_URL="https://teamgrowthx.slack.com/archives/$SLACK_CHANNEL/p$TS_NO_DOT"
   printf "[followup] done %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } >> "$LOG" 2>&1
 
+# Memory extraction: spawn a background `claude -p` to scan the transcript
+# for durable learnings and write to Friday's auto-memory dir. Runs detached
+# so it never blocks Claude's shutdown. Opt-out by setting
+# FRIDAY_DISABLE_MEMORY_EXTRACT=1.
+if [ "${FRIDAY_DISABLE_MEMORY_EXTRACT:-0}" != "1" ] && [ -n "$FINAL_TEXT" ]; then
+  MEM_DIR="/Users/anmol/.claude/projects/-Users-anmol-Documents-GitHub-Friday/memory"
+  EXTRACT_LOG="$REPO_ROOT/logs/dispatch/${FRIDAY_DISPATCH_JOB_ID:-unknown}.memory.log"
+  EXTRACT_PROMPT="You are a memory-extraction sub-agent. A Friday-dispatched Claude run just finished. Read its transcript at: $TRANSCRIPT_PATH
+
+Decide whether anything in this run is worth preserving as a durable memory entry for future Friday sessions. Apply STRICT criteria — most runs have nothing worth saving:
+
+SAVE only if you find:
+- feedback: Anmol/Pranav corrected the agent's approach in a way that should change future behavior, OR explicitly confirmed a non-obvious choice was right
+- project: a non-obvious fact about ongoing work, deadlines, why-decisions that won't be derivable from code/git history
+- reference: a pointer to where info lives in an external system (Linear board, dashboard, channel)
+
+DO NOT save:
+- code patterns, file paths, architecture (derivable from the repo)
+- one-off bug fixes (the commit message already captures it)
+- ephemeral state (current task progress, PR URLs, dispatch job IDs)
+- restating what already exists in $MEM_DIR/MEMORY.md
+
+If nothing meets the bar, print exactly: NO_MEMORY
+Otherwise:
+  1. Write a new file to $MEM_DIR/<type>_<short-kebab-name>.md with the standard frontmatter (name, description, type) and body. For feedback/project entries include **Why:** and **How to apply:** lines.
+  2. Append a one-line index entry to $MEM_DIR/MEMORY.md: \`- [Title](file.md) — short hook\`
+  3. Print exactly: SAVED <filename>
+
+Be terse. Do not narrate. Do not write more than one memory file per run."
+
+  CLAUDE_BIN="${CLAUDE_BIN:-/Users/anmol/.local/bin/claude}"
+  if [ ! -x "$CLAUDE_BIN" ]; then
+    CLAUDE_BIN="$(command -v claude || true)"
+  fi
+  (
+    cd /tmp
+    "$CLAUDE_BIN" -p "$EXTRACT_PROMPT" \
+      --permission-mode bypassPermissions \
+      --add-dir "$MEM_DIR" \
+      --max-turns 8 \
+      >> "$EXTRACT_LOG" 2>&1
+  ) &
+  disown $! 2>/dev/null || true
+  printf "[followup] memory extraction spawned (pid=%s, log=%s)\n" "$!" "$EXTRACT_LOG" >> "$LOG" 2>&1
+fi
+
 exit 0
