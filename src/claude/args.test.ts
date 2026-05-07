@@ -22,6 +22,8 @@ function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
     lastActivity: Date.now(),
     lastError: null,
     createdAt: Date.now(),
+    spiralScore: 0,
+    recentJabs: [],
     ...overrides,
   };
 }

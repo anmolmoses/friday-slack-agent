@@ -33,6 +33,9 @@ export class FileSessionStore implements SessionStore {
           status: "idle",
           pid: null,
           pendingMessages: [],
+          // Defaults for fields added after sessions.json was first written.
+          spiralScore: typeof session.spiralScore === "number" ? session.spiralScore : 0,
+          recentJabs: Array.isArray(session.recentJabs) ? session.recentJabs : [],
         });
       }
       log.info("session-store", `Loaded ${this.sessions.size} sessions from ${this.filePath}`);

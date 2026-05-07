@@ -17,7 +17,18 @@ import { buildPromptPreamble, invalidateThreadCache } from "../slack/thread-cont
 import { downloadSlackFiles } from "../slack/files.ts";
 import { generateMcpConfig } from "../claude/mcp-config.ts";
 import { buildStandupPreamble } from "../standup/handler.ts";
-import { log as _log } from "../logger.ts";
+import { isVibesChannel } from "../slack/routing.ts";
+import {
+  classifyJab,
+  pruneRecentJabs,
+  ragebaitFragment,
+  recordJab,
+  shouldInjectRagebaitMode,
+  shouldInjectSpiralBrake,
+  spiralBrakeFragment,
+  updateSpiralScore,
+} from "./spiral.ts";
+import { log } from "../logger.ts";
 
 type SpawnClaudeFn = typeof defaultSpawnClaude;
 
@@ -62,6 +73,27 @@ export class SessionManager {
     if (!session) {
       session = createSession(event.threadId, event.channel);
       await this.store.set(event.threadId, session);
+    }
+
+    // Ragebait detection — only matters in vibes channels and only for
+    // non-Anmol users. Track the rolling 15-min jab count per user so the
+    // next prompt build can inject the ragebait protocol if it's escalating.
+    const ANMOL = "U09SZ4DM8TH";
+    if (isVibesChannel(event.channel) && event.user !== ANMOL) {
+      pruneRecentJabs(session);
+      const cls = classifyJab({
+        text: event.text,
+        mentionsFriday: !!this.botUserId && event.text.includes(`<@${this.botUserId}>`),
+        hasAttachment: !!event.files && event.files.length > 0,
+      });
+      if (cls.isJab) {
+        const count = recordJab(session, event.user, event.text);
+        log.info(
+          "ragebait",
+          `thread=${session.threadId} user=${event.user} jabs=${count} reasons=${cls.reasons.join(",")}`,
+        );
+        await this.store.set(session.threadId, session);
+      }
     }
 
     if (event.command) {
@@ -417,6 +449,20 @@ export class SessionManager {
         if (fragment) prompt = `${fragment}\n\n${prompt}`;
       }
 
+      // Anti-spiral guardrails — only injected in vibes channels where the
+      // failure mode lives. Prickle thread (2026-04-01) is the scar.
+      if (isVibesChannel(session.channel)) {
+        pruneRecentJabs(session);
+        if (shouldInjectRagebaitMode(session)) {
+          prompt = `${ragebaitFragment()}\n\n${prompt}`;
+          log.info("ragebait", `thread=${session.threadId} mode=ON`);
+        }
+        if (shouldInjectSpiralBrake(session)) {
+          prompt = `${spiralBrakeFragment()}\n\n${prompt}`;
+          log.info("spiral", `thread=${session.threadId} brake=ON score=${session.spiralScore}`);
+        }
+      }
+
       // Download image files from Slack and append their paths to the prompt
       if (files && files.length > 0) {
         try {
@@ -544,6 +590,18 @@ export class SessionManager {
     }
 
     if (result.response) {
+      // Track Friday's own self-deprecation streak in vibes channels — feeds
+      // the spiral-brake injection on the next turn.
+      if (isVibesChannel(session.channel)) {
+        const before = session.spiralScore ?? 0;
+        updateSpiralScore(session, result.response);
+        if (session.spiralScore !== before) {
+          log.info(
+            "spiral",
+            `thread=${session.threadId} score ${before}→${session.spiralScore}`,
+          );
+        }
+      }
       this.onResponse?.(session, result.response);
     }
 

@@ -30,6 +30,14 @@ const ALWAYS_REPLY_CHANNELS = new Set<string>([
   "C0257TR1CD7", // #cafeteria — vibes channel, full send
 ]);
 
+/**
+ * True when the channel is a vibes/sandbox channel — short replies, no
+ * essays, hard message cap. Used by the post-path lint and spiral detector.
+ */
+export function isVibesChannel(channel: string): boolean {
+  return ALWAYS_REPLY_CHANNELS.has(channel);
+}
+
 // Users Friday should never auto-reply to in always-reply channels (bosses).
 // Source of truth: memory/people/slack-users.json `NO_REPLY: true`.
 const NO_REPLY_USERS = new Set<string>([
@@ -203,9 +211,12 @@ export function hintPromptFragment(hint: RoutingHint, text: string): string | nu
       "## AUTO TRIGGER: VIBES CHANNEL",
       "This is a vibes / sandbox channel where you chime in by default (e.g. #cafeteria, #fridaytest). You were NOT @mentioned — you're auto-routed because that's the channel norm.",
       "Operational rules (your voice/tone is already defined in SOUL.md — use it):",
+      "- **Exactly ONE Slack message per turn.** No double-posts. No follow-up `[6:45 PM]`-style appendices, fake timestamps, or simulated continuations. The post path will truncate anything that looks like multiple messages.",
+      "- **Hard cap: 3 lines.** If your draft is longer, cut it. Anything past 3 lines gets truncated server-side — spend the budget on the punchline, not the windup.",
       "- Do NOT use the `NO_SLACK_MESSAGE` sentinel here. In a vibes channel, staying silent IS the failure mode — engagement is the whole point.",
       "- Do NOT dispatch sub-Claudes, open worktrees, run lint/tests, or write to memory. This is small-talk, not a task. One reply, ship it.",
       "- Do NOT repeat yourself. If you already replied upthread, only chime in again if a new message clearly opens a door.",
+      "- The Prickle thread (2026-04-01) is the canonical scar: ~20 self-deprecating posts chasing Pranav's bait. Don't replay it. The spiral IS the bait — engagement = points scored on you.",
     ].join("\n");
   }
 

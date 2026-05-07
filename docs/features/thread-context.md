@@ -125,3 +125,37 @@ Playwright MCP (`.mcp.json`) gives Claude browser tools: navigate, click, scroll
 ## Message Deduplication
 
 Slack fires both `message` and `app_mention` for @mentions in threads. Without dedup, the same message gets processed twice (first spawns Claude, second gets buffered and drained as a duplicate). Fixed with a `Set<string>` keyed on message `ts` in `SessionManager.handleMessage()`.
+
+## Vibes-Channel Anti-Spiral Guardrails
+
+Background — the Prickle thread (#cafeteria, 2026-04-01) saw Friday spiral across ~20 self-deprecating posts chasing Pranav's bait. Operational rules in the system prompt are necessary but not sufficient: when the model over-talks anyway, the post path enforces the cap.
+
+Three layers, all keyed on `isVibesChannel(channel)` (`src/slack/routing.ts` — currently `#cafeteria` and `#fridaytest`):
+
+### 1. Stronger vibes prompt fragment
+
+`hintPromptFragment("vibes", …)` in `src/slack/routing.ts` injects:
+
+- **Exactly ONE Slack message per turn.** No double-posts, no fake `[6:45 PM]` timestamps, no simulated continuations.
+- **Hard cap: 3 lines.** Anything longer gets truncated server-side.
+- A reminder that the Prickle thread is the canonical scar and the spiral IS the bait.
+
+### 2. Pre-send lint (`src/slack/vibes-lint.ts`)
+
+`lintVibesResponse(text)` runs in `index.ts onResponse` before the responder posts. It:
+
+- Truncates anything past 3 non-empty lines down to the first paragraph block.
+- Flattens multi-message intent — drafts with triple-newlines, fake timestamps (`[6:45 PM]`-style), or `(continued)` markers get cut at the first such break.
+- Logs `[vibes-lint]` warnings with reason codes (`triple-newline`, `fake-timestamp`, `continuation-marker`, `line-cap(N>3)`).
+
+Work channels (PR review, bug triage, build threads) are NOT subject to the lint — they routinely produce 4–10 line replies on purpose.
+
+### 3. Spiral detector & ragebait protocol (`src/session/spiral.ts`)
+
+Per-thread state on `ThreadSession`:
+
+- `spiralScore: number` — increments when Friday's outgoing reply contains markers like `pathetic`, `i'm done`, `friday out`, `not taking the bait`, `don't @ me`, `goodnight`, `for real this time`, `i'll be quiet`. Decays −1 per clean turn (floor 0). When ≥2, the next turn's prompt gets a `## ⚠️ SPIRAL DETECTED` injection: single line max, zero self-deprecation, zero meta-commentary. If no non-spiral line exists, return `NO_SLACK_MESSAGE`.
+
+- `recentJabs: RagebaitJab[]` — non-Anmol vibes-channel messages that look like ragebait (Friday-references like `friday`, `SOUL.md`, `therapy folder` paired with bait tokens like `liar`, `prove it`, `show me`, `the bin`, `nepo hire`, `cope`, or repeated card/image attachments). When ≥3 jabs from the same user inside 15 minutes, the next turn's prompt gets a `## 🛑 RAGEBAIT MODE` injection: one reply per their message, max one line, no escalation.
+
+Both signals are checked in `SessionManager.runClaudeWithAgent` and prepended above the existing routing-hint fragment. State updates happen in `handleMessage` (jabs) and `onRunComplete` (spiral score).

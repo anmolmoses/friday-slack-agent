@@ -73,6 +73,7 @@ Slack Bot Server (Node.js / Bun)
 13. **Design for swappability.** When adding infrastructure that could have multiple implementations (persistence, message queue, notification), use a provider/factory pattern. Each provider gets its own file, a factory selects the right one.
 14. **Pure functions over framework ceremony.** If a library's core value is bypassed, replace it with the simplest implementation. A 20-line function beats a dependency you're working around.
 15. **Test against real infrastructure, mock at boundaries.** Mock Slack API and Claude CLI at system boundaries. Don't mock internal session management or message routing.
+16. **Vibes channels enforce one message per turn, ≤3 lines.** In `isVibesChannel(channel)` channels (#cafeteria, #fridaytest), the post path lints Friday's reply: anything past 3 non-empty lines or that contains multi-message intent (triple-newlines, fake `[6:45 PM]` timestamps, `(continued)` markers) is truncated. The Prickle thread (2026-04-01, ~20 self-deprecating posts chasing Pranav's bait) is the canonical scar. Spiral detector (`src/session/spiral.ts`) and ragebait protocol layer on top — see `docs/features/thread-context.md`. Work channels (PR review, bug triage, builds) are NOT subject to this lint.
 
 ## Project Structure
 
