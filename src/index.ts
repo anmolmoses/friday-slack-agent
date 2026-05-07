@@ -15,6 +15,7 @@ import { WorktreeManager } from "./worktree/manager.ts";
 import { monitorSocketHealth } from "./slack/socket-health.ts";
 import { startNightlyDream } from "./memory/scheduler.ts";
 import { startDumpDigest } from "./dumps/scheduler.ts";
+import { startStandupScheduler } from "./standup/scheduler.ts";
 import { log } from "./logger.ts";
 
 const config = loadConfig();
@@ -65,24 +66,18 @@ sessionManager.onEvent = (session, event) => {
   }
   if (session.verbosity === "quiet") return;
   if (event.type === "assistant") {
-    // 💭 Thinking — Claude's internal reasoning, if exposed by the stream.
-    // Surfaced first so the user sees "thinking…" before the concrete action.
+    // The Slack-facing status stays as the rotating thinking-verb heartbeat —
+    // we DO NOT post per-tool ("📖 Reading X", "⚙️ git diff", "🔧 Using Y") or
+    // per-thinking-snippet status updates anymore (Anmol's call: too noisy,
+    // wants only the verb animation). We still log the same information for
+    // operator visibility in friday-launchd.log.
     const thinking = extractThinkingStatus(event);
     if (thinking) {
-      responder.updateStatus(session.channel, session.threadId, `💭 ${thinking}`);
+      log.info("thinking", `thread=${session.threadId} ${thinking.slice(0, 200)}`);
     }
-
-    // Mid-stream assistant text is intentionally NOT shown as a status —
-    // it tends to be a partial draft of the final reply, which then gets
-    // double-posted when the result event arrives. Tool use + thinking are
-    // enough signal for "what is Friday doing right now".
-
-    // Tool use — each block becomes a status line. The last one wins visually,
-    // which is fine: the user sees the MOST RECENT action at a glance.
     const statuses = formatToolStatuses(event);
     for (const status of statuses) {
       log.info("tool", `thread=${session.threadId} ${status}`);
-      responder.updateStatus(session.channel, session.threadId, status);
     }
   }
 };
@@ -172,6 +167,7 @@ setInterval(() => {
   monitorSocketHealth(app);
   startNightlyDream({ hour: 3, minute: 0 });
   startDumpDigest(app);
+  startStandupScheduler(app);
 
   log.info("boot", "Friday is running (Socket Mode)");
 })();

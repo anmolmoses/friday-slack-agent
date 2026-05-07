@@ -13,7 +13,15 @@ let cachedPersonaContent: string | null = null;
 function loadPersonaContent(): string {
   if (cachedPersonaContent !== null) return cachedPersonaContent;
 
-  const personaFiles = ["IDENTITY.md", "SOUL.md", "AGENTS.md", "USER.md", "TOOLS.md"];
+  const personaFiles = [
+    "IDENTITY.md",
+    "SOUL.md",
+    "AGENTS.md",
+    "USER.md",
+    "TOOLS.md",
+    "MEMORY.md",
+    "HEARTBEAT.md",
+  ];
   // Persona files moved out of openclaw/ to friday-personal/ in commit f16882d
   // (May 2026) so each developer's identity stays gitignored. Try the new
   // location first, fall back to the legacy one for un-migrated checkouts.

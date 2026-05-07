@@ -3,6 +3,12 @@ import type { SessionStore } from "../session/store/interface.ts";
 import { parseCommand } from "./commands.ts";
 import { createSession } from "../session/types.ts";
 import { evaluateRouting, type RoutingHint } from "./routing.ts";
+import {
+  handleFocusBotMessage,
+  handleFridayTestMessage,
+  noteDrafting,
+} from "../standup/handler.ts";
+import { STANDUP_CHANNEL } from "../standup/types.ts";
 import { log } from "../logger.ts";
 
 export interface SlackFileAttachment {
@@ -38,6 +44,26 @@ export function registerEventHandlers(
   app.event("message", async ({ event }) => {
     // Friday's own messages — drop to avoid self-loop
     if ("bot_id" in event && selfBotId && (event as { bot_id: string }).bot_id === selfBotId) return;
+
+    // Focus bot in the standup channel — capture the thread ts so Friday can
+    // post the approved standup as a reply. Run BEFORE the other-bot drop.
+    if ("bot_id" in event) {
+      try {
+        const handled = await handleFocusBotMessage(app, {
+          channel: event.channel,
+          ts: event.ts,
+          thread_ts: "thread_ts" in event ? event.thread_ts : undefined,
+          bot_id: (event as { bot_id?: string }).bot_id,
+        });
+        if (handled) return;
+      } catch (err) {
+        log.error("standup", `focus-bot handler failed: ${err}`);
+      }
+    }
+
+    // Friday is silent in the standup channel except for the one approved post.
+    // Never engage with anyone else's chatter there.
+    if (event.channel === STANDUP_CHANNEL) return;
 
     const text = "text" in event ? event.text : undefined;
     if (!text) return;
@@ -119,6 +145,32 @@ export function registerEventHandlers(
 
     const threadId =
       "thread_ts" in event && event.thread_ts ? event.thread_ts : event.ts;
+
+    // Standup approval interception — if this is Anmol approving the draft in
+    // the standup kickoff thread, the standup handler posts to the standup
+    // channel and we short-circuit (don't spawn a Claude turn).
+    try {
+      const handled = await handleFridayTestMessage(
+        app,
+        {
+          channel: event.channel,
+          user,
+          text,
+          ts: event.ts,
+          thread_ts: "thread_ts" in event ? event.thread_ts : undefined,
+        },
+        selfBotId,
+      );
+      if (handled) return;
+    } catch (err) {
+      log.error("standup", `friday-test handler failed: ${err}`);
+    }
+
+    // Non-approval message in the standup thread — note that we're now drafting
+    // (state machine), and let Friday's session handle composing the draft.
+    if ("thread_ts" in event && event.thread_ts) {
+      noteDrafting(event.channel, event.thread_ts);
+    }
 
     const parsed = parseCommand(text);
 

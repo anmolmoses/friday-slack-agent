@@ -16,6 +16,7 @@ import { withTimeout } from "../lifecycle/timeout.ts";
 import { buildPromptPreamble, invalidateThreadCache } from "../slack/thread-context.ts";
 import { downloadSlackFiles } from "../slack/files.ts";
 import { generateMcpConfig } from "../claude/mcp-config.ts";
+import { buildStandupPreamble } from "../standup/handler.ts";
 import { log as _log } from "../logger.ts";
 
 type SpawnClaudeFn = typeof defaultSpawnClaude;
@@ -84,7 +85,7 @@ export class SessionManager {
     session.lastActivity = Date.now();
     await this.store.set(session.threadId, session);
 
-    this.runClaudeWithAgent(session, event.text, event.ts, event.files, event.routingHint ?? null);
+    this.runClaudeWithAgent(session, event.text, event.ts, event.files, event.routingHint ?? null, event.user);
   }
 
   async getSession(threadId: string): Promise<ThreadSession | undefined> {
@@ -382,6 +383,7 @@ export class SessionManager {
     latestTs?: string,
     files?: SlackFileAttachment[],
     routingHint: RoutingHint | null = null,
+    requestingUser: string | null = null,
   ): Promise<void> {
     try {
       // Inject identity + thread context so Claude knows who it is and what was said
@@ -394,6 +396,16 @@ export class SessionManager {
           this.botUserId,
         );
         prompt = `${preamble}\n\n${prompt}`;
+      }
+
+      // Standup workflow preamble — only when this thread IS the standup
+      // kickoff thread. Tells Claude the format + rules + carry-over context.
+      const standupPreamble = buildStandupPreamble(
+        session.channel,
+        session.threadId,
+      );
+      if (standupPreamble) {
+        prompt = `${standupPreamble}\n\n${prompt}`;
       }
 
       // Pattern-routing hint — tells Friday what she's been proactively pulled
@@ -474,7 +486,7 @@ export class SessionManager {
         if (repo) targetRepoCwd = repo.path;
       }
 
-      const rawHandle = this.spawnClaude(session, prompt, this.config.claude, targetRepoCwd, this.config.slack.botToken, agentDef);
+      const rawHandle = this.spawnClaude(session, prompt, this.config.claude, targetRepoCwd, this.config.slack.botToken, agentDef, requestingUser);
       const handle = withTimeout(rawHandle, this.config.claude.timeoutMs, () => {
         console.warn(`[manager] Claude timed out for thread ${session.threadId}`);
       });
@@ -539,10 +551,16 @@ export class SessionManager {
       const combined = session.pendingMessages
         .map((m) => `[${m.user}]: ${m.text}`)
         .join("\n");
+      // For permission purposes, downgrade to the most-restrictive user in the
+      // batch: if anyone other than Anmol contributed to this drain, treat the
+      // run as non-Anmol so the self-edit guard locks Friday's source.
+      const ANMOL = "U09SZ4DM8TH";
+      const nonAnmol = session.pendingMessages.find((m) => m.user !== ANMOL);
+      const drainUser = nonAnmol ? nonAnmol.user : ANMOL;
       session.pendingMessages = [];
       session.status = "draining";
       await this.store.set(session.threadId, session);
-      this.runClaudeWithAgent(session, combined).catch((err) => {
+      this.runClaudeWithAgent(session, combined, undefined, undefined, null, drainUser).catch((err) => {
         console.error("[manager] Drain failed:", err);
         session.status = "idle";
         this.store.set(session.threadId, session);

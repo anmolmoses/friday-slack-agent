@@ -12,6 +12,7 @@ export function spawnClaude(
   targetRepoCwd?: string,
   botToken?: string,
   agentDef?: AgentDefinition | null,
+  requestingUser?: string | null,
 ): SpawnHandle {
   const args = buildClaudeArgs(session, prompt, config, agentDef);
   const cwd = session.worktreePath ?? targetRepoCwd ?? process.cwd();
@@ -25,6 +26,15 @@ export function spawnClaude(
       FRIDAY_SPAWNED: "1",
       SLACK_CHANNEL: session.channel,
       SLACK_THREAD_TS: session.threadId,
+      // Identifies which Slack user this spawn is acting on behalf of.
+      // The PreToolUse self-edit guard hook in ~/.claude/settings.json
+      // uses this to enforce that only Anmol can mutate Friday's own
+      // source. Empty string when unknown — hook treats that as
+      // non-Anmol (fail-safe).
+      SLACK_USER_ID: requestingUser ?? "",
+      // Lets the self-edit guard tell whether the spawn is rooted in Friday's
+      // own checkout (in which case relative-path writes also need scrutiny).
+      FRIDAY_SPAWN_CWD: cwd,
       FRIDAY_MEMORY_DIR: new URL("../../memory", import.meta.url).pathname,
       ...(botToken ? { SLACK_BOT_TOKEN: botToken } : {}),
     },

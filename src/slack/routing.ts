@@ -9,6 +9,7 @@ export type RoutingHint =
   | "pr-review"
   | "bug-triage"
   | "catchup"
+  | "vibes"
   | null;
 
 export interface ChannelScope {
@@ -105,7 +106,7 @@ export function evaluateRouting(input: RoutingInput): RoutingDecision {
     if (matchesCatchup(text)) {
       return { shouldRoute: true, hint: "catchup", reason: "catchup-in-sandbox" };
     }
-    return { shouldRoute: true, hint: null, reason: "always-reply-channel" };
+    return { shouldRoute: true, hint: "vibes", reason: "always-reply-channel" };
   }
 
   // Auto PR review in the review channel
@@ -190,6 +191,21 @@ export function hintPromptFragment(hint: RoutingHint, text: string): string | nu
       "  * **Pending on**: person → thing they owe",
       "- Keep the tone neutral and factual. No roasting, no filler.",
       "- One message, no follow-ups unless asked.",
+    ].join("\n");
+  }
+
+  if (hint === "vibes") {
+    // Operational signals only — tone, length, emoji, voice all live in
+    // friday-personal/SOUL.md (the personality dial, the casual-check-in
+    // table row, the emoji-as-punctuation rule). Don't re-prescribe them
+    // here or this fragment will fight SOUL.md.
+    return [
+      "## AUTO TRIGGER: VIBES CHANNEL",
+      "This is a vibes / sandbox channel where you chime in by default (e.g. #cafeteria, #fridaytest). You were NOT @mentioned — you're auto-routed because that's the channel norm.",
+      "Operational rules (your voice/tone is already defined in SOUL.md — use it):",
+      "- Do NOT use the `NO_SLACK_MESSAGE` sentinel here. In a vibes channel, staying silent IS the failure mode — engagement is the whole point.",
+      "- Do NOT dispatch sub-Claudes, open worktrees, run lint/tests, or write to memory. This is small-talk, not a task. One reply, ship it.",
+      "- Do NOT repeat yourself. If you already replied upthread, only chime in again if a new message clearly opens a door.",
     ].join("\n");
   }
 

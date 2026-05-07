@@ -165,6 +165,7 @@ if ! "$TMUX_BIN" has-session -t "$TMUX_SESSION" 2>/dev/null; then
     "export SLACK_BOT_TOKEN=$(printf %q "$SLACK_BOT_TOKEN")" Enter \
     "export SLACK_CHANNEL=$(printf %q "$SLACK_CHANNEL")" Enter \
     "export SLACK_THREAD_TS=$(printf %q "$SLACK_THREAD_TS")" Enter \
+    "export SLACK_USER_ID=$(printf %q "${SLACK_USER_ID:-}")" Enter \
     "clear" Enter \
     "printf '\\033[1;35m═══ Friday — Slack thread $SLACK_THREAD_TS ═══\\033[0m\\n'" Enter \
     "printf 'Repo: %s\\n' $(printf %q "$CWD")" Enter \
