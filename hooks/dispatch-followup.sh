@@ -200,6 +200,69 @@ if [ "$IS_DISPATCH" = "1" ]; then
       ;;
   esac
 
+  # Construct the originating thread URL for both the (suppressed) thread
+  # post and the DM-to-Anmol path below.
+  TS_NO_DOT="${SLACK_THREAD_TS/./}"
+  THREAD_URL="https://teamgrowthx.slack.com/archives/$SLACK_CHANNEL/p$TS_NO_DOT"
+
+  # Ask-Anmol sentinel routing — when the dispatched Claude wraps a
+  # blocking question in <ask-anmol>...</ask-anmol> (or <cant-resolve>
+  # or <needs-input>), the question goes to Anmol's DM, NOT to the
+  # originating Slack thread. The thread author (e.g. UD) shouldn't see
+  # Friday's investigation scaffolding — only outcomes. Per Anmol's
+  # 2026-05-07 directive after the recurring-event bug: thread stays
+  # clean until there's a real deliverable (PRs, fix summary, or a
+  # decision to drop). See feedback_dm-on-blocking-decisions.md.
+  ASK_ANMOL_USER="U0AKP5PAWEB"
+  SLACK_DM="$REPO_ROOT/bin/slack-dm.sh"
+  ASK_QUESTION=""
+  if printf "%s" "$FINAL_TEXT" | grep -qiE '<(ask-anmol|cant-resolve|needs-input)>'; then
+    # Extract the inner content. python is more reliable than sed for
+    # multiline / case-insensitive tag matching.
+    ASK_QUESTION="$(printf "%s" "$FINAL_TEXT" | python3 -c '
+import re, sys
+text = sys.stdin.read()
+m = re.search(r"<(ask-anmol|cant-resolve|needs-input)>(.*?)</\1>", text, re.DOTALL | re.IGNORECASE)
+if m:
+    sys.stdout.write(m.group(2).strip())
+')"
+  fi
+
+  if [ -n "$ASK_QUESTION" ]; then
+    # DM Anmol with the question + originating thread URL. Suppress the
+    # thread post — FINAL_TEXT is consumed by the DM, not by the public
+    # reply.
+    DM_BODY="Dispatched Claude is blocked and needs your input.
+
+Thread: $THREAD_URL
+Job: ${FRIDAY_DISPATCH_JOB_ID:-unknown}
+tmux: friday-thread-${FRIDAY_DISPATCH_THREAD_SAFE:-unknown}
+
+Question:
+$ASK_QUESTION
+
+Reply here with the answer; relay it into the tmux session via bin/dispatch-claude.sh, or just paste directly into the live tmux pane."
+    {
+      printf "[followup] job=%s ASK-ANMOL detected (%d chars) — DMing %s, suppressing thread post\n" \
+        "${FRIDAY_DISPATCH_JOB_ID:-unknown}" "${#ASK_QUESTION}" "$ASK_ANMOL_USER"
+      if [ -x "$SLACK_DM" ]; then
+        printf "%s" "$DM_BODY" | "$SLACK_DM" "$ASK_ANMOL_USER" 2>&1 || true
+      else
+        printf "ERROR: %s not executable — falling back to thread post\n" "$SLACK_DM"
+      fi
+      printf "[followup] done %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } >> "$LOG" 2>&1
+
+    # Best-effort fallback: if slack-dm.sh wasn't usable, still post to
+    # the thread so the question doesn't vanish. Otherwise the dispatched
+    # Claude just emitted a question into the void.
+    if [ ! -x "$SLACK_DM" ]; then
+      MSG="$ASK_QUESTION"
+    else
+      FINAL_TEXT=""  # consumed by DM; do not also post to thread
+    fi
+  fi
+
   # Scrape GitHub PR URLs that appeared anywhere in the transcript (assistant
   # text, tool inputs, tool outputs). The transcript JSONL is the most reliable
   # source — older versions used the run log file but that's gone now we run
@@ -207,7 +270,7 @@ if [ "$IS_DISPATCH" = "1" ]; then
   PR_URLS="$(grep -oE 'https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/[0-9]+' "$TRANSCRIPT_PATH" 2>/dev/null | sort -u | head -3)"
 
   # Compose the message
-  MSG="$FINAL_TEXT"
+  MSG="${MSG:-$FINAL_TEXT}"
   if [ -n "$PR_URLS" ]; then
     if [ -n "$MSG" ]; then
       MSG="$MSG"$'\n\nPRs:\n'"$PR_URLS"
@@ -223,10 +286,6 @@ if [ "$IS_DISPATCH" = "1" ]; then
     printf "[followup] job=%s no new assistant text since watermark=%s — skipping post\n" \
       "${FRIDAY_DISPATCH_JOB_ID:-unknown}" "$PREV_COUNT" >> "$LOG" 2>&1
   else
-    # Construct the slack-reply.sh URL form.
-    TS_NO_DOT="${SLACK_THREAD_TS/./}"
-    THREAD_URL="https://teamgrowthx.slack.com/archives/$SLACK_CHANNEL/p$TS_NO_DOT"
-
     {
       printf "[followup] job=%s posting %d-char result to %s\n" \
         "${FRIDAY_DISPATCH_JOB_ID:-unknown}" "${#MSG}" "$THREAD_URL"

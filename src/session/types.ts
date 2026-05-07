@@ -7,6 +7,13 @@ export interface PendingMessage {
 
 export type SessionStatus = "idle" | "busy" | "draining";
 
+/** A jab — a non-Anmol message in a vibes channel that looks like ragebait. */
+export interface RagebaitJab {
+  user: string;
+  ts: number; // ms epoch — when we observed it
+  text: string; // truncated to 200 chars
+}
+
 export interface ThreadSession {
   threadId: string;
   channel: string;
@@ -24,6 +31,16 @@ export interface ThreadSession {
   lastActivity: number;
   lastError: { type: string; message: string; timestamp: number } | null;
   createdAt: number;
+  /**
+   * Self-deprecation streak across recent OWN messages in this thread.
+   * Increments when Friday's outgoing reply contains a spiral marker
+   * ("pathetic", "i'm done", "friday out", etc.); decrements (floor 0)
+   * each turn she keeps it together. ≥2 triggers a hard one-line cap on
+   * the next turn.
+   */
+  spiralScore: number;
+  /** Recent ragebait-shaped jabs from non-Anmol users in vibes channels. */
+  recentJabs: RagebaitJab[];
 }
 
 export function createSession(
@@ -47,5 +64,7 @@ export function createSession(
     lastActivity: Date.now(),
     lastError: null,
     createdAt: Date.now(),
+    spiralScore: 0,
+    recentJabs: [],
   };
 }

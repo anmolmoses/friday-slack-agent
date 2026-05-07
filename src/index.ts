@@ -3,6 +3,8 @@ import { createSlackApp } from "./slack/app.ts";
 import { registerEventHandlers } from "./slack/events.ts";
 import { formatToolStatuses, extractThinkingStatus } from "./slack/formatting.ts";
 import { SlackResponder } from "./slack/responder.ts";
+import { isVibesChannel } from "./slack/routing.ts";
+import { lintVibesResponse } from "./slack/vibes-lint.ts";
 import { SessionManager } from "./session/manager.ts";
 import { FileSessionStore } from "./session/store/file.ts";
 import path from "node:path";
@@ -56,7 +58,18 @@ sessionManager.onResponse = (session, response) => {
   );
   responder.deleteStatus(session.channel, session.threadId);
   if (response && !silent) {
-    responder.postResponse(session.channel, session.threadId, response);
+    let toPost = response;
+    if (isVibesChannel(session.channel)) {
+      const lint = lintVibesResponse(response);
+      if (lint.truncated) {
+        log.warn(
+          "vibes-lint",
+          `thread=${session.threadId} truncated reasons=${lint.reasons.join(",")} from=${response.length} to=${lint.text.length}`,
+        );
+        toPost = lint.text || response.split("\n")[0] || response;
+      }
+    }
+    responder.postResponse(session.channel, session.threadId, toPost);
   }
 };
 

@@ -12,24 +12,47 @@ Triage and fix the bug described below.
 
 $ARGUMENTS
 
-## When to stop and ask Anmol
+## When you do NOT need to ask Anmol
 
-Some situations require Anmol's call before you write code. Whenever you hit one, do BOTH of these — don't pick one:
+**Anmol has pre-authorized the following — work directly, do not "loop Anmol" or wait:**
 
-1. **Reply in the originating Slack thread** with the situation, the options, and what you're doing while you wait (e.g. "holding until I hear back").
-2. **DM Anmol directly** at user ID `U0AKP5PAWEB` so he sees it outside the thread:
-   ```bash
-   bin/slack-dm.sh U0AKP5PAWEB "<short summary + link to thread + the question>"
-   ```
-   Always include the originating Slack thread URL in the DM so he can jump straight there.
+- **UD** (`U01AG6F9W69`) tags Friday in #bugs-backlog or any channel. UD is Anmol's boss; UD reporting bugs IS the trigger. Pick the repo, dispatch, fix, raise PRs.
+- The bug-report bot (`U0ANDM5M62Z`) posts a structured report.
+- Pranav (`U03PNSJ33S5`) or Alok (`U04U7RS55PS`) reports a bug.
 
-Triggers that require this:
-- A `fix/*` branch already exists (local or remote) for this bug, or there's a large WIP branch in the same area that a main-based fix would conflict with or duplicate.
-- The bug surface spans multiple repos and it's not obvious where the root cause lives.
-- The "fix" would require changing product behavior, copy, or design, not just code.
-- You can't reproduce or locate the bug after a real investigation.
+If you find yourself drafting "Looping Anmol — will pick up once he confirms" for a UD-flagged bug, DELETE that message and just start working. Anmol will be happier seeing PRs than seeing you wait.
 
-Don't quietly pick a path when one of these triggers fires.
+## When you DO need to stop and ask Anmol
+
+When one of these triggers fires, do **NOT** post the question in the originating Slack thread (the bug-backlog thread, the PR review thread, etc.). The thread author isn't Anmol and shouldn't see investigation scaffolding — only outcomes.
+
+**Instead, wrap your blocking question in a sentinel as your final assistant text:**
+
+```
+<ask-anmol>
+What I tried: <one-line summary of investigation steps you ran>
+Why I'm blocked: <the specific obstacle>
+Question: <what you need from Anmol to proceed>
+</ask-anmol>
+```
+
+`hooks/dispatch-followup.sh` detects this and:
+- DMs Anmol (`U0AKP5PAWEB`) the question + originating thread URL + the tmux session name.
+- **Suppresses** the post to the originating Slack thread — it stays clean.
+
+Synonym tags also recognized (case-insensitive): `<cant-resolve>...</cant-resolve>`, `<needs-input>...</needs-input>`. Pick whichever fits.
+
+Triggers for this routing:
+- A `fix/*` branch already exists for this bug, or there's a large WIP branch you'd conflict with.
+- The "fix" would change product behavior, copy, or design — not just code.
+- The bug spans multiple repos and the root cause isn't clear *after* a real investigation (escalation ladder in step 5).
+- You hit step 7 of the escalation ladder (asking for HAR / repro / which client) — DM Anmol, NOT the thread.
+- You're confident you need a credential, login, env var, or product decision Anmol controls.
+
+**Do NOT use `<ask-anmol>` for:**
+- A clean deliverable (PRs raised, fix shipped) — that goes to the originating thread as before.
+- A question the *thread* itself needs answered (e.g. UD asks "what was the root cause?" — reply in-thread).
+- Reporting tooling problems with a workaround already in motion — log to the dispatch log, keep working.
 
 ## Available repos (LOCAL — never clone)
 
@@ -64,11 +87,37 @@ When the repo has a `/raise-pr` command, prefer it over hand-rolling the PR via 
 1. **Read the bug**
    - Fetch the Slack thread (`bin/slack-read-url.sh <url>` from `/Users/anmol/Documents/GitHub/Friday`).
    - Read every reply, every screenshot description, every linked file. Don't stop at the first message.
+   - **List the thread's attachments before composing your dispatch prompt:**
+     ```bash
+     ls /tmp/friday-files/$SLACK_THREAD_TS/ 2>/dev/null
+     ```
+     Friday's main spawn auto-downloads Slack files to that path — but they are NOT auto-forwarded to the dispatched Claude. **You** must include the absolute paths in the dispatch prompt with a section like:
+     ```
+     ## Thread attachments (READ THESE FIRST)
+     - /tmp/friday-files/<thread_ts>/<file>.png — screenshot of the bug surface
+     ```
+     and explicitly tell the dispatched Claude to `Read` images and grep/`cat` HAR/JSON files BEFORE grep'ing the codebase. Forgetting this leaves the dispatched Claude blind — see the recurring-event incident on 2026-05-07 for the failure mode.
 
-2. **Classify**
+2. **Classify + route — apply the hard rules below in order. First match wins. Don't second-guess.**
+
    - Severity: critical / high / medium / low
    - Domain: backend / frontend / mobile / iOS
-   - Pick the target repo from the list above based on concrete signals in the report (UI surface, error stacks, URLs, mentioned screens). State your reasoning in one sentence before moving on.
+   - Repo (apply in order, **stop at first match**):
+
+     1. **Strong frontend signals → `gx-client-next`** (web) / `gx-client-expo` (mobile). Triggers (any one):
+        - The reporter says **"FE"**, **"the UI"**, **"the form"**, **"the modal"**, **"the screen"**, **"the page"**, **"the toast"**, **"the button"**, **"the dropdown"**, **"after refresh"**, **"on save"**, **"after submit"**.
+        - The reporter says **"X disappears"**, **"X is gone"**, **"X gets removed"**, **"value resets"**, **"field empties"** — almost always a render/cache/payload bug on the client.
+        - A `growthx.club/...` URL is shared with no backend stack trace.
+        - Phrases like **"why FE removes it"** / **"why FE says it's saved"** are explicit FE accusations. **Do NOT investigate backend first to "rule it out."** Go to the named repo.
+     2. **Mobile** ("iOS app", "Android app", "Expo", "React Native", phone status bar in screenshot) → `gx-client-expo`.
+     3. **Native iOS** ("Swift", "Xcode", "TestFlight") → `GrowthX-iOS`.
+     4. **Admin** ("/admin/...", "admin panel") → `gx-admin-client`.
+     5. **Strong backend signals → `gx-backend`**: 500 error, stack trace, "API returns wrong X", missing field in API response, webhook didn't fire, cron didn't run, payment didn't process, DB write didn't happen.
+     6. **"Logs" / "New Relic" / "Sentry" alone is NOT a routing signal.** Logs are a *data source*, not a hint about which repo to fix. The bug can be on the FE even when the user wants you to read backend logs.
+
+   If the reporter explicitly names a repo or surface, that overrides the rules above.
+
+   State your routing reasoning in ONE sentence before moving on.
 
 3. **Check for prior work**
    ```bash
@@ -86,10 +135,17 @@ When the repo has a `/raise-pr` command, prefer it over hand-rolling the PR via 
    git checkout -b fix/<short-kebab-slug>
    ```
 
-5. **Investigate**
-   - Read the repo's `CLAUDE.md` (if present) before touching code — it encodes conventions you must follow.
-   - Trace the bug to its root cause. Read the surrounding code, not just the line that looks wrong.
-   - For UI bugs: identify the actual component file, check both the component and its container/wrapper for layering (z-index, stacking context) and theme tokens (dark mode classes / CSS vars).
+5. **Investigate — escalation ladder. Don't bail on grep alone.**
+
+   1. **Grep** for the literal symptom keywords from the report.
+   2. **Read repo `CLAUDE.md`** — conventions you must follow.
+   3. **Trace the flow**: component → submit handler → payload → API → response → render. For UI bugs check both the component and its container/wrapper (z-index, stacking, theme tokens, dark-mode classes).
+   4. **Reproduce.** If grep didn't surface it, reproduce the bug. Web flows: use the `playwright` MCP. Use the screenshot the user uploaded — it's saved at `/tmp/friday-files/<thread_ts>/`. Read it.
+   5. **MCP fetch.** If the report names a specific event/user/document (e.g. an event ID, a user email), fetch it via the `mongodb` MCP and read the actual fields. Don't theorize about schema — read the document. The mongodb MCP is read-only; no risk.
+   6. **Recent commits.** `git log --oneline -50` and `git log --since='2 weeks ago' -p -- <file-or-dir>` near the bug surface.
+   7. **Only if 1–6 all return nothing**, post back asking for HAR / repro steps / screenshots. **Be honest about what you tried.** Do NOT post "Cannot reproduce — premise contradicts the codebase" if you only got to step 1. That's investigative theatre.
+
+   **If a needed MCP isn't available** in your environment (e.g. mongodb / playwright / new-relic / github), **say so explicitly**: "I don't have MongoDB MCP here, can't fetch the event directly — falling back to schema inspection." Don't dress up tool-blindness as "the feature doesn't exist." That's the failure mode that wasted UD's time on the recurring-event bug (2026-05-07).
 
 6. **Fix**
    - Smallest change that fixes the root cause. No drive-by refactors.

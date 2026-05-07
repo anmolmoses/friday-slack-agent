@@ -64,6 +64,34 @@ THREAD_SAFE="${SLACK_THREAD_TS//./-}"
 TMUX_SESSION="friday-thread-$THREAD_SAFE"
 SESSION_ID_FILE="$STATE_DIR/$THREAD_SAFE.sessionid"
 
+# Per-thread MCP config — Friday's main spawn writes this via
+# generateMcpConfig() in src/claude/mcp-config.ts. Without `--mcp-config`,
+# the dispatched tmux Claude has no access to mongodb / friday-slack /
+# friday-status MCPs and falls back to grep-and-bail on any bug that
+# needs real data lookup. May 2026 cafeteria/recurring-event incident:
+# UD reported a bug, dispatched Claude said "no MongoDB MCP available
+# in this env" and bailed. Fix: pass the same per-thread config Friday
+# uses, generating it inline if it doesn't exist yet (e.g. on a manual
+# dispatch with no preceding main spawn).
+MCP_DIR="/tmp/friday-mcp"
+MCP_CONFIG="$MCP_DIR/$SLACK_THREAD_TS.json"
+if [ ! -f "$MCP_CONFIG" ]; then
+  BUN_BIN="${BUN_BIN:-$(command -v bun || true)}"
+  if [ -n "$BUN_BIN" ]; then
+    (
+      cd "$REPO_ROOT"
+      "$BUN_BIN" -e "import { generateMcpConfig } from './src/claude/mcp-config.ts'; generateMcpConfig('$SLACK_THREAD_TS');" 2>&1 \
+        || echo "Warning: failed to generate MCP config for thread $SLACK_THREAD_TS — dispatched Claude will run without MCPs" >&2
+    ) >/dev/null
+  else
+    echo "Warning: bun not found, can't generate MCP config — dispatched Claude will run without MCPs (mongodb/friday-slack/friday-status)" >&2
+  fi
+fi
+MCP_ARG=""
+if [ -f "$MCP_CONFIG" ]; then
+  MCP_ARG=" --mcp-config $(printf %q "$MCP_CONFIG")"
+fi
+
 JOB_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 LOG_FILE="$LOG_DIR/$JOB_ID.log"
 PROMPT_FILE="$STATE_DIR/$THREAD_SAFE-$(date -u +%H%M%S%N || date -u +%H%M%S).prompt"
@@ -95,7 +123,7 @@ start_claude_in_pane() {
     resume_arg=" --resume $(cat "$SESSION_ID_FILE")"
   fi
   "$TMUX_BIN" send-keys -t "$TMUX_SESSION" \
-    "claude --permission-mode bypassPermissions${resume_arg}" Enter
+    "claude --permission-mode bypassPermissions${MCP_ARG}${resume_arg}" Enter
   if ! wait_for_claude_ready; then
     echo "Error: Claude REPL did not become ready within 20s in tmux session $TMUX_SESSION" >&2
     return 1
