@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Memory CLI wrapper — dispatches to bun src/memory/cli.ts
+set -euo pipefail
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export PATH="$HOME/.bun/bin:$PATH"
+exec bun run "$REPO_ROOT/src/memory/cli.ts" "$@"

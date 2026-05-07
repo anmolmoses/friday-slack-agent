@@ -1,0 +1,32 @@
+node_modules/
+dist/
+.env
+logs/
+*.log
+.DS_Store
+
+# Claude Code runtime
+.claude/worktrees/
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+
+# Personal/local persona content — each developer brings their own.
+# The whole openclaw/ tree is gitignored except the README that explains
+# what to put there. (Use `openclaw/*` not `openclaw/` so the negation
+# below still works — git skips traversal of an ignored directory.)
+openclaw/*
+!openclaw/README.md
+
+# Memory (long-term, daily notes, runbooks). The runbooks/ folder ships
+# with starter templates; everything else is per-developer.
+memory/*
+!memory/.gitkeep
+!memory/runbooks/
+
+# Local sandbox / scratch (anything you keep just for yourself)
+friday-personal/
+
+# Misc runtime
+.playwright-mcp/
+learnings.md
+standup.json

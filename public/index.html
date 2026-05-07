@@ -1,0 +1,1032 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Friday - Control Panel</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d1117;--surface:#161b22;--border:#30363d;
+  --text:#e6edf3;--text-secondary:#8b949e;
+  --accent:#58a6ff;--green:#3fb950;--blue:#58a6ff;
+  --yellow:#d29922;--red:#f85149;
+  --font:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  --mono:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;
+}
+html,body{height:100%;overflow:hidden}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.5}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* Header */
+.header{
+  position:fixed;top:0;left:0;right:0;height:56px;z-index:100;
+  background:var(--surface);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;padding:0 24px;
+}
+.header-logo{font-size:18px;font-weight:700;letter-spacing:1px;color:var(--text)}
+.header-logo span{color:var(--accent)}
+.tab-bar{display:flex;gap:4px}
+.tab-btn{
+  background:none;border:1px solid transparent;border-radius:6px;
+  color:var(--text-secondary);font-family:var(--font);font-size:13px;font-weight:500;
+  padding:6px 16px;cursor:pointer;transition:all .15s;
+}
+.tab-btn:hover{color:var(--text);background:rgba(88,166,255,.08)}
+.tab-btn.active{color:var(--text);background:rgba(88,166,255,.15);border-color:var(--accent)}
+
+/* Tab content */
+.tab-content{
+  position:fixed;top:56px;left:0;right:0;bottom:0;
+  overflow-y:auto;display:none;
+}
+.tab-content.active{display:block}
+
+/* Dashboard Tab */
+.dashboard{padding:20px 24px}
+.health-bar{
+  display:flex;flex-wrap:wrap;gap:12px;margin-bottom:20px;
+}
+.health-card{
+  background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  padding:12px 18px;display:flex;flex-direction:column;gap:2px;min-width:120px;
+}
+.health-card .label{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-secondary)}
+.health-card .value{font-size:20px;font-weight:600}
+.badge{
+  display:inline-flex;align-items:center;gap:5px;padding:2px 10px;border-radius:12px;
+  font-size:12px;font-weight:600;
+}
+.badge-green{background:rgba(63,185,80,.15);color:var(--green)}
+.badge-blue{background:rgba(88,166,255,.15);color:var(--blue)}
+.badge-yellow{background:rgba(210,153,34,.15);color:var(--yellow)}
+.badge-red{background:rgba(248,81,73,.15);color:var(--red)}
+.session-badges{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+.section-title{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--text-secondary);margin-bottom:10px}
+
+/* Sessions table */
+.table-wrap{
+  background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  overflow:hidden;margin-bottom:20px;
+}
+table{width:100%;border-collapse:collapse}
+th{
+  text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;
+  color:var(--text-secondary);font-weight:600;padding:10px 14px;
+  border-bottom:1px solid var(--border);background:rgba(0,0,0,.2);
+}
+td{padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px;color:var(--text-secondary)}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(88,166,255,.04)}
+.status-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.status-dot.idle{background:var(--green)}
+.status-dot.busy{background:var(--blue)}
+.status-dot.draining{background:var(--yellow)}
+.status-dot.error,.status-dot.errors{background:var(--red)}
+.truncate{max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block}
+.error-indicator{color:var(--red);margin-left:6px;font-size:11px}
+
+/* Logs */
+.logs-wrap{
+  background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  overflow:hidden;
+}
+.logs-scroll{max-height:320px;overflow-y:auto;padding:4px 0}
+.log-entry{
+  display:flex;align-items:flex-start;gap:10px;padding:3px 14px;font-size:12px;
+  font-family:var(--mono);line-height:1.6;
+}
+.log-entry:hover{background:rgba(255,255,255,.02)}
+.log-ts{color:var(--text-secondary);white-space:nowrap;flex-shrink:0;min-width:72px}
+.log-tag{
+  background:var(--border);color:var(--text-secondary);border-radius:4px;
+  padding:0 6px;font-size:11px;white-space:nowrap;flex-shrink:0;
+}
+.log-msg{color:var(--text);word-break:break-word}
+.log-entry.warn .log-msg{color:var(--yellow)}
+.log-entry.error .log-msg{color:var(--red)}
+.empty-state{padding:40px;text-align:center;color:var(--text-secondary);font-size:13px}
+
+/* Chat Tab */
+.chat-tab{display:none;position:fixed;top:56px;left:0;right:0;bottom:0}
+.chat-tab.active{display:flex}
+.chat-sidebar{
+  width:250px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;overflow:hidden;
+}
+.chat-sidebar-header{padding:12px;border-bottom:1px solid var(--border)}
+.new-chat-btn{
+  width:100%;padding:8px;background:var(--accent);color:#fff;border:none;border-radius:6px;
+  font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;
+}
+.new-chat-btn:hover{opacity:.9}
+.chat-list{flex:1;overflow-y:auto;padding:4px 0}
+.chat-list-item{
+  padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--border);
+  transition:background .1s;
+}
+.chat-list-item:hover{background:rgba(88,166,255,.06)}
+.chat-list-item.active{background:rgba(88,166,255,.12);border-left:2px solid var(--accent)}
+.chat-list-item .preview{
+  font-size:12px;color:var(--text-secondary);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;max-width:220px;
+}
+.chat-list-item .time{font-size:11px;color:var(--text-secondary);margin-top:2px}
+
+.chat-main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.chat-messages{flex:1;overflow-y:auto;padding:20px 24px;display:flex;flex-direction:column;gap:12px}
+.msg-row{display:flex}
+.msg-row.user{justify-content:flex-end}
+.msg-row.assistant{justify-content:flex-start}
+.msg-bubble{
+  max-width:70%;padding:10px 14px;border-radius:12px;font-size:13px;line-height:1.6;
+  word-wrap:break-word;overflow-wrap:break-word;
+}
+.msg-row.user .msg-bubble{background:#1f6feb;color:#fff;border-bottom-right-radius:4px}
+.msg-row.assistant .msg-bubble{background:var(--surface);border:1px solid var(--border);border-bottom-left-radius:4px}
+.msg-bubble p{margin:0 0 8px}
+.msg-bubble p:last-child{margin-bottom:0}
+.msg-bubble code{
+  font-family:var(--mono);font-size:12px;background:rgba(0,0,0,.3);
+  padding:1px 5px;border-radius:3px;
+}
+.msg-bubble pre{
+  background:rgba(0,0,0,.4);border-radius:6px;padding:10px 12px;
+  overflow-x:auto;margin:8px 0;font-size:12px;line-height:1.5;
+}
+.msg-bubble pre code{background:none;padding:0}
+.msg-bubble ul,.msg-bubble ol{padding-left:20px;margin:6px 0}
+.msg-bubble li{margin:2px 0}
+.msg-bubble h1,.msg-bubble h2,.msg-bubble h3,.msg-bubble h4{margin:12px 0 6px;font-weight:600}
+.msg-bubble h1{font-size:18px}
+.msg-bubble h2{font-size:16px}
+.msg-bubble h3{font-size:14px}
+.msg-bubble h4{font-size:13px}
+.msg-bubble strong{font-weight:600}
+.msg-bubble em{font-style:italic}
+.tool-badge{
+  display:inline-flex;align-items:center;gap:4px;
+  background:var(--border);color:var(--text-secondary);border-radius:10px;
+  padding:2px 10px;font-size:11px;font-family:var(--mono);margin:4px 0;
+}
+.thinking-block{
+  font-style:italic;color:var(--text-secondary);opacity:.7;font-size:12px;
+  border-left:2px solid var(--border);padding-left:10px;margin:6px 0;
+}
+
+.chat-input-area{
+  padding:12px 24px 16px;border-top:1px solid var(--border);
+  background:var(--surface);display:flex;gap:10px;align-items:flex-end;
+}
+.chat-input{
+  flex:1;background:var(--bg);border:1px solid var(--border);border-radius:8px;
+  color:var(--text);font-family:var(--font);font-size:13px;padding:10px 12px;
+  resize:none;outline:none;min-height:38px;max-height:120px;line-height:1.4;
+}
+.chat-input:focus{border-color:var(--accent)}
+.chat-input::placeholder{color:var(--text-secondary)}
+.chat-input:disabled{opacity:.5;cursor:not-allowed}
+.send-btn{
+  background:var(--accent);color:#fff;border:none;border-radius:8px;
+  width:38px;height:38px;cursor:pointer;display:flex;align-items:center;justify-content:center;
+  flex-shrink:0;
+}
+.send-btn:hover{opacity:.9}
+.send-btn:disabled{opacity:.4;cursor:not-allowed}
+.send-btn svg{width:18px;height:18px}
+.chat-empty{
+  flex:1;display:flex;align-items:center;justify-content:center;
+  color:var(--text-secondary);font-size:14px;flex-direction:column;gap:8px;
+}
+
+/* Memory Tab */
+.memory-tab{display:none;position:fixed;top:56px;left:0;right:0;bottom:0}
+.memory-tab.active{display:flex}
+.memory-sidebar{
+  width:300px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border);
+  overflow-y:auto;padding:12px 0;
+}
+.tree-item{display:flex;align-items:center;gap:6px;padding:5px 12px;cursor:pointer;font-size:13px;color:var(--text-secondary)}
+.tree-item:hover{background:rgba(88,166,255,.06);color:var(--text)}
+.tree-item.active{background:rgba(88,166,255,.1);color:var(--accent)}
+.tree-item .icon{width:16px;flex-shrink:0;text-align:center;font-size:12px}
+.tree-folder{font-weight:500;color:var(--text)}
+.tree-folder .icon{color:var(--yellow)}
+.tree-children{display:none}
+.tree-children.open{display:block}
+.tree-indent{padding-left:20px}
+
+.memory-content{flex:1;overflow-y:auto;padding:24px 32px}
+.memory-header{
+  font-size:13px;color:var(--text-secondary);margin-bottom:16px;padding-bottom:10px;
+  border-bottom:1px solid var(--border);font-family:var(--mono);
+}
+.memory-body{line-height:1.7;font-size:14px}
+.memory-body h1,.memory-body h2,.memory-body h3,.memory-body h4{margin:16px 0 8px;font-weight:600}
+.memory-body h1{font-size:22px;border-bottom:1px solid var(--border);padding-bottom:6px}
+.memory-body h2{font-size:18px}
+.memory-body h3{font-size:15px}
+.memory-body p{margin:0 0 12px}
+.memory-body ul,.memory-body ol{padding-left:24px;margin:8px 0}
+.memory-body li{margin:4px 0}
+.memory-body code{font-family:var(--mono);font-size:12px;background:rgba(0,0,0,.3);padding:1px 5px;border-radius:3px}
+.memory-body pre{background:rgba(0,0,0,.4);border-radius:6px;padding:12px 14px;overflow-x:auto;margin:10px 0}
+.memory-body pre code{background:none;padding:0;font-size:12px;line-height:1.5}
+.memory-body strong{font-weight:600}
+.memory-body em{font-style:italic}
+.memory-body a{color:var(--accent)}
+.memory-empty{
+  flex:1;display:flex;align-items:center;justify-content:center;
+  color:var(--text-secondary);font-size:14px;
+}
+.memory-body blockquote{
+  border-left:3px solid var(--border);padding-left:12px;margin:8px 0;color:var(--text-secondary);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:#484f58}
+
+/* Error banner */
+.error-banner{
+  background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.3);border-radius:6px;
+  padding:10px 14px;color:var(--red);font-size:13px;margin-bottom:16px;display:none;
+}
+.error-banner.visible{display:block}
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="header-logo"><span>FRIDAY</span></div>
+  <nav class="tab-bar">
+    <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
+    <button class="tab-btn" data-tab="chat">Chat</button>
+    <button class="tab-btn" data-tab="memory">Memory</button>
+  </nav>
+</header>
+
+<!-- Dashboard -->
+<div id="tab-dashboard" class="tab-content active">
+  <div class="dashboard">
+    <div id="dash-error" class="error-banner"></div>
+    <div class="health-bar" id="health-bar"></div>
+    <div class="section-title">Active Sessions</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:60px">Status</th>
+            <th>Thread ID</th>
+            <th>Agent</th>
+            <th>Repo</th>
+            <th>Last Activity</th>
+            <th style="width:70px">Pending</th>
+          </tr>
+        </thead>
+        <tbody id="sessions-body">
+          <tr><td colspan="6" class="empty-state">Loading sessions...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="section-title">Recent Logs</div>
+    <div class="logs-wrap">
+      <div class="logs-scroll" id="logs-scroll">
+        <div class="empty-state">Loading logs...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Chat -->
+<div id="tab-chat" class="chat-tab">
+  <div class="chat-sidebar">
+    <div class="chat-sidebar-header">
+      <button class="new-chat-btn" id="new-chat-btn">+ New Chat</button>
+    </div>
+    <div class="chat-list" id="chat-list"></div>
+  </div>
+  <div class="chat-main" id="chat-main">
+    <div class="chat-empty" id="chat-empty">
+      <div style="font-size:28px;opacity:.4">&#9679; &#9679; &#9679;</div>
+      <div>Start a new chat or select an existing one</div>
+    </div>
+    <div class="chat-messages" id="chat-messages" style="display:none"></div>
+    <div class="chat-input-area" id="chat-input-area" style="display:none">
+      <textarea class="chat-input" id="chat-input" rows="1" placeholder="Send a message..."></textarea>
+      <button class="send-btn" id="send-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Memory -->
+<div id="tab-memory" class="memory-tab">
+  <div class="memory-sidebar" id="memory-sidebar">
+    <div class="empty-state">Loading files...</div>
+  </div>
+  <div class="memory-content" id="memory-content">
+    <div class="memory-empty">Select a file to view its contents</div>
+  </div>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+// -- State --
+var activeTab = 'dashboard';
+var dashInterval = null;
+var chatSessions = {};  // sessionId -> {id, messages:[], lastActivity, status}
+var activeChatId = null;
+var currentSSE = null;
+var chatWaiting = false;
+var memoryFiles = [];
+var activeMemoryFile = null;
+
+// -- Utils --
+function $(sel, ctx){ return (ctx||document).querySelector(sel) }
+function $$(sel, ctx){ return Array.from((ctx||document).querySelectorAll(sel)) }
+
+function timeAgo(ts){
+  if(!ts) return '-';
+  var d = typeof ts === 'string' ? new Date(ts) : new Date(ts);
+  var sec = Math.floor((Date.now() - d.getTime())/1000);
+  if(sec < 5) return 'just now';
+  if(sec < 60) return sec + 's ago';
+  var min = Math.floor(sec/60);
+  if(min < 60) return min + 'm ago';
+  var hr = Math.floor(min/60);
+  if(hr < 24) return hr + 'h ago';
+  var day = Math.floor(hr/24);
+  return day + 'd ago';
+}
+
+function formatUptime(sec){
+  if(!sec && sec !== 0) return '-';
+  sec = Math.floor(sec);
+  if(sec < 60) return sec + 's';
+  var m = Math.floor(sec/60);
+  if(m < 60) return m + 'm';
+  var h = Math.floor(m/60);
+  m = m % 60;
+  if(h < 24) return h + 'h ' + m + 'm';
+  var d = Math.floor(h/24);
+  h = h % 24;
+  return d + 'd ' + h + 'h';
+}
+
+function esc(s){
+  if(!s) return '';
+  var d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function uuid(){
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c){
+    var r = Math.random()*16|0;
+    return (c === 'x' ? r : (r&0x3|0x8)).toString(16);
+  });
+}
+
+// -- Markdown renderer --
+function renderMarkdown(text){
+  if(!text) return '';
+  var html = esc(text);
+  // code blocks
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, function(_, lang, code){
+    return '<pre><code>' + code + '</code></pre>';
+  });
+  // inline code (must come after code blocks)
+  html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  // headers
+  html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  // bold and italic
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  // links
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // blockquotes
+  html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+  // unordered lists: convert consecutive lines starting with - into <ul>
+  html = html.replace(/(^|\n)((?:- .+\n?)+)/g, function(_, before, block){
+    var items = block.trim().split('\n').map(function(line){
+      return '<li>' + line.replace(/^- /, '') + '</li>';
+    }).join('');
+    return before + '<ul>' + items + '</ul>';
+  });
+  // ordered lists: convert consecutive lines starting with number. into <ol>
+  html = html.replace(/(^|\n)((?:\d+\. .+\n?)+)/g, function(_, before, block){
+    var items = block.trim().split('\n').map(function(line){
+      return '<li>' + line.replace(/^\d+\. /, '') + '</li>';
+    }).join('');
+    return before + '<ol>' + items + '</ol>';
+  });
+  // paragraphs: split by double newline
+  html = html.replace(/\n\n/g, '</p><p>');
+  // single newlines to <br> (but not inside pre/ul/ol)
+  html = html.replace(/\n/g, '<br>');
+  // wrap in paragraph if not starting with a block element
+  if(!/^<(h[1-4]|ul|ol|pre|blockquote|p)/.test(html)){
+    html = '<p>' + html + '</p>';
+  }
+  // clean up empty paragraphs
+  html = html.replace(/<p><\/p>/g, '');
+  return html;
+}
+
+// -- API helpers --
+function api(path, opts){
+  return fetch(path, opts).then(function(r){
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  });
+}
+
+// -- Tab switching --
+function switchTab(tab){
+  activeTab = tab;
+  $$('.tab-btn').forEach(function(b){ b.classList.toggle('active', b.dataset.tab === tab) });
+  $('#tab-dashboard').classList.toggle('active', tab === 'dashboard');
+  $('#tab-dashboard').style.display = tab === 'dashboard' ? 'block' : 'none';
+  $('#tab-chat').classList.toggle('active', tab === 'chat');
+  $('#tab-memory').classList.toggle('active', tab === 'memory');
+  if(tab === 'dashboard'){
+    startDashRefresh();
+  } else {
+    stopDashRefresh();
+  }
+  if(tab === 'chat'){
+    renderChatList();
+  }
+  if(tab === 'memory' && memoryFiles.length === 0){
+    loadMemoryTree();
+  }
+}
+
+$$('.tab-btn').forEach(function(b){
+  b.addEventListener('click', function(){ switchTab(b.dataset.tab) });
+});
+
+// ============================================================
+// DASHBOARD
+// ============================================================
+function fetchDashboard(){
+  var errEl = $('#dash-error');
+  Promise.all([
+    api('/api/health').catch(function(e){ return {_error: e.message} }),
+    api('/api/sessions').catch(function(e){ return {_error: e.message, sessions:[]} }),
+    api('/api/logs?tail=30').catch(function(e){ return {_error: e.message, entries:[]} })
+  ]).then(function(results){
+    var health = results[0];
+    var sessions = results[1];
+    var logs = results[2];
+
+    if(health._error && sessions._error && logs._error){
+      errEl.textContent = 'Failed to connect to server: ' + health._error;
+      errEl.classList.add('visible');
+      return;
+    }
+    errEl.classList.remove('visible');
+
+    renderHealth(health);
+    renderSessions(sessions.sessions || []);
+    renderLogs(logs.entries || []);
+  });
+}
+
+function renderHealth(h){
+  if(h._error){
+    $('#health-bar').innerHTML = '<div class="health-card"><div class="label">Status</div><div class="value" style="color:var(--red)">Offline</div></div>';
+    return;
+  }
+  var s = h.sessions || {};
+  var html = '';
+  html += '<div class="health-card"><div class="label">Status</div><div class="value" style="color:var(--green)">Online</div></div>';
+  html += '<div class="health-card"><div class="label">Uptime</div><div class="value">' + formatUptime(h.uptime) + '</div></div>';
+  html += '<div class="health-card"><div class="label">Version</div><div class="value" style="font-size:14px">' + esc(h.version || '-') + '</div></div>';
+  html += '<div class="health-card"><div class="label">Repos</div><div class="value">' + (h.repos ? h.repos.length : 0) + '</div></div>';
+  html += '<div class="health-card"><div class="label">Sessions</div><div class="value"><div class="session-badges">';
+  html += '<span class="badge badge-green">' + (s.idle||0) + ' idle</span>';
+  html += '<span class="badge badge-blue">' + (s.busy||0) + ' busy</span>';
+  html += '<span class="badge badge-yellow">' + (s.draining||0) + ' draining</span>';
+  html += '<span class="badge badge-red">' + (s.errors||0) + ' errors</span>';
+  html += '</div></div></div>';
+  $('#health-bar').innerHTML = html;
+}
+
+function renderSessions(sessions){
+  var body = $('#sessions-body');
+  if(!sessions.length){
+    body.innerHTML = '<tr><td colspan="6" class="empty-state">No active sessions</td></tr>';
+    return;
+  }
+  sessions.sort(function(a,b){
+    return new Date(b.lastActivity||0) - new Date(a.lastActivity||0);
+  });
+  body.innerHTML = sessions.map(function(s){
+    var statusClass = s.status || 'idle';
+    var threadDisplay = s.threadId ? s.threadId.substring(0,12) : '-';
+    var errorHtml = s.lastError ? '<span class="error-indicator" title="' + esc(s.lastError) + '">&#9888;</span>' : '';
+    return '<tr>' +
+      '<td><span class="status-dot ' + esc(statusClass) + '"></span>' + errorHtml + '</td>' +
+      '<td><span class="truncate" title="' + esc(s.threadId||'') + '">' + esc(threadDisplay) + '</span></td>' +
+      '<td>' + esc(s.agentType || '-') + '</td>' +
+      '<td>' + esc(s.targetRepo || '-') + '</td>' +
+      '<td>' + timeAgo(s.lastActivity) + '</td>' +
+      '<td>' + (s.pendingMessages || 0) + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+function renderLogs(entries){
+  var wrap = $('#logs-scroll');
+  if(!entries.length){
+    wrap.innerHTML = '<div class="empty-state">No recent logs</div>';
+    return;
+  }
+  wrap.innerHTML = entries.map(function(e){
+    var level = (e.level||'info').toLowerCase();
+    var cls = level === 'warn' ? ' warn' : level === 'error' ? ' error' : '';
+    var ts = '';
+    if(e.timestamp){
+      var d = new Date(e.timestamp);
+      ts = (d.getHours()+'').padStart(2,'0') + ':' + (d.getMinutes()+'').padStart(2,'0') + ':' + (d.getSeconds()+'').padStart(2,'0');
+    }
+    return '<div class="log-entry' + cls + '">' +
+      '<span class="log-ts">' + ts + '</span>' +
+      (e.tag ? '<span class="log-tag">' + esc(e.tag) + '</span>' : '') +
+      '<span class="log-msg">' + esc(e.message) + '</span>' +
+      '</div>';
+  }).join('');
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+function startDashRefresh(){
+  stopDashRefresh();
+  fetchDashboard();
+  dashInterval = setInterval(fetchDashboard, 5000);
+}
+function stopDashRefresh(){
+  if(dashInterval){ clearInterval(dashInterval); dashInterval = null; }
+}
+
+// ============================================================
+// CHAT
+// ============================================================
+function loadChatFromStorage(){
+  try {
+    var raw = localStorage.getItem('friday-chats');
+    if(raw){
+      chatSessions = JSON.parse(raw);
+    }
+  } catch(e){}
+}
+
+function saveChatToStorage(){
+  try {
+    localStorage.setItem('friday-chats', JSON.stringify(chatSessions));
+  } catch(e){}
+}
+
+function renderChatList(){
+  var list = $('#chat-list');
+  var ids = Object.keys(chatSessions).sort(function(a,b){
+    return (chatSessions[b].lastActivity||0) - (chatSessions[a].lastActivity||0);
+  });
+  if(!ids.length){
+    list.innerHTML = '<div class="empty-state">No chats yet</div>';
+    return;
+  }
+  list.innerHTML = ids.map(function(id){
+    var s = chatSessions[id];
+    var preview = '';
+    if(s.messages && s.messages.length){
+      var first = s.messages[0];
+      preview = (first.text||'').substring(0,50);
+    }
+    var isActive = id === activeChatId;
+    return '<div class="chat-list-item' + (isActive?' active':'') + '" data-id="' + id + '">' +
+      '<div class="preview">' + esc(preview || 'New chat') + '</div>' +
+      '<div class="time">' + timeAgo(s.lastActivity) + '</div>' +
+      '</div>';
+  }).join('');
+
+  $$('.chat-list-item', list).forEach(function(el){
+    el.addEventListener('click', function(){
+      openChat(el.dataset.id);
+    });
+  });
+}
+
+function openChat(id){
+  activeChatId = id;
+  var session = chatSessions[id];
+  if(!session) return;
+
+  $('#chat-empty').style.display = 'none';
+  $('#chat-messages').style.display = 'flex';
+  $('#chat-input-area').style.display = 'flex';
+
+  renderMessages(session.messages || []);
+  renderChatList();
+
+  if(!currentSSE || currentSSE._sessionId !== id){
+    connectSSE(id);
+  }
+
+  var input = $('#chat-input');
+  if(chatWaiting){
+    input.disabled = true;
+    input.placeholder = 'Thinking...';
+  } else {
+    input.disabled = false;
+    input.placeholder = 'Send a message...';
+    input.focus();
+  }
+}
+
+function renderMessages(messages){
+  var container = $('#chat-messages');
+  container.innerHTML = '';
+  messages.forEach(function(msg){
+    appendMessageDOM(msg);
+  });
+  container.scrollTop = container.scrollHeight;
+}
+
+function appendMessageDOM(msg){
+  var container = $('#chat-messages');
+  var row = document.createElement('div');
+  row.className = 'msg-row ' + (msg.role || 'assistant');
+
+  if(msg.type === 'tool'){
+    var badge = document.createElement('div');
+    badge.className = 'tool-badge';
+    badge.textContent = '[' + (msg.tool||'Tool') + '] ' + (msg.text||'');
+    row.className = 'msg-row assistant';
+    row.appendChild(badge);
+  } else if(msg.type === 'thinking'){
+    var block = document.createElement('div');
+    block.className = 'thinking-block';
+    block.textContent = msg.text || '';
+    row.className = 'msg-row assistant';
+    row.appendChild(block);
+  } else {
+    var bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+    if(msg.role === 'user'){
+      bubble.textContent = msg.text || '';
+    } else {
+      bubble.innerHTML = renderMarkdown(msg.text || '');
+    }
+    row.appendChild(bubble);
+  }
+
+  container.appendChild(row);
+  container.scrollTop = container.scrollHeight;
+  return row;
+}
+
+function getOrCreateAssistantBubble(){
+  var container = $('#chat-messages');
+  var last = container.lastElementChild;
+  if(last && last.classList.contains('assistant') && last.querySelector('.msg-bubble')){
+    return last.querySelector('.msg-bubble');
+  }
+  var msg = {role:'assistant', text:'', type:'text'};
+  var session = chatSessions[activeChatId];
+  if(session) session.messages.push(msg);
+  var row = appendMessageDOM(msg);
+  return row.querySelector('.msg-bubble');
+}
+
+function connectSSE(sessionId){
+  if(currentSSE){
+    currentSSE.close();
+    currentSSE = null;
+  }
+  var es = new EventSource('/api/chat/stream?sessionId=' + encodeURIComponent(sessionId));
+  es._sessionId = sessionId;
+  es._accum = '';
+  currentSSE = es;
+
+  es.addEventListener('init', function(e){
+    try {
+      var data = JSON.parse(e.data);
+      if(data.claudeSessionId && chatSessions[sessionId]){
+        chatSessions[sessionId].claudeSessionId = data.claudeSessionId;
+        saveChatToStorage();
+      }
+    } catch(err){}
+  });
+
+  es.addEventListener('text', function(e){
+    if(sessionId !== activeChatId) return;
+    try {
+      var data = JSON.parse(e.data);
+      var text = data.text || data.content || '';
+      es._accum += text;
+      var bubble = getOrCreateAssistantBubble();
+      bubble.innerHTML = renderMarkdown(es._accum);
+      $('#chat-messages').scrollTop = $('#chat-messages').scrollHeight;
+    } catch(err){}
+  });
+
+  es.addEventListener('tool_use', function(e){
+    if(sessionId !== activeChatId) return;
+    try {
+      var data = JSON.parse(e.data);
+      // Finalize current accumulator into the last message
+      if(es._accum){
+        var session = chatSessions[sessionId];
+        if(session && session.messages.length){
+          session.messages[session.messages.length-1].text = es._accum;
+        }
+        es._accum = '';
+      }
+      var toolMsg = {role:'assistant', type:'tool', tool:data.tool||data.name||'Tool', text:data.input||data.path||''};
+      if(chatSessions[sessionId]) chatSessions[sessionId].messages.push(toolMsg);
+      appendMessageDOM(toolMsg);
+    } catch(err){}
+  });
+
+  es.addEventListener('thinking', function(e){
+    if(sessionId !== activeChatId) return;
+    try {
+      var data = JSON.parse(e.data);
+      var thinkMsg = {role:'assistant', type:'thinking', text:data.text||data.content||''};
+      appendMessageDOM(thinkMsg);
+    } catch(err){}
+  });
+
+  es.addEventListener('result', function(e){
+    if(sessionId !== activeChatId) return;
+    try {
+      var data = JSON.parse(e.data);
+      if(es._accum){
+        var bubble = getOrCreateAssistantBubble();
+        bubble.innerHTML = renderMarkdown(es._accum);
+        var session = chatSessions[sessionId];
+        if(session && session.messages.length){
+          session.messages[session.messages.length-1].text = es._accum;
+        }
+        es._accum = '';
+      }
+    } catch(err){}
+    saveChatToStorage();
+  });
+
+  es.addEventListener('done', function(){
+    if(es._accum && sessionId === activeChatId){
+      var session = chatSessions[sessionId];
+      if(session && session.messages.length){
+        session.messages[session.messages.length-1].text = es._accum;
+      }
+      es._accum = '';
+    }
+    setChatWaiting(false);
+    saveChatToStorage();
+  });
+
+  es.onopen = function(){ es._connected = true; };
+
+  es.addEventListener('error', function(e){
+    // Custom error event from our server (has e.data)
+    if(e.data){
+      try {
+        var data = JSON.parse(e.data);
+        if(data.message && sessionId === activeChatId){
+          var errMsg = {role:'assistant', type:'text', text:'Error: ' + data.message};
+          if(chatSessions[sessionId]) chatSessions[sessionId].messages.push(errMsg);
+          appendMessageDOM(errMsg);
+        }
+      } catch(err){}
+    }
+    setChatWaiting(false);
+    saveChatToStorage();
+  });
+
+  es.onerror = function(){
+    // SSE connection lost -- will auto-reconnect by default
+  };
+}
+
+function setChatWaiting(waiting){
+  chatWaiting = waiting;
+  var input = $('#chat-input');
+  var btn = $('#send-btn');
+  input.disabled = waiting;
+  btn.disabled = waiting;
+  input.placeholder = waiting ? 'Thinking...' : 'Send a message...';
+  if(!waiting) input.focus();
+}
+
+function sendMessage(){
+  if(chatWaiting || !activeChatId) return;
+  var input = $('#chat-input');
+  var text = input.value.trim();
+  if(!text) return;
+
+  input.value = '';
+  input.style.height = 'auto';
+
+  var session = chatSessions[activeChatId];
+  if(!session) return;
+
+  var msg = {role:'user', type:'text', text:text};
+  session.messages.push(msg);
+  session.lastActivity = Date.now();
+  appendMessageDOM(msg);
+  saveChatToStorage();
+
+  setChatWaiting(true);
+
+  // Reset accumulator for new response
+  if(currentSSE) currentSSE._accum = '';
+
+  api('/api/chat', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({sessionId: activeChatId, message: text})
+  }).catch(function(err){
+    var errMsg = {role:'assistant', type:'text', text:'Failed to send: ' + err.message};
+    session.messages.push(errMsg);
+    appendMessageDOM(errMsg);
+    setChatWaiting(false);
+    saveChatToStorage();
+  });
+
+  renderChatList();
+}
+
+$('#new-chat-btn').addEventListener('click', function(){
+  var id = uuid();
+  chatSessions[id] = {
+    id: id,
+    messages: [],
+    lastActivity: Date.now(),
+    status: 'idle'
+  };
+  saveChatToStorage();
+  openChat(id);
+  renderChatList();
+});
+
+$('#send-btn').addEventListener('click', sendMessage);
+
+$('#chat-input').addEventListener('keydown', function(e){
+  if(e.key === 'Enter' && !e.shiftKey){
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+// Auto-grow textarea
+$('#chat-input').addEventListener('input', function(){
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+
+// ============================================================
+// MEMORY
+// ============================================================
+function loadMemoryTree(){
+  api('/api/memory').then(function(data){
+    memoryFiles = data.files || [];
+    renderMemoryTree(memoryFiles);
+  }).catch(function(){
+    $('#memory-sidebar').innerHTML = '<div class="empty-state">Failed to load files</div>';
+  });
+}
+
+function renderMemoryTree(files){
+  // Build a nested tree structure from flat paths
+  var tree = {};
+  files.forEach(function(path){
+    var parts = path.split('/');
+    var node = tree;
+    parts.forEach(function(part, i){
+      if(i === parts.length - 1){
+        if(!node._files) node._files = [];
+        node._files.push({name:part, path:path});
+      } else {
+        if(!node[part]) node[part] = {};
+        node = node[part];
+      }
+    });
+  });
+
+  var sidebar = $('#memory-sidebar');
+  sidebar.innerHTML = '';
+  renderTreeNode(tree, sidebar, 0);
+}
+
+function renderTreeNode(node, parent, depth){
+  // Folders first
+  var folders = Object.keys(node).filter(function(k){ return k !== '_files' }).sort();
+  var files = (node._files || []).sort(function(a,b){ return a.name.localeCompare(b.name) });
+
+  folders.forEach(function(name){
+    var wrapper = document.createElement('div');
+    var item = document.createElement('div');
+    item.className = 'tree-item tree-folder';
+    item.style.paddingLeft = (12 + depth * 20) + 'px';
+    item.innerHTML = '<span class="icon">&#9660;</span> ' + esc(name);
+
+    var children = document.createElement('div');
+    children.className = 'tree-children open';
+
+    item.addEventListener('click', function(){
+      var isOpen = children.classList.contains('open');
+      children.classList.toggle('open');
+      item.querySelector('.icon').innerHTML = isOpen ? '&#9654;' : '&#9660;';
+    });
+
+    wrapper.appendChild(item);
+    wrapper.appendChild(children);
+    parent.appendChild(wrapper);
+    renderTreeNode(node[name], children, depth + 1);
+  });
+
+  files.forEach(function(file){
+    var item = document.createElement('div');
+    item.className = 'tree-item';
+    item.style.paddingLeft = (12 + depth * 20) + 'px';
+    item.dataset.path = file.path;
+    item.innerHTML = '<span class="icon" style="color:var(--text-secondary)">&#9643;</span> ' + esc(file.name);
+    item.addEventListener('click', function(){
+      loadMemoryFile(file.path);
+      $$('.tree-item').forEach(function(el){ el.classList.remove('active') });
+      item.classList.add('active');
+    });
+    parent.appendChild(item);
+  });
+
+  if(!folders.length && !files.length && depth === 0){
+    parent.innerHTML = '<div class="empty-state">No memory files found</div>';
+  }
+}
+
+function loadMemoryFile(path){
+  activeMemoryFile = path;
+  var content = $('#memory-content');
+  content.innerHTML = '<div class="memory-empty">Loading...</div>';
+
+  api('/api/memory/' + encodeURIComponent(path)).then(function(data){
+    var fileContent = data.content || '';
+    var isJSON = path.endsWith('.json');
+
+    var html = '<div class="memory-header">' + esc(path) + '</div>';
+    html += '<div class="memory-body">';
+    if(isJSON){
+      try {
+        html += '<pre><code>' + esc(JSON.stringify(JSON.parse(fileContent), null, 2)) + '</code></pre>';
+      } catch(e){
+        html += '<pre><code>' + esc(fileContent) + '</code></pre>';
+      }
+    } else {
+      html += renderMarkdown(fileContent);
+    }
+    html += '</div>';
+    content.innerHTML = html;
+  }).catch(function(err){
+    content.innerHTML = '<div class="memory-empty" style="color:var(--red)">Failed to load file: ' + esc(err.message) + '</div>';
+  });
+}
+
+// ============================================================
+// INIT
+// ============================================================
+loadChatFromStorage();
+
+// Also try to load server-side chat sessions
+api('/api/chat/sessions').then(function(data){
+  (data.sessions || []).forEach(function(s){
+    if(s.id && !chatSessions[s.id]){
+      chatSessions[s.id] = {
+        id: s.id,
+        messages: s.history || [],
+        lastActivity: s.lastActivity ? new Date(s.lastActivity).getTime() : Date.now(),
+        status: s.status || 'idle'
+      };
+    }
+  });
+  saveChatToStorage();
+}).catch(function(){});
+
+startDashRefresh();
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Thin shim so the HUD hotkey / any keyboard shortcut can call the voice CLI by
+# an absolute path without knowing about bun or the repo layout.
+#
+#   friday-voice start|toggle|stop|status
+#
+# The HUD overlay registers ctrl+option+F, ctrl+option+cmd+F, and
+# cmd+option+space natively and calls this file.
+set -euo pipefail
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+LOG_DIR="/tmp/friday-voice"
+LOG_FILE="$LOG_DIR/shortcut.log"
+HOTKEY_STAMP_FILE="${FRIDAY_VOICE_HOTKEY_STAMP_FILE:-$LOG_DIR/hotkey-toggle-$(id -u 2>/dev/null || printf unknown).stamp}"
+HOTKEY_DEBOUNCE_MS="${FRIDAY_VOICE_HOTKEY_DEBOUNCE_MS:-1200}"
+
+now_ms() {
+  if command -v perl >/dev/null 2>&1; then
+    perl -MTime::HiRes=time -e 'printf "%d\n", time() * 1000'
+  else
+    printf '%s000\n' "$(date +%s)"
+  fi
+}
+
+debounce_hotkey_toggle() {
+  if [[ "${1:-}" != "toggle" || "${FRIDAY_VOICE_HOTKEY:-}" != "1" ]]; then
+    return 0
+  fi
+
+  local now last elapsed
+  now="$(now_ms)"
+  last="$(cat "$HOTKEY_STAMP_FILE" 2>/dev/null || printf '0')"
+  if [[ "$now" =~ ^[0-9]+$ && "$last" =~ ^[0-9]+$ ]]; then
+    elapsed=$((now - last))
+    if (( elapsed >= 0 && elapsed < HOTKEY_DEBOUNCE_MS )); then
+      printf '[%s] friday-voice hotkey %s ignored duplicate (%sms)\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${FRIDAY_VOICE_HOTKEY_SOURCE:-unknown}" "$elapsed" >> "$LOG_FILE"
+      exit 0
+    fi
+  fi
+  if ! printf '%s\n' "$now" > "$HOTKEY_STAMP_FILE" 2>/dev/null; then
+    printf '[%s] friday-voice hotkey %s debounce stamp unwritable: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${FRIDAY_VOICE_HOTKEY_SOURCE:-unknown}" "$HOTKEY_STAMP_FILE" >> "$LOG_FILE"
+  fi
+}
+
+resolve_bun() {
+  if [[ -n "${BUN_BIN:-}" && -x "${BUN_BIN:-}" ]]; then
+    printf '%s\n' "$BUN_BIN"
+    return 0
+  fi
+
+  local candidate
+  for candidate in \
+    "$HOME/.bun/bin/bun" \
+    "$HOME/.bun/bin/bun" \
+    "/opt/homebrew/bin/bun" \
+    "/usr/local/bin/bun"
+  do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  command -v bun 2>/dev/null || return 1
+}
+
+mkdir -p "$LOG_DIR"
+debounce_hotkey_toggle "${1:-}"
+BUN_BIN="$(resolve_bun || true)"
+if [[ -z "$BUN_BIN" ]]; then
+  {
+    printf '[%s] friday-voice shortcut failed: bun not found\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'PATH=%s\n' "${PATH:-}"
+    printf 'HOME=%s\n' "${HOME:-}"
+  } >> "$LOG_FILE"
+  exit 127
+fi
+
+# Terminal.app can keep an old OPENAI_API_KEY in its process environment even
+# after the repo .env is rotated. Bun does not override inherited variables when
+# auto-loading .env, so prefer the repo key for this launcher by default.
+if [[ "${FRIDAY_VOICE_ALLOW_ENV_OPENAI_KEY:-}" != "1" && -f "$REPO_ROOT/.env" ]] && grep -q '^OPENAI_API_KEY=' "$REPO_ROOT/.env"; then
+  unset OPENAI_API_KEY
+fi
+
+printf '[%s] friday-voice %s via %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${*:-start}" "$BUN_BIN" >> "$LOG_FILE"
+exec "$BUN_BIN" run "$REPO_ROOT/src/voice/cli.ts" "$@"

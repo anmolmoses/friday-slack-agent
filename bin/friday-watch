@@ -1,0 +1,373 @@
+#!/usr/bin/env bash
+# friday-watch — single-pane live view of everything Friday is doing.
+#
+# `dispatch-claude.sh` already opens a Terminal window with the tmux REPL,
+# so dispatched work is visible. The blind spot is `claude -p` — Friday's
+# per-message main spawns. They run as Bun child processes with no UI; you
+# only see them via stream-json events that get logged. This watch tool
+# reconstructs a live per-thread view from those log lines and exposes
+# every other state surface in one screen.
+#
+# What you see:
+#   ┌── HEADER: bun pid/uptime, socket activity age, claude child count,
+#   │           scheduler next-fire deltas, recent warns
+#   ├── BUSY THREADS: per-thread panels for every active spawn —
+#   │                 last 5 tool calls, latest assistant snippet,
+#   │                 status verb, idle age
+#   ├── DISPATCH (tmux): list active tmux sessions + last activity
+#   ├── RECENT: rolling tail of [event] / [response] / [silent-fail] /
+#   │           [routing] / [vibes-lint] / [ragebait] / [error]
+#   └── LOG TAIL: full color-coded stream
+#
+# Usage:
+#   bin/friday-watch                       # full dashboard
+#   bin/friday-watch --no-status           # log tail only (clean view)
+#   bin/friday-watch <thread_ts>           # filter every stream to one thread
+#
+# Quit with Ctrl-C.
+
+set -u
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+LOGS_DIR="$REPO_ROOT/logs"
+DISPATCH_DIR="$LOGS_DIR/dispatch"
+STATUS_FILE="/tmp/friday-status.json"
+SESSIONS_FILE="$REPO_ROOT/memory/sessions.json"
+
+THREAD_FILTER=""
+SHOW_STATUS=1
+REFRESH_SECS=2
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --no-status)   SHOW_STATUS=0; shift ;;
+    --refresh)     shift; REFRESH_SECS="$1"; shift ;;
+    -h|--help)
+      sed -n '2,30p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    *)
+      if printf "%s" "$1" | grep -qE '^[0-9]+\.[0-9]+$'; then
+        THREAD_FILTER="$1"
+      else
+        echo "Unknown arg: $1 (use -h for help)" >&2
+        exit 1
+      fi
+      shift ;;
+  esac
+done
+
+# ANSI colors
+if [ -t 1 ]; then
+  C_RST=$'\033[0m';   C_DIM=$'\033[2m';     C_BOLD=$'\033[1m'
+  C_RED=$'\033[1;31m'; C_GRN=$'\033[0;32m'; C_YEL=$'\033[0;33m'
+  C_BLU=$'\033[0;34m'; C_MAG=$'\033[0;35m'; C_CYN=$'\033[0;36m'
+  C_BG_BLU=$'\033[44;97m'
+else
+  C_RST=''; C_DIM=''; C_BOLD=''; C_RED=''; C_GRN=''
+  C_YEL=''; C_BLU=''; C_MAG=''; C_CYN=''; C_BG_BLU=''
+fi
+
+today_log() { echo "$LOGS_DIR/$(date -u +%Y-%m-%d).log"; }
+
+latest_dispatch_log() { ls -t "$DISPATCH_DIR"/*.log 2>/dev/null | grep -v memory.log | head -1; }
+
+# Right-trim a string to fit terminal width (default 130 cols).
+fit() {
+  local cols="${COLUMNS:-130}"
+  awk -v w="$cols" '{ if (length($0) > w) print substr($0,1,w-1)"…"; else print $0 }'
+}
+
+# ─── HEADER: process / socket / schedulers / warns ───────────────────────────
+print_header() {
+  local now main_log
+  now="$(date -u +%H:%M:%S)"
+  main_log="$(today_log)"
+
+  printf "%s═══ friday-watch ═══%s  %s%s UTC%s" "$C_BG_BLU" "$C_RST" "$C_DIM" "$now" "$C_RST"
+  if [ -n "$THREAD_FILTER" ]; then
+    printf "  %sfilter=%s%s" "$C_YEL" "$THREAD_FILTER" "$C_RST"
+  fi
+  printf "\n"
+
+  # Bun process
+  local pid etime
+  pid="$(pgrep -f 'bun src/index.ts' | head -1)"
+  if [ -n "$pid" ]; then
+    etime="$(ps -p "$pid" -o etime= 2>/dev/null | tr -d ' ')"
+    printf "  %s●%s bun pid=%s up=%s" "$C_GRN" "$C_RST" "$pid" "$etime"
+  else
+    printf "  %s●%s no bun process — Friday is DOWN" "$C_RED" "$C_RST"
+  fi
+
+  # Socket activity age (from latest socket-related log line)
+  if [ -f "$main_log" ]; then
+    local last_socket_age
+    last_socket_age="$(grep -E '\[socket\]|\[event\]|\[response\]' "$main_log" 2>/dev/null | tail -1 \
+      | awk '{print $1}')"
+    if [ -n "$last_socket_age" ]; then
+      local age_sec
+      age_sec="$(python3 -c "
+import sys, datetime
+ts = '$last_socket_age'.rstrip('Z')
+try:
+    t = datetime.datetime.fromisoformat(ts).replace(tzinfo=datetime.timezone.utc)
+    print(int((datetime.datetime.now(datetime.timezone.utc) - t).total_seconds()))
+except: print(-1)
+")"
+      if [ "$age_sec" -ge 0 ] 2>/dev/null; then
+        local color
+        if [ "$age_sec" -lt 60 ]; then color="$C_GRN"
+        elif [ "$age_sec" -lt 180 ]; then color="$C_YEL"
+        else color="$C_RED"; fi
+        printf "  %ssocket idle=%ss%s" "$color" "$age_sec" "$C_RST"
+      fi
+    fi
+  fi
+  printf "\n"
+
+  # Children: distinguish claude -p (FRIDAY_SPAWNED) vs dispatched tmux
+  local main_claude dispatch_tmux
+  main_claude="$(pgrep -fc 'claude.*--mcp-config /tmp/friday-mcp' 2>/dev/null || echo 0)"
+  dispatch_tmux="$(/opt/homebrew/bin/tmux list-sessions 2>/dev/null | grep -c '^friday-thread-' || true)"
+  printf "  %schildren:%s claude-p=%s tmux=%s" "$C_DIM" "$C_RST" "$main_claude" "${dispatch_tmux:-0}"
+  printf "\n"
+
+  # Schedulers — next-fire deltas in human form
+  if [ -f "$main_log" ]; then
+    printf "  %sschedulers:%s" "$C_DIM" "$C_RST"
+    for sched in standup dumps memory; do
+      local line mins
+      line="$(grep "${sched}/scheduler" "$main_log" 2>/dev/null | tail -1)"
+      mins="$(printf "%s" "$line" | grep -oE 'in [0-9]+m' | head -1 | tr -d ' minutes')"
+      if [ -n "$mins" ]; then
+        local human="${mins}m"
+        if [ "$mins" -gt 60 ] 2>/dev/null; then
+          human="$((mins / 60))h$((mins % 60))m"
+        fi
+        printf "  %s=%s" "$sched" "$human"
+      fi
+    done
+    printf "\n"
+  fi
+
+  # Recent WARN/ERROR (last 2)
+  if [ -f "$main_log" ]; then
+    local warns
+    warns="$(grep -E '\[(WARN|ERROR)\]' "$main_log" 2>/dev/null | tail -2)"
+    if [ -n "$warns" ]; then
+      printf "  %srecent warns:%s\n" "$C_YEL" "$C_RST"
+      printf "%s\n" "$warns" | sed "s|^|    ${C_DIM}|; s|\$|${C_RST}|" | fit
+    fi
+  fi
+}
+
+# ─── BUSY THREADS panel ──────────────────────────────────────────────────────
+# Per-thread, pull last N tool calls + last assistant snippet from today's log.
+print_busy_threads() {
+  local main_log
+  main_log="$(today_log)"
+  [ ! -f "$main_log" ] && return
+  [ ! -f "$STATUS_FILE" ] && return
+
+  printf "\n%s┌─ active threads ─────────────────────────────────────────────────────%s\n" "$C_BLU" "$C_RST"
+
+  python3 - "$STATUS_FILE" "$main_log" "$THREAD_FILTER" <<'PY'
+import json, sys, re, time, os
+from datetime import datetime, timezone
+
+status_path, main_log, flt = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(status_path) as f: d = json.load(f)
+except Exception as e:
+    print(f"  status read err: {e}"); sys.exit(0)
+sessions = d.get("sessions", {})
+if flt:
+    sessions = {k: v for k, v in sessions.items() if k == flt}
+
+# Read last ~2000 lines of main log; group by thread
+try:
+    # Tail efficiently — only last 200KB
+    sz = os.path.getsize(main_log)
+    with open(main_log, "rb") as f:
+        f.seek(max(0, sz - 200_000))
+        tail = f.read().decode("utf-8", errors="ignore")
+except Exception:
+    tail = ""
+
+per_thread = {}  # tid -> list of (ts, kind, text)
+LINE = re.compile(
+    r'^(?P<ts>\S+)\s+\[(?P<lvl>INFO|WARN|ERROR)\]\s+\[(?P<tag>[^\]]+)\]\s+thread=(?P<tid>[\d.]+)\s+(?P<rest>.*)$'
+)
+for line in tail.splitlines():
+    m = LINE.match(line)
+    if not m: continue
+    tid = m.group("tid")
+    if tid not in sessions: continue
+    per_thread.setdefault(tid, []).append((m.group("ts"), m.group("tag"), m.group("rest")))
+
+C_DIM = "\033[2m"; C_BOLD = "\033[1m"; C_RST = "\033[0m"
+C_GRN = "\033[0;32m"; C_YEL = "\033[0;33m"; C_RED = "\033[1;31m"
+C_CYN = "\033[0;36m"; C_MAG = "\033[0;35m"
+
+now = datetime.now(timezone.utc)
+
+# Order: busy first, then draining, then most-recent idle
+def sort_key(item):
+    tid, s = item
+    rank = {"busy": 0, "draining": 1, "idle": 2}.get(s.get("status"), 3)
+    return (rank, -(s.get("lastActivity") or 0))
+ordered = sorted(sessions.items(), key=sort_key)
+
+# Show all busy + first 3 idle for context
+busy = [it for it in ordered if it[1].get("status") in ("busy", "draining")]
+idle = [it for it in ordered if it[1].get("status") == "idle"][:3]
+
+if not busy and not idle:
+    print(f"  {C_DIM}(no sessions){C_RST}")
+
+for tid, s in (busy + idle):
+    status = s.get("status", "?")
+    chan = s.get("channel", "?")
+    pending = s.get("pendingCount", 0)
+    agent = s.get("agentType") or "default"
+    last_ms = s.get("lastActivity") or 0
+    age = max(0, int(time.time() - last_ms / 1000)) if last_ms else 0
+    age_str = f"{age}s" if age < 60 else f"{age//60}m{age%60:02d}s"
+    if status == "busy": marker = f"{C_GRN}▶{C_RST}"
+    elif status == "draining": marker = f"{C_YEL}⤓{C_RST}"
+    else: marker = f"{C_DIM}·{C_RST}"
+
+    print(f"  {marker} {C_BOLD}{tid}{C_RST}  {chan}  {status} agent={agent} pending={pending} idle={age_str}")
+
+    # Last 5 events for this thread
+    lines = per_thread.get(tid, [])
+    last_n = lines[-5:] if status != "idle" else lines[-3:]
+    if not last_n:
+        print(f"      {C_DIM}(no recent log lines){C_RST}")
+        continue
+    for ts, tag, rest in last_n:
+        # Compact ts to HH:MM:SS
+        try:
+            t = datetime.fromisoformat(ts.rstrip("Z")).replace(tzinfo=timezone.utc)
+            tshort = t.strftime("%H:%M:%S")
+        except Exception:
+            tshort = ts[-12:]
+        # Truncate rest
+        rest_short = rest if len(rest) < 100 else rest[:97] + "…"
+        # Color tag
+        if tag == "tool": tag_color = C_DIM
+        elif tag == "response": tag_color = C_GRN
+        elif tag == "silent-fail": tag_color = C_RED
+        elif tag == "event": tag_color = C_CYN
+        elif tag == "session": tag_color = C_MAG
+        elif tag == "routing": tag_color = "\033[0;34m"  # blue
+        else: tag_color = ""
+        print(f"      {C_DIM}{tshort}{C_RST} {tag_color}[{tag:>9}]{C_RST} {rest_short}")
+PY
+  printf "%s└──────────────────────────────────────────────────────────────────────%s\n" "$C_BLU" "$C_RST"
+}
+
+# ─── DISPATCH (tmux) panel ──────────────────────────────────────────────────
+print_dispatch_panel() {
+  local sessions
+  sessions="$(/opt/homebrew/bin/tmux list-sessions -F '#{session_name} #{session_created} #{session_activity}' 2>/dev/null | grep '^friday-thread-' || true)"
+  [ -z "$sessions" ] && return
+
+  printf "\n%s┌─ dispatch (tmux) ────────────────────────────────────────────────────%s\n" "$C_MAG" "$C_RST"
+  local count=0
+  printf "%s" "$sessions" | sort -k3 -nr | head -5 | while read -r name created activity; do
+    local now_epoch idle_sec idle_str
+    now_epoch="$(date +%s)"
+    idle_sec=$((now_epoch - activity))
+    if [ "$idle_sec" -lt 60 ]; then idle_str="${idle_sec}s"
+    elif [ "$idle_sec" -lt 3600 ]; then idle_str="$((idle_sec/60))m"
+    else idle_str="$((idle_sec/3600))h"
+    fi
+    # Strip the "friday-thread-" prefix; convert dashes back for the thread ts
+    local thread="${name#friday-thread-}"
+    thread="${thread%-*}.${thread##*-}"
+    printf "  %s tmux=%s thread=%s idle=%s\n" "$C_DIM·$C_RST" "$name" "$thread" "$idle_str"
+  done
+  local total
+  total="$(printf "%s\n" "$sessions" | wc -l | tr -d ' ')"
+  if [ "$total" -gt 5 ]; then
+    printf "  %s… and %d more%s\n" "$C_DIM" "$((total - 5))" "$C_RST"
+  fi
+  printf "%s└──────────────────────────────────────────────────────────────────────%s\n" "$C_MAG" "$C_RST"
+}
+
+# ─── RECENT activity (cross-thread) panel ───────────────────────────────────
+print_recent_activity() {
+  local main_log
+  main_log="$(today_log)"
+  [ ! -f "$main_log" ] && return
+
+  printf "\n%s┌─ recent activity (last 8 significant) ───────────────────────────────%s\n" "$C_CYN" "$C_RST"
+  grep -E '\[(event|response|silent-fail|routing|vibes-lint|ragebait|spiral|standup|ASK-OWNER)\]' "$main_log" 2>/dev/null \
+    | { if [ -n "$THREAD_FILTER" ]; then grep -F "$THREAD_FILTER"; else cat; fi; } \
+    | tail -8 \
+    | sed -E "s/^([0-9-]+)T([0-9:]+)\.[0-9]+Z/${C_DIM}\\2${C_RST}/" \
+    | sed "s|^|  |" \
+    | fit
+  printf "%s└──────────────────────────────────────────────────────────────────────%s\n" "$C_CYN" "$C_RST"
+}
+
+# ─── Color the live log stream by tag ────────────────────────────────────────
+colorize() {
+  while IFS= read -r line; do
+    if [ -n "$THREAD_FILTER" ] && ! printf "%s" "$line" | grep -qF "$THREAD_FILTER"; then
+      continue
+    fi
+    case "$line" in
+      *"[ERROR]"*)        printf "%s%s%s\n" "$C_RED"  "$line" "$C_RST" ;;
+      *"silent-fail"*)    printf "%s%s%s\n" "$C_RED"  "$line" "$C_RST" ;;
+      *"[WARN]"*)         printf "%s%s%s\n" "$C_YEL"  "$line" "$C_RST" ;;
+      *"[response]"*)     printf "%s%s%s\n" "$C_GRN"  "$line" "$C_RST" ;;
+      *"[event]"*)        printf "%s%s%s\n" "$C_CYN"  "$line" "$C_RST" ;;
+      *"[session]"*)      printf "%s%s%s\n" "$C_MAG"  "$line" "$C_RST" ;;
+      *"[tool]"*)         printf "%s%s%s\n" "$C_DIM"  "$line" "$C_RST" ;;
+      *"[boot]"*)         printf "%s%s%s%s\n" "$C_BOLD" "$C_BLU" "$line" "$C_RST" ;;
+      *"[routing]"*)      printf "%s%s%s\n" "$C_BLU"  "$line" "$C_RST" ;;
+      *"ASK-OWNER"*|*"ask-owner"*) printf "%s%s%s%s\n" "$C_BOLD" "$C_YEL" "$line" "$C_RST" ;;
+      *)                  printf "%s\n" "$line" ;;
+    esac
+  done
+}
+
+# ─── Status refresh loop ─────────────────────────────────────────────────────
+status_loop() {
+  while true; do
+    clear
+    print_header
+    print_busy_threads
+    print_dispatch_panel
+    print_recent_activity
+    printf "\n%s── live log tail (Ctrl-C to quit) ─────────────────────────────────────%s\n" "$C_DIM" "$C_RST"
+    sleep "$REFRESH_SECS"
+  done
+}
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+trap 'kill $(jobs -p) 2>/dev/null; clear; exit 0' INT TERM
+
+if [ "$SHOW_STATUS" = "1" ] && [ -t 1 ]; then
+  status_loop &
+  sleep 0.6
+fi
+
+MAIN_LOG="$(today_log)"
+if [ ! -f "$MAIN_LOG" ]; then
+  echo "Today's log doesn't exist yet: $MAIN_LOG"
+  exit 1
+fi
+
+# Tail the latest dispatch log alongside (background) — so memory-extractor /
+# dispatched runs surface in the live tail too.
+DISPATCH_LOG="$(latest_dispatch_log || true)"
+if [ -n "$DISPATCH_LOG" ] && [ -f "$DISPATCH_LOG" ]; then
+  ( tail -F -n 0 "$DISPATCH_LOG" 2>/dev/null \
+    | while IFS= read -r l; do printf "%s[dispatch]%s %s\n" "$C_MAG" "$C_RST" "$l"; done \
+    | colorize ) &
+fi
+
+# Foreground: tail the main log forever
+tail -F -n 0 "$MAIN_LOG" | colorize

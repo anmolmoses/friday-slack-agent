@@ -1,0 +1,1917 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>friday — control plane</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  /* ─── Theme tokens ───────────────────────────────────────────────────────
+     Tokyo-night-ish palette. Single source of truth — change here, propagate. */
+  :root {
+    --bg-0: #0b0e13;
+    --bg-1: #11151c;
+    --bg-2: #161b24;
+    --bg-3: #1c222d;
+    --bg-4: #232a36;
+    --bg-5: #2d3441;
+    --line: #2a3140;
+    --line-strong: #3a4253;
+    --fg: #e8eaed;
+    --fg-2: #c8cdd4;
+    --fg-3: #8b9098;
+    --fg-4: #6b7280;
+    --fg-5: #4a5260;
+    --accent: #7aa2f7;
+    --accent-2: #bb9af7;
+    --green: #9ece6a;
+    --green-soft: rgba(158,206,106,0.14);
+    --green-strong: rgba(158,206,106,0.5);
+    --yellow: #e0af68;
+    --yellow-soft: rgba(224,175,104,0.14);
+    --yellow-strong: rgba(224,175,104,0.5);
+    --red: #f7768e;
+    --red-soft: rgba(247,118,142,0.14);
+    --red-strong: rgba(247,118,142,0.5);
+    --cyan: #7dcfff;
+    --magenta: #c0a8e0;
+    --mono: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
+    --shadow: 0 4px 24px rgba(0,0,0,0.4);
+    --radius: 10px;
+    --radius-sm: 6px;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg-0); color: var(--fg);
+    font-family: var(--sans); font-size: 13.5px; line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font-family: inherit; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ─── App shell ───────────────────────────────────────────────────────── */
+  .app { display: grid; grid-template-rows: auto auto 1fr; height: 100vh; }
+
+  /* Top bar — sticky brand + global stats */
+  .topbar {
+    background: linear-gradient(180deg, var(--bg-1) 0%, var(--bg-0) 100%);
+    border-bottom: 1px solid var(--line);
+    padding: 10px 22px;
+    display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  }
+  .brand {
+    font-weight: 700; letter-spacing: 0.04em; font-size: 13px;
+    display: flex; align-items: baseline; gap: 6px;
+  }
+  .brand .name { color: var(--accent); }
+  .brand .sep { color: var(--fg-5); }
+  .brand .role { color: var(--accent-2); font-weight: 500; }
+  .stat { display: flex; align-items: center; gap: 5px; color: var(--fg-3); font-family: var(--mono); font-size: 11.5px; }
+  .stat b { color: var(--fg); font-weight: 600; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+  .dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot.yellow { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
+  .dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
+  .pulse { animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+  .updated { margin-left: auto; color: var(--fg-4); font-family: var(--mono); font-size: 11px; }
+
+  /* Tab bar */
+  .tabs {
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--line);
+    padding: 0 22px;
+    display: flex; gap: 0;
+  }
+  .tab {
+    background: transparent; border: 0; cursor: pointer;
+    color: var(--fg-3); padding: 12px 18px; font-size: 13px; font-weight: 500;
+    border-bottom: 2px solid transparent;
+    display: flex; align-items: center; gap: 8px;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .tab:hover { color: var(--fg); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab .badge {
+    background: var(--bg-3); color: var(--fg-3); font-size: 10.5px;
+    font-family: var(--mono); padding: 1px 7px; border-radius: 10px;
+  }
+  .tab.active .badge { background: var(--accent); color: var(--bg-0); }
+
+  /* Tab panels */
+  .panel { display: none; padding: 22px; overflow-y: auto; }
+  .panel.active { display: block; }
+
+  /* ─── Cards ──────────────────────────────────────────────────────────── */
+  .section h2 {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.14em;
+    color: var(--fg-4); text-transform: uppercase;
+    margin: 0 0 12px 0; display: flex; align-items: center; gap: 10px;
+  }
+  .section h2 .count { color: var(--accent); font-family: var(--mono); }
+  .section h2 .rule { flex: 1; height: 1px; background: var(--line); }
+  .section + .section { margin-top: 22px; }
+
+  .threads-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(460px, 1fr)); gap: 14px; }
+  .card {
+    background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;
+    transition: border-color 0.3s, box-shadow 0.3s;
+  }
+  .card.busy {
+    border-color: var(--green-strong);
+    box-shadow: 0 0 18px rgba(158,206,106,0.06);
+  }
+  .card.draining { border-color: var(--yellow-strong); }
+  .card.muted { opacity: 0.55; }
+
+  .card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .pill {
+    font-size: 10px; font-family: var(--mono); padding: 2px 9px; border-radius: 11px;
+    font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  .pill.idle { background: var(--bg-3); color: var(--fg-3); }
+  .pill.busy { background: var(--green-soft); color: var(--green); }
+  .pill.draining { background: var(--yellow-soft); color: var(--yellow); }
+  .pill.muted { background: var(--red-soft); color: var(--red); }
+  .chan { font-family: var(--mono); font-size: 11.5px; color: var(--cyan); }
+  .agent { font-size: 11px; color: var(--fg-4); }
+  .age { font-family: var(--mono); font-size: 11px; color: var(--fg-4); margin-left: auto; }
+  .tid { font-family: var(--mono); font-size: 11px; color: var(--fg-4); }
+
+  .running {
+    background: rgba(122,162,247,0.06);
+    border-left: 3px solid var(--accent);
+    padding: 8px 12px; border-radius: var(--radius-sm);
+    font-family: var(--mono); font-size: 12.5px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .running .label {
+    font-size: 9.5px; letter-spacing: 0.14em;
+    color: var(--accent); text-transform: uppercase; font-weight: 600;
+  }
+  .running .desc { flex: 1; word-break: break-word; }
+  .running .elapsed { color: var(--fg-4); font-size: 11px; white-space: nowrap; }
+
+  .thinking {
+    background: var(--bg-2); border-left: 3px solid var(--magenta);
+    padding: 7px 12px; border-radius: var(--radius-sm);
+    font-style: italic; font-size: 12px; color: var(--fg-3);
+  }
+
+  .last-text {
+    background: var(--bg-2); border-left: 3px solid var(--green);
+    border-radius: var(--radius-sm); padding: 10px 12px;
+    font-size: 12.5px; white-space: pre-wrap; word-break: break-word;
+    max-height: 220px; overflow-y: auto;
+  }
+  .last-text .meta {
+    font-size: 10px; letter-spacing: 0.12em;
+    color: var(--green); text-transform: uppercase;
+    margin-bottom: 6px; font-weight: 600;
+  }
+
+  .metrics {
+    display: flex; gap: 16px; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 11.5px; color: var(--fg-3);
+    padding: 4px 0;
+  }
+  .metrics span b { color: var(--fg); }
+  .metrics .wt-chip { color: var(--green); }
+  .metrics .wt-chip .wt-flag { color: var(--red); font-weight: 700; }
+
+  /* Worktree panel (live tab) */
+  #worktreePanel .empty { color: var(--fg-5); font-size: 12px; padding: 4px 0; }
+  .wt-summary { margin-bottom: 10px; }
+  .wt-bar {
+    height: 6px; border-radius: 3px; background: var(--bg-2);
+    overflow: hidden; margin-bottom: 6px;
+  }
+  .wt-bar-fill { height: 100%; transition: width .3s; }
+  .wt-bar-fill.green { background: var(--green); }
+  .wt-bar-fill.yellow { background: var(--yellow); }
+  .wt-bar-fill.red { background: var(--red); }
+  .wt-summary-text { font-family: var(--mono); font-size: 12px; color: var(--fg-3); }
+  .wt-summary-text b { color: var(--fg); }
+  .wt-dirty-count { color: var(--red); }
+  .wt-list { display: flex; flex-direction: column; gap: 2px; }
+  .wt-row {
+    display: grid;
+    grid-template-columns: 16px minmax(70px,1fr) minmax(120px,2fr) minmax(80px,1fr) 64px 20px;
+    gap: 10px; align-items: center;
+    font-family: var(--mono); font-size: 11.5px; color: var(--fg-3);
+    padding: 3px 6px; border-radius: 4px;
+  }
+  .wt-row:hover { background: var(--bg-1); }
+  .wt-row .wt-purge {
+    border: none; background: none; cursor: pointer; padding: 0;
+    color: var(--fg-5); font-size: 12px; line-height: 1; text-align: center;
+    opacity: 0; transition: opacity .12s, color .12s;
+  }
+  .wt-row:hover .wt-purge { opacity: 1; }
+  .wt-row .wt-purge:hover { color: var(--red); }
+  .wt-row .wt-purge:disabled { cursor: default; opacity: .5; }
+  .wt-row.dirty { background: var(--red-soft); }
+  .wt-row .wt-state { color: var(--green); text-align: center; }
+  .wt-row.dirty .wt-state { color: var(--red); }
+  .wt-row .wt-repo { color: var(--accent); }
+  .wt-row .wt-branch { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wt-row .wt-chan { color: var(--fg-5); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wt-row .wt-disk { text-align: right; color: var(--fg-2); }
+
+  .sub-section {
+    border-top: 1px dashed var(--line); padding-top: 8px;
+  }
+  .sub-section h3 {
+    font-size: 10px; letter-spacing: 0.14em; color: var(--fg-4);
+    text-transform: uppercase; margin: 0 0 6px 0; font-weight: 600;
+  }
+  .sub-row {
+    font-family: var(--mono); font-size: 11.5px; padding: 3px 0;
+    display: grid; grid-template-columns: 56px 1fr; gap: 8px; color: var(--fg-3);
+  }
+  .sub-row .ts { color: var(--fg-5); }
+  .sub-row .body {
+    color: var(--fg-2); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+
+  /* Event log inside a card */
+  .card-events {
+    font-family: var(--mono); font-size: 11px; max-height: 240px; overflow-y: auto;
+    background: var(--bg-2); border-radius: var(--radius-sm); padding: 6px;
+  }
+  .card-events .row {
+    display: grid; grid-template-columns: 58px 78px 1fr; gap: 8px;
+    padding: 2px 4px; align-items: baseline; border-radius: 3px;
+  }
+  .kind {
+    text-transform: uppercase; font-size: 9px; letter-spacing: 0.1em;
+    font-weight: 600; padding: 1px 6px; border-radius: 3px;
+    text-align: center; white-space: nowrap; font-family: var(--mono);
+  }
+  .kind.tool_use,
+  .kind.tool-use { background: var(--bg-3); color: var(--fg-3); }
+  .kind.text { background: rgba(125,207,255,0.18); color: var(--cyan); }
+  .kind.response { background: var(--green-soft); color: var(--green); }
+  .kind.silent_fail,
+  .kind.silent-fail { background: var(--red-soft); color: var(--red); }
+  .kind.error { background: var(--red-soft); color: var(--red); }
+  .kind.routing { background: rgba(122,162,247,0.18); color: var(--accent); }
+  .kind.init { background: rgba(192,168,224,0.18); color: var(--magenta); }
+  .kind.info { background: var(--bg-3); color: var(--fg-3); }
+  .kind.ask_owner,
+  .kind.ask-owner { background: var(--yellow-soft); color: var(--yellow); }
+  .kind.spawn {
+    background: rgba(192,168,224,0.22); color: var(--magenta);
+    cursor: pointer; text-decoration: underline dotted;
+  }
+  .kind.spawn:hover { background: rgba(192,168,224,0.35); }
+  .kind.post { background: rgba(125,207,255,0.22); color: var(--cyan); }
+  .kind.post_edit,
+  .kind.post-edit { background: rgba(125,207,255,0.12); color: var(--cyan); }
+  .kind.post_failed,
+  .kind.post-failed { background: var(--red-soft); color: var(--red); }
+  .row .slack-link {
+    margin-left: 6px; font-size: 10px; padding: 1px 6px;
+    background: var(--bg-3); color: var(--accent);
+    border-radius: 3px; text-decoration: none;
+  }
+  .row .slack-link:hover { background: var(--bg-4); text-decoration: underline; }
+  .row .body {
+    color: var(--fg-2); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .row .ts { color: var(--fg-5); }
+
+  .empty {
+    color: var(--fg-4); font-size: 12px; padding: 18px;
+    text-align: center; font-style: italic;
+    background: var(--bg-1); border: 1px dashed var(--line); border-radius: var(--radius);
+  }
+
+  /* ─── Files tab ──────────────────────────────────────────────────────── */
+  .files-layout {
+    display: grid; grid-template-columns: 320px 1fr; gap: 22px;
+    height: calc(100vh - 130px);
+  }
+  .file-tree {
+    background: var(--bg-1); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 10px;
+    overflow-y: auto; font-family: var(--mono); font-size: 12px;
+  }
+  .crumb {
+    display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+    color: var(--fg-3); font-size: 11px; border-bottom: 1px solid var(--line);
+    margin-bottom: 8px;
+  }
+  .crumb .up {
+    background: var(--bg-3); border: 0; color: var(--fg);
+    padding: 3px 8px; border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 11px;
+  }
+  .crumb .up:hover { background: var(--bg-4); }
+  .crumb-path { color: var(--accent); }
+  .file-row {
+    padding: 6px 8px; cursor: pointer; border-radius: 4px;
+    display: flex; align-items: center; gap: 8px;
+    color: var(--fg-2);
+  }
+  .file-row:hover { background: var(--bg-3); }
+  .file-row.active { background: var(--bg-4); color: var(--fg); }
+  .file-row .icon { width: 14px; text-align: center; }
+  .file-row .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .root-picker {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    padding: 8px 10px; border-bottom: 1px solid var(--line);
+    background: var(--bg-2);
+  }
+  .root-picker .root-btn {
+    background: transparent; color: var(--fg-3);
+    border: 1px solid var(--line); border-radius: 4px;
+    padding: 3px 9px; font-family: var(--mono); font-size: 11px;
+    cursor: pointer; transition: all 0.1s;
+  }
+  .root-picker .root-btn:hover { color: var(--fg); border-color: var(--fg-4); }
+  .root-picker .root-btn.active {
+    background: var(--accent); color: var(--bg-0); border-color: var(--accent);
+  }
+  .file-row .size { color: var(--fg-5); font-size: 10px; }
+  .file-row.dir .name { color: var(--accent); }
+
+  .file-editor { display: flex; flex-direction: column; gap: 10px; }
+  .editor-bar {
+    background: var(--bg-1); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 8px 12px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .editor-bar .path {
+    font-family: var(--mono); font-size: 12px; color: var(--accent); flex: 1;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .editor-bar .meta { font-family: var(--mono); font-size: 11px; color: var(--fg-4); }
+  .btn {
+    background: var(--bg-3); border: 1px solid var(--line-strong);
+    color: var(--fg); padding: 5px 12px; border-radius: 5px; cursor: pointer;
+    font-family: inherit; font-size: 12px; font-weight: 500;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .btn:hover:not(:disabled) { background: var(--bg-4); border-color: var(--accent); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn.primary { background: var(--accent); color: var(--bg-0); border-color: var(--accent); }
+  .btn.primary:hover:not(:disabled) { filter: brightness(1.1); }
+  .btn.danger { background: var(--red-soft); color: var(--red); border-color: var(--red-strong); }
+  .btn.danger:hover:not(:disabled) { background: rgba(247,118,142,0.25); }
+  .btn.tiny { padding: 3px 8px; font-size: 11px; }
+
+  textarea.editor {
+    flex: 1; min-height: 400px;
+    background: var(--bg-1); color: var(--fg);
+    border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6;
+    resize: vertical; outline: none;
+  }
+  textarea.editor:focus { border-color: var(--accent); }
+  .save-status {
+    font-family: var(--mono); font-size: 11px;
+    padding: 6px 10px; border-radius: 4px;
+  }
+  .save-status.ok { color: var(--green); background: var(--green-soft); }
+  .save-status.err { color: var(--red); background: var(--red-soft); }
+  .save-status.dirty { color: var(--yellow); background: var(--yellow-soft); }
+
+  /* ─── Persona reload + stale banner ───────────────────────────────────── */
+  .persona-btn {
+    margin-left: 8px;
+    background: transparent; color: var(--fg-3);
+    border: 1px solid var(--line);
+  }
+  .persona-btn:hover { color: var(--fg); border-color: var(--accent); }
+  .persona-btn.busy { opacity: 0.5; pointer-events: none; }
+  .persona-warn {
+    background: var(--yellow-soft); color: var(--yellow);
+    border-bottom: 1px solid var(--yellow);
+    padding: 7px 18px; font-size: 12px;
+    display: flex; align-items: center; gap: 14px;
+    font-family: var(--mono);
+  }
+  .persona-warn .stale-files { color: var(--fg-2); }
+  .persona-warn button {
+    margin-left: auto;
+    background: var(--yellow); color: var(--bg-0); border: 0;
+    padding: 4px 12px; border-radius: 4px; font-weight: 600;
+    cursor: pointer;
+  }
+
+  /* ─── Processes tab ──────────────────────────────────────────────────── */
+  .proc-table {
+    background: var(--bg-1); border: 1px solid var(--line);
+    border-radius: var(--radius); overflow: hidden;
+  }
+  .proc-row {
+    display: grid; grid-template-columns: 80px 110px 1fr 200px 200px;
+    gap: 10px; padding: 10px 14px;
+    border-bottom: 1px solid var(--line); align-items: center;
+    font-family: var(--mono); font-size: 12px;
+  }
+  .proc-row .friday-flag {
+    display: inline-block; font-size: 9.5px; padding: 1px 5px;
+    border-radius: 3px; margin-left: 6px; letter-spacing: 0.06em;
+    background: var(--accent-soft, rgba(125,207,255,0.18)); color: var(--accent);
+    font-weight: 600;
+  }
+  .filter-toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    margin-left: 12px; font-size: 11.5px; color: var(--fg-3);
+    cursor: pointer; user-select: none;
+  }
+  .filter-toggle input { accent-color: var(--accent); }
+  .proc-row:last-child { border-bottom: 0; }
+  .proc-row.head {
+    background: var(--bg-2); color: var(--fg-4);
+    font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 600;
+  }
+  .proc-row .pid { color: var(--accent); font-weight: 600; }
+  .proc-row .kind-cell {
+    font-size: 10px; padding: 2px 8px; border-radius: 10px;
+    text-align: center; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  .proc-row .kind-cell.claude { background: var(--green-soft); color: var(--green); }
+  .proc-row .kind-cell.tmux { background: rgba(192,168,224,0.18); color: var(--magenta); }
+  .proc-row .kind-cell.bun { background: rgba(125,207,255,0.18); color: var(--cyan); }
+  .proc-row .cmd {
+    color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .proc-row .actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+  /* ─── System feed (Live tab footer) ─────────────────────────────────── */
+  .system-feed {
+    font-family: var(--mono); font-size: 11.5px; max-height: 360px; overflow-y: auto;
+    background: var(--bg-1); border-radius: var(--radius);
+    padding: 12px; border: 1px solid var(--line);
+  }
+  .system-feed .row {
+    display: grid; grid-template-columns: 70px 90px 200px 1fr;
+    gap: 10px; padding: 3px 0; align-items: baseline;
+  }
+  .system-feed .row .ts { color: var(--fg-5); }
+  .system-feed .row .tid { color: var(--fg-4); }
+  .warn-row {
+    color: var(--red); font-family: var(--mono); font-size: 11.5px;
+    padding: 6px 10px; background: var(--red-soft);
+    border-radius: 4px; margin-bottom: 4px;
+  }
+
+  /* Modal */
+  .modal-bg {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: none; align-items: center; justify-content: center;
+    z-index: 100;
+  }
+  .modal-bg.open { display: flex; }
+  .modal {
+    background: var(--bg-1); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 24px; min-width: 360px;
+    max-width: 540px; box-shadow: var(--shadow);
+  }
+  .modal h3 { margin: 0 0 12px 0; font-size: 16px; }
+  .modal p { color: var(--fg-3); margin: 0 0 16px 0; }
+  .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+  /* Larger modal for process details / transcripts */
+  .modal-lg {
+    background: var(--bg-1); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 22px;
+    width: min(960px, 90vw); max-height: 86vh;
+    display: flex; flex-direction: column;
+    box-shadow: var(--shadow);
+  }
+  .modal-lg h3 { margin: 0 0 14px 0; font-size: 15px; display: flex; align-items: baseline; gap: 10px; }
+  .modal-lg h3 .sub { color: var(--fg-4); font-size: 11.5px; font-family: var(--mono); font-weight: 400; }
+  .modal-lg .body { flex: 1; min-height: 0; overflow-y: auto; padding-right: 4px; }
+  .modal-lg dl { display: grid; grid-template-columns: 130px 1fr; gap: 6px 14px; margin: 0 0 14px 0; font-family: var(--mono); font-size: 12px; }
+  .modal-lg dt { color: var(--fg-4); }
+  .modal-lg dd { margin: 0; color: var(--fg); word-break: break-all; }
+  .modal-lg pre.transcript {
+    background: var(--bg-0); border: 1px solid var(--line); border-radius: 6px;
+    padding: 12px; font-family: var(--mono); font-size: 11.5px;
+    color: var(--fg-2); margin: 0 0 14px 0; max-height: 40vh; overflow: auto;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  .modal-lg .attach-cmd {
+    display: flex; gap: 8px; align-items: center;
+    background: var(--bg-0); border: 1px solid var(--line); border-radius: 6px;
+    padding: 8px 12px; font-family: var(--mono); font-size: 12px;
+    color: var(--fg-2); margin: 0 0 14px 0;
+  }
+  .modal-lg .attach-cmd code { flex: 1; color: var(--accent); }
+
+  /* Scrollbars */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: var(--bg-1); }
+  ::-webkit-scrollbar-thumb { background: var(--bg-4); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--bg-5); }
+  /* ─── Memory tab (engram neuron graph) ──────────────────────────────────── */
+  #panel-memory.active { display: flex; }
+  #panel-memory { flex-direction: column; height: calc(100vh - 130px); }
+  .mem-wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: 10px; }
+  .mem-toolbar { display: flex; flex-direction: column; gap: 8px; }
+  .mem-recall { display: flex; gap: 8px; }
+  .mem-recall input {
+    flex: 1; background: var(--bg-2); border: 1px solid var(--line-strong); color: var(--fg);
+    font: 14px var(--sans); padding: 9px 13px; border-radius: var(--radius); outline: none;
+  }
+  .mem-recall input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(122,162,247,0.15); }
+  .mem-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--fg-3); }
+  .mem-stat { color: var(--fg-3); font: 11px var(--mono); }
+  .mem-rule { flex: 1; height: 1px; background: var(--line); min-width: 12px; }
+  .etype { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; opacity: 0.45; transition: opacity .15s; }
+  .etype.on { opacity: 1; color: var(--fg-2); }
+  .etype .dot { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 6px currentColor; }
+  .etype[data-etype="similar"] .dot { background: var(--accent); color: var(--accent); }
+  .etype[data-etype="temporal_next"] .dot { background: var(--cyan); color: var(--cyan); }
+  .etype[data-etype="about"] .dot { background: var(--accent-2); color: var(--accent-2); }
+  .etype[data-etype="lesson_from"] .dot { background: var(--green); color: var(--green); }
+  .etype[data-etype="caused"] .dot { background: var(--red); color: var(--red); }
+  .etype[data-etype="supersedes"] .dot { background: var(--yellow); color: var(--yellow); }
+  .mem-stage { position: relative; flex: 1; min-height: 0; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: radial-gradient(ellipse at 50% 40%, #0d1018 0%, #070910 100%); }
+  #memCanvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  #memCanvas.dragging { cursor: grabbing; }
+  .mem-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--fg-4); font: 13px var(--mono); pointer-events: none; }
+  .mem-empty[hidden] { display: none; }
+  .mem-hint { position: absolute; bottom: 10px; left: 12px; color: var(--fg-5); font: 10px var(--mono); pointer-events: none; letter-spacing: .04em; }
+  .mem-node-card {
+    position: absolute; top: 12px; right: 12px; width: 300px; max-height: calc(100% - 24px); overflow-y: auto;
+    background: rgba(17,21,28,0.94); border: 1px solid var(--line-strong); border-radius: var(--radius);
+    padding: 12px 14px; box-shadow: var(--shadow); backdrop-filter: blur(6px); font-size: 12px; color: var(--fg-2);
+  }
+  .mem-node-card h4 { margin: 0 0 6px; font: 600 11px var(--mono); color: var(--accent); letter-spacing: .05em; text-transform: uppercase; }
+  .mem-node-card .meta { color: var(--fg-4); font: 10px var(--mono); margin-bottom: 8px; }
+  .mem-node-card .body { line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+  .mem-node-card .nbrs { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+  .mem-node-card .nbr { display: flex; gap: 6px; align-items: baseline; padding: 2px 0; font: 11px var(--mono); cursor: pointer; }
+  .mem-node-card .nbr:hover { color: var(--accent); }
+  .mem-node-card .nbr .et { font-size: 9px; padding: 0 4px; border-radius: 3px; background: var(--bg-4); }
+  .mem-results {
+    position: absolute; top: 12px; left: 12px; width: 320px; max-height: calc(100% - 40px); overflow-y: auto;
+    background: rgba(17,21,28,0.92); border: 1px solid var(--line-strong); border-radius: var(--radius);
+    padding: 10px 12px; box-shadow: var(--shadow); backdrop-filter: blur(6px);
+  }
+  .mem-results h4 { margin: 0 0 8px; font: 600 11px var(--mono); color: var(--green); letter-spacing: .05em; text-transform: uppercase; }
+  .mem-res { padding: 6px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .mem-res:last-child { border-bottom: none; }
+  .mem-res .score { font: 10px var(--mono); color: var(--accent); }
+  .mem-res .txt { font-size: 12px; color: var(--fg-2); line-height: 1.4; margin-top: 2px; }
+  .mem-res .why { font: 10px var(--mono); color: var(--fg-4); margin-top: 3px; }
+  .mem-res:hover .txt { color: var(--fg); }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- Top bar -->
+  <div class="topbar">
+    <div class="brand">
+      <span class="name">friday</span>
+      <span class="sep">/</span>
+      <span class="role">control plane</span>
+    </div>
+    <div class="stat"><span id="processDot" class="dot green pulse"></span><span>process <b id="processStatus">…</b></span></div>
+    <div class="stat">socket idle <b id="socketIdle">…</b></div>
+    <div class="stat">claude-p <b id="claudeChildren">…</b></div>
+    <div class="stat">tmux <b id="tmuxCount">…</b></div>
+    <div class="stat">cost <b id="totalCost">$0.00</b></div>
+    <div class="stat">turns <b id="totalTurns">0</b></div>
+    <div class="stat" id="schedulers"></div>
+    <button class="btn tiny persona-btn" id="reloadPersonaBtn" title="invalidate the cached SOUL/AGENTS/IDENTITY content so the next claude spawn re-reads friday-personal/*.md">reload persona</button>
+    <div class="updated" id="updatedAt">connecting…</div>
+  </div>
+  <div id="personaWarn" class="persona-warn" style="display:none"></div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab active" data-tab="live">⚡ Live</button>
+    <button class="tab" data-tab="threads">🧵 Threads <span class="badge" id="tabThreadCount">0</span></button>
+    <button class="tab" data-tab="files">📝 Files</button>
+    <button class="tab" data-tab="processes">⚙ Processes <span class="badge" id="tabProcCount">0</span></button>
+    <button class="tab" data-tab="memory">🧠 Memory <span class="badge" id="tabMemCount">0</span></button>
+  </div>
+
+  <!-- Panels -->
+  <div style="min-height:0; overflow-y:auto">
+    <!-- LIVE -->
+    <div class="panel active" id="panel-live">
+      <div class="section">
+        <h2>active threads <span class="count" id="liveThreadCount">0</span><span class="rule"></span></h2>
+        <div class="threads-grid" id="liveThreads"></div>
+      </div>
+      <div class="section">
+        <h2>worktrees<span class="rule"></span></h2>
+        <div id="worktreePanel"></div>
+      </div>
+      <div class="section">
+        <h2>system feed<span class="rule"></span></h2>
+        <div class="system-feed" id="systemFeed"></div>
+      </div>
+      <div class="section">
+        <h2>recent warns<span class="rule"></span></h2>
+        <div id="warns"></div>
+      </div>
+    </div>
+
+    <!-- THREADS (full grid, no other sections) -->
+    <div class="panel" id="panel-threads">
+      <div class="section">
+        <h2>all known threads <span class="count" id="threadsCount">0</span><span class="rule"></span></h2>
+        <div class="threads-grid" id="allThreads"></div>
+      </div>
+    </div>
+
+    <!-- FILES -->
+    <div class="panel" id="panel-files">
+      <div class="files-layout">
+        <div class="file-tree" id="fileTree">
+          <div class="root-picker" id="rootPicker"></div>
+          <div class="crumb">
+            <button class="up" id="fileUp">↑ up</button>
+            <span class="crumb-path" id="filePath">memory/</span>
+          </div>
+          <div id="fileList"></div>
+        </div>
+        <div class="file-editor" id="fileEditor">
+          <div class="empty" style="margin-top:0">select a file to view or edit</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PROCESSES -->
+    <div class="panel" id="panel-processes">
+      <div class="section">
+        <h2>processes <span class="count" id="processesCount">0</span><span class="rule"></span>
+          <label class="filter-toggle"><input type="checkbox" id="fridayOnly" checked> friday only</label>
+          <button class="btn tiny" id="refreshProcs">refresh</button>
+        </h2>
+        <div class="proc-table" id="procTable"></div>
+      </div>
+    </div>
+
+    <!-- MEMORY (engram associative graph) -->
+    <div class="panel" id="panel-memory">
+      <div class="mem-wrap">
+        <div class="mem-toolbar">
+          <form class="mem-recall" id="memRecallForm">
+            <input id="memQuery" type="text" placeholder="recall a memory — watch the neurons fire…" autocomplete="off">
+            <button class="btn primary" type="submit" id="memRecallBtn">recall ⚡</button>
+            <button class="btn" type="button" id="memClearBtn" title="clear activation">reset</button>
+          </form>
+          <div class="mem-controls">
+            <span class="mem-stat" id="memStats">—</span>
+            <span class="mem-rule"></span>
+            <label class="etype" data-etype="similar"><span class="dot"></span>similar</label>
+            <label class="etype" data-etype="temporal_next"><span class="dot"></span>temporal</label>
+            <label class="etype" data-etype="about"><span class="dot"></span>about</label>
+            <label class="etype" data-etype="lesson_from"><span class="dot"></span>lesson</label>
+            <label class="etype" data-etype="caused"><span class="dot"></span>caused</label>
+            <label class="etype" data-etype="supersedes"><span class="dot"></span>supersedes</label>
+            <label class="etype on" id="memArchToggle" title="show cold-archived (consolidated-out) memories"><span class="dot" style="background:#4a5260;color:#4a5260"></span>archived</label>
+            <button class="btn tiny" type="button" id="memDream" title="run a consolidation pass — cold-archive low-salience memories">💤 dream</button>
+            <button class="btn tiny" type="button" id="memReindex" title="rebuild the index from Friday's memory/ dir">reindex</button>
+            <button class="btn tiny" type="button" id="memRefresh">refresh</button>
+          </div>
+        </div>
+        <div class="mem-stage">
+          <canvas id="memCanvas"></canvas>
+          <div class="mem-empty" id="memEmpty">loading the graph…</div>
+          <div class="mem-hint">scroll to zoom · drag to pan · click a neuron</div>
+          <div class="mem-node-card" id="memNodeCard" hidden></div>
+          <div class="mem-results" id="memResults" hidden></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Confirm modal (kill / overwrite confirms) -->
+<div class="modal-bg" id="modalBg">
+  <div class="modal">
+    <h3 id="modalTitle">Confirm</h3>
+    <p id="modalBody">Are you sure?</p>
+    <div class="modal-actions">
+      <button class="btn" id="modalCancel">Cancel</button>
+      <button class="btn danger" id="modalConfirm">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Process / thread details modal -->
+<div class="modal-bg" id="detailsBg">
+  <div class="modal-lg">
+    <h3><span id="detailsTitle">Process</span> <span class="sub" id="detailsSub"></span></h3>
+    <div class="body" id="detailsBody">loading…</div>
+    <div class="modal-actions" style="margin-top:14px">
+      <button class="btn" id="detailsClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
+function fmtAge(ms) {
+  if (!ms) return "—";
+  const s = Math.floor((Date.now() - ms) / 1000);
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s/60) + "m" + (s % 60 < 10 ? "0":"") + (s % 60) + "s";
+  if (s < 86400) return Math.floor(s/3600) + "h" + Math.floor((s%3600)/60) + "m";
+  return Math.floor(s/86400) + "d";
+}
+function fmtTs(ms) { if (!ms) return ""; return new Date(ms).toTimeString().slice(0,8); }
+function fmtNum(n) {
+  if (!n) return "0";
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return (n/1000).toFixed(1) + "k";
+  return (n/1_000_000).toFixed(2) + "M";
+}
+function fmtCost(usd) {
+  if (!usd) return "$0.00";
+  if (usd < 0.01) return "$" + usd.toFixed(4);
+  return "$" + usd.toFixed(2);
+}
+function fmtBytes(b) {
+  if (b < 1024) return b + "B";
+  if (b < 1024*1024) return (b/1024).toFixed(1) + "K";
+  if (b < 1024*1024*1024) return (b/1024/1024).toFixed(1) + "M";
+  return (b/1024/1024/1024).toFixed(2) + "G";
+}
+function escapeHtml(s) {
+  if (s == null) return "";
+  return String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+}
+
+// ─── Tabs ──────────────────────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    $('panel-' + t.dataset.tab).classList.add('active');
+    if (t.dataset.tab === 'files') loadFiles(currentDir || 'memory');
+    if (t.dataset.tab === 'processes') loadProcesses();
+    if (t.dataset.tab === 'memory') initMemoryTab();
+  });
+});
+
+// ─── Modal ─────────────────────────────────────────────────────────────────
+let modalResolver = null;
+function openModal(title, body) {
+  $('modalTitle').textContent = title;
+  $('modalBody').innerHTML = body;
+  $('modalBg').classList.add('open');
+  return new Promise((resolve) => { modalResolver = resolve; });
+}
+$('modalCancel').onclick = () => { $('modalBg').classList.remove('open'); modalResolver?.(false); };
+$('modalConfirm').onclick = () => { $('modalBg').classList.remove('open'); modalResolver?.(true); };
+$('modalBg').onclick = (e) => { if (e.target.id === 'modalBg') { $('modalBg').classList.remove('open'); modalResolver?.(false); } };
+
+// ─── State ─────────────────────────────────────────────────────────────────
+let lastState = null;
+// threadId -> live worktree info (dirty + disk), from the system summary.
+// Rebuilt each render so per-thread cards can show their worktree's disk/dirty.
+let wtByTid = new Map();
+
+function renderTopbar(state) {
+  const sys = state.system;
+  const socketAge = Math.floor((Date.now() - sys.socketLastActivityAt) / 1000);
+  $('socketIdle').textContent = fmtAge(sys.socketLastActivityAt);
+  const dot = $('processDot');
+  dot.className = 'dot pulse ' + (socketAge < 60 ? 'green' : socketAge < 180 ? 'yellow' : 'red');
+  $('processStatus').textContent = 'alive · up ' + fmtAge(sys.bootTime);
+
+  let totalCost = 0, totalTurns = 0, busy = 0;
+  for (const t of state.threads) {
+    totalCost += t.totalCost || 0;
+    totalTurns += t.totalTurns || 0;
+    if (t.status === 'busy' || t.status === 'draining') busy++;
+  }
+  $('totalCost').textContent = fmtCost(totalCost);
+  $('totalTurns').textContent = fmtNum(totalTurns);
+  $('claudeChildren').textContent = String(busy);
+
+  const scheds = Object.values(sys.schedulers || {});
+  $('schedulers').innerHTML = scheds.length
+    ? scheds.map(s => `<span style="margin-right:10px"><b>${escapeHtml(s.name)}</b>${s.nextFireMs ? ' '+new Date(s.nextFireMs).toLocaleTimeString().slice(0,5) : ''}</span>`).join('')
+    : '<span style="color:var(--fg-5)">— no scheduler ticks yet</span>';
+
+  $('updatedAt').textContent = 'live · ' + fmtTs(Date.now());
+}
+
+function renderThreadCard(t) {
+  const isBusy = t.status === 'busy';
+  const isDraining = t.status === 'draining';
+  const cls = 'card' + (isBusy ? ' busy' : '') + (isDraining ? ' draining' : '') + (t.muted ? ' muted' : '');
+  const statusPillCls = 'pill ' + (isBusy ? 'busy' : isDraining ? 'draining' : t.muted ? 'muted' : 'idle');
+  const statusLabel = t.muted ? 'muted' : t.status;
+
+  let curToolHtml = '';
+  if (t.currentTool) {
+    const elapsed = Math.floor((Date.now() - t.currentTool.startedAt) / 1000);
+    curToolHtml = `<div class="running"><span class="label">running</span><span class="desc">${escapeHtml(t.currentTool.description)}</span><span class="elapsed">${elapsed}s</span></div>`;
+  }
+  let thinkingHtml = '';
+  if (t.thinkingPreview) {
+    thinkingHtml = `<div class="thinking">${escapeHtml(t.thinkingPreview)}</div>`;
+  }
+  let lastTextHtml = '';
+  if (t.lastAssistantText) {
+    lastTextHtml = `<div class="last-text"><div class="meta">last reply · ${fmtTs(t.lastAssistantTextAt)} · ${t.lastAssistantText.length} chars</div>${escapeHtml(t.lastAssistantText)}</div>`;
+  }
+
+  const tokens = (t.inputTokens || 0) + (t.outputTokens || 0);
+  const metricsParts = [];
+  if (tokens) metricsParts.push(`<span>tokens <b>${fmtNum(tokens)}</b></span>`);
+  if (t.totalTurns) metricsParts.push(`<span>turns <b>${t.totalTurns}</b></span>`);
+  if (t.totalCost) metricsParts.push(`<span>cost <b>${fmtCost(t.totalCost)}</b></span>`);
+  if (t.cacheReadTokens) metricsParts.push(`<span>cache-read <b>${fmtNum(t.cacheReadTokens)}</b></span>`);
+  metricsParts.push(`<span>pending <b>${t.pendingCount || 0}</b></span>`);
+  if (t.sessionId) metricsParts.push(`<span title="claude session id">sid <b>${t.sessionId.slice(0,8)}</b></span>`);
+  // Worktree chip: light/full badge + (when known) disk + dirty flag.
+  if (t.worktreePath) {
+    const wt = wtByTid.get(t.threadId);
+    const level = t.worktreeProvisioned ? 'full' : 'light';
+    const disk = wt ? ` ${fmtBytes(wt.diskBytes)}` : '';
+    const dirty = wt && wt.dirty ? ' <b class="wt-flag" title="uncommitted changes — held from eviction">dirty</b>' : '';
+    metricsParts.push(`<span class="wt-chip" title="${escapeHtml(t.worktreePath)}">🌳 ${level}${disk}${dirty}</span>`);
+  }
+  const metrics = `<div class="metrics">${metricsParts.join('')}</div>`;
+
+  let memHtml = '';
+  if (t.memoryWrites && t.memoryWrites.length) {
+    const rows = t.memoryWrites.slice(-3).reverse().map(m =>
+      `<div class="sub-row"><span class="ts">${fmtTs(m.ts)}</span><span class="body" title="${escapeHtml(m.preview || '')}">${escapeHtml(m.path.replace(/^.*\/memory\//, "memory/"))}</span></div>`
+    ).join('');
+    memHtml = `<div class="sub-section"><h3>memory writes (${t.memoryWrites.length})</h3>${rows}</div>`;
+  }
+  let mcpHtml = '';
+  if (t.mcpSlackPosts && t.mcpSlackPosts.length) {
+    const rows = t.mcpSlackPosts.slice(-3).reverse().map(p =>
+      `<div class="sub-row"><span class="ts">${fmtTs(p.ts)}</span><span class="body" title="${escapeHtml(p.preview || '')}">${escapeHtml(p.tool)} → ${escapeHtml(p.preview || '')}</span></div>`
+    ).join('');
+    mcpHtml = `<div class="sub-section"><h3>mcp slack posts (${t.mcpSlackPosts.length})</h3>${rows}</div>`;
+  }
+
+  const events = (t.events || []).slice(-15).reverse();
+  const eventsHtml = events.length
+    ? `<div class="card-events">${events.map(e => renderEventRow(e, t)).join('')}</div>`
+    : '';
+
+  return `<div class="${cls}" data-tid="${escapeHtml(t.threadId)}">
+    <div class="card-head">
+      <span class="${statusPillCls}">${statusLabel}</span>
+      <span class="chan">${escapeHtml(t.channelName ? '#' + t.channelName : t.channel)}</span>
+      ${t.agentType ? `<span class="agent">agent=${escapeHtml(t.agentType)}</span>` : ''}
+      <span class="age">idle ${fmtAge(t.lastActivityAt)}</span>
+      ${t.muted
+        ? `<button class="btn tiny thread-resume" data-tid="${escapeHtml(t.threadId)}" title="unmute — Friday starts listening + replying in this thread again">▶ resume</button>`
+        : `<button class="btn danger tiny thread-stop" data-tid="${escapeHtml(t.threadId)}" title="stop her here now — kills the in-flight run and mutes the thread (no replies until resume)">⏹ stop</button>`}
+    </div>
+    <div class="tid">${escapeHtml(t.threadId)}</div>
+    ${curToolHtml}${thinkingHtml}${lastTextHtml}${metrics}${memHtml}${mcpHtml}${eventsHtml}
+  </div>`;
+}
+
+function renderLiveTab(state) {
+  // Live tab: only currently active threads + last 24h idle (max 12)
+  const visible = state.threads.filter(t => {
+    if (t.status !== 'idle') return true;
+    return Date.now() - t.lastActivityAt < 24 * 60 * 60 * 1000;
+  }).slice(0, 12);
+  $('liveThreadCount').textContent = visible.length;
+  $('liveThreads').innerHTML = visible.length ? visible.map(renderThreadCard).join('') : '<div class="empty">no active threads (24h window)</div>';
+
+  // System feed
+  const evs = (state.system.recentEvents || []).slice(-60).reverse();
+  const threadByTid = new Map(state.threads.map(t => [t.threadId, t]));
+  $('systemFeed').innerHTML = evs.length
+    ? evs.map(e => {
+        const t = threadByTid.get(e.threadId) || { threadId: e.threadId || '', channel: e.channel };
+        const isSpawn = e.kind === 'spawn';
+        const isPost = e.kind === 'post' || e.kind === 'post_edit';
+        const kindAttrs = isSpawn ? ` data-spawn-pid="${(e.data && e.data.pid) || ''}" data-spawn-tid="${escapeHtml(t.threadId)}"` : '';
+        let extra = '';
+        if (isPost && e.data && e.data.messageTs) {
+          const url = slackPermalink(e.channel || t.channel, e.data.messageTs);
+          if (url) extra = ` <a class="slack-link" target="_blank" rel="noopener" href="${url}">open ↗</a>`;
+        }
+        return `<div class="row"><span class="ts">${fmtTs(e.ts)}</span><span class="kind ${e.kind}" style="display:inline-block"${kindAttrs}>${e.kind.replace('_','·')}</span><span class="tid">${escapeHtml(e.threadId || '—')}</span><span class="body" title="${escapeHtml(e.text)}">${escapeHtml(e.text)}${extra}</span></div>`;
+      }).join('')
+    : '<div class="empty">no events yet</div>';
+
+  // Warns
+  const w = state.system.recentWarns || [];
+  $('warns').innerHTML = w.length
+    ? w.slice().reverse().map(x => `<div class="warn-row"><span style="color:var(--fg-5)">${fmtTs(x.ts)}</span> [${escapeHtml(x.tag)}] ${escapeHtml(x.text)}</div>`).join('')
+    : '<div class="empty">no warns</div>';
+}
+
+function renderThreadsTab(state) {
+  const all = state.threads.slice(0, 60);
+  $('threadsCount').textContent = all.length;
+  $('tabThreadCount').textContent = all.length;
+  $('allThreads').innerHTML = all.length ? all.map(renderThreadCard).join('') : '<div class="empty">no threads tracked</div>';
+}
+
+// Slack workspace for permalinks. The team is fixed for this install.
+const SLACK_WORKSPACE = 'your-workspace';
+function slackPermalink(channel, messageTs) {
+  if (!channel || !messageTs) return null;
+  return `https://${SLACK_WORKSPACE}.slack.com/archives/${channel}/p${messageTs.replace('.','')}`;
+}
+
+function renderEventRow(e, thread) {
+  const ts = fmtTs(e.ts);
+  const kindLabel = e.kind.replace('_','·');
+  const isSpawn = e.kind === 'spawn';
+  const isPost = e.kind === 'post' || e.kind === 'post_edit';
+  const kindAttrs = isSpawn
+    ? ` data-spawn-pid="${(e.data && e.data.pid) || ''}" data-spawn-tid="${escapeHtml(thread.threadId)}"`
+    : '';
+
+  let extra = '';
+  if (isPost && e.data && e.data.messageTs) {
+    const url = slackPermalink(e.channel || thread.channel, e.data.messageTs);
+    if (url) extra = ` <a class="slack-link" target="_blank" rel="noopener" href="${url}">open ↗</a>`;
+  }
+  return `<div class="row"><span class="ts">${ts}</span><span class="kind ${e.kind}"${kindAttrs}>${kindLabel}</span><span class="body" title="${escapeHtml(e.text)}">${escapeHtml(e.text)}${extra}</span></div>`;
+}
+
+// Delegated click handler: clicking a SPAWN pill opens the spawn details modal.
+document.addEventListener('click', (e) => {
+  const target = e.target.closest('.kind.spawn');
+  if (!target) return;
+  const pid = Number(target.dataset.spawnPid);
+  const tid = target.dataset.spawnTid;
+  if (pid && tid) viewSpawn(tid, pid);
+});
+
+// Delegated click handler: per-thread STOP (kill run + mute) / RESUME (unmute).
+// Cards re-render on every SSE tick, so delegation is the only stable hook.
+document.addEventListener('click', async (e) => {
+  const purgeBtn = e.target.closest('.wt-purge');
+  if (purgeBtn) {
+    const repoName = purgeBtn.dataset.repo;
+    const tid = purgeBtn.dataset.tid;
+    const dirty = purgeBtn.dataset.dirty === '1';
+    if (!repoName || !tid) return;
+    const warn = dirty
+      ? `<br><br><b style="color:var(--red)">This worktree is DIRTY</b> — it has uncommitted changes that will be permanently discarded.`
+      : '';
+    const ok = await openModal('Purge worktree',
+      `Force-remove the <b>${escapeHtml(repoName)}</b> worktree for thread <b>${escapeHtml(tid)}</b>?${warn}<br><br>Removes the worktree dir and its <code>slack/${escapeHtml(tid)}</code> branch.`);
+    if (!ok) return;
+    purgeBtn.disabled = true;
+    purgeBtn.textContent = '…';
+    try {
+      const r = await fetch('/api/worktree/purge', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoName, threadId: tid }),
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || 'purge failed');
+      // Optimistic: drop the row now; next SSE snapshot confirms the new picture.
+      const row = purgeBtn.closest('.wt-row');
+      if (row) row.remove();
+    } catch (err) {
+      alert('purge failed: ' + err.message);
+      purgeBtn.disabled = false;
+      purgeBtn.textContent = '✕';
+    }
+    return;
+  }
+
+  const stopBtn = e.target.closest('.thread-stop');
+  const resumeBtn = e.target.closest('.thread-resume');
+  if (!stopBtn && !resumeBtn) return;
+  const tid = (stopBtn || resumeBtn).dataset.tid;
+  if (!tid) return;
+
+  if (stopBtn) {
+    const ok = await openModal('Stop thread',
+      `Stop <b>${escapeHtml(tid)}</b> now?<br><br>Kills any in-flight run and <b>mutes</b> the thread — Friday won't reply here until you hit <b>resume</b>.`);
+    if (!ok) return;
+    stopBtn.disabled = true;
+    stopBtn.textContent = 'stopping…';
+    try {
+      const r = await fetch('/api/thread/kill', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ threadId: tid }),
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || 'stop failed');
+      patchThreadMuted(tid, true);   // optimistic — next SSE snapshot confirms
+    } catch (err) {
+      alert('stop failed: ' + err.message);
+      stopBtn.disabled = false;
+      stopBtn.textContent = '⏹ stop';
+    }
+  } else {
+    resumeBtn.disabled = true;
+    resumeBtn.textContent = 'resuming…';
+    try {
+      const r = await fetch('/api/thread/mute', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ threadId: tid, muted: false }),
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || 'resume failed');
+      patchThreadMuted(tid, false);
+    } catch (err) {
+      alert('resume failed: ' + err.message);
+      resumeBtn.disabled = false;
+      resumeBtn.textContent = '▶ resume';
+    }
+  }
+});
+
+// Optimistically flip muted in the cached state + re-render, so the button
+// toggles immediately instead of waiting for the next SSE tick.
+function patchThreadMuted(tid, muted) {
+  if (!lastState) return;
+  const t = (lastState.threads || []).find(x => x.threadId === tid);
+  if (t) { t.muted = muted; if (muted) t.status = 'idle'; }
+  render(lastState);
+}
+
+function viewSpawn(threadId, pid) {
+  const t = (lastState?.threads || []).find(x => x.threadId === threadId);
+  if (!t) return;
+  const spawn = (t.spawns || []).find(s => s.pid === pid) || (t.spawns || []).slice(-1)[0];
+  if (!spawn) {
+    $('detailsTitle').textContent = `Spawn pid ${pid}`;
+    $('detailsSub').textContent = '';
+    $('detailsBody').innerHTML = '<div class="empty">no spawn record (pre-restart?)</div>';
+    $('detailsBg').classList.add('open');
+    return;
+  }
+  $('detailsTitle').textContent = `claude spawn · pid ${spawn.pid}`;
+  $('detailsSub').textContent = `${fmtTs(spawn.ts)} · thread ${threadId}`;
+
+  const argsHtml = spawn.argv.map(a => `<span style="color:var(--cyan)">${escapeHtml(a)}</span>`).join(' ');
+  const envHtml = spawn.envKeys && spawn.envKeys.length
+    ? spawn.envKeys.map(k => `<span style="display:inline-block; padding:1px 6px; margin:2px; background:var(--bg-2); border-radius:3px; font-size:11px;">${escapeHtml(k)}</span>`).join('')
+    : '<span style="color:var(--fg-5)">—</span>';
+
+  const sysPrompt = spawn.systemPromptContent || '';
+  const sysPromptFile = spawn.systemPromptFile || '';
+  const sysPromptHtml = sysPrompt
+    ? `
+      <div style="font-size:11px; color:var(--fg-4); margin-bottom:6px; letter-spacing:0.08em; text-transform:uppercase;">
+        system prompt
+        <span style="color:var(--fg-5); margin-left:8px; text-transform:none; letter-spacing:0;">${escapeHtml(sysPromptFile)} · ${sysPrompt.length} chars</span>
+      </div>
+      <details>
+        <summary style="cursor:pointer; color:var(--accent); font-family:var(--mono); font-size:11px; padding:6px 0;">expand · SOUL · AGENTS · IDENTITY · USER · TOOLS · MEMORY · HEARTBEAT</summary>
+        <pre class="transcript" style="max-height:50vh">${escapeHtml(sysPrompt)}</pre>
+      </details>`
+    : `<div style="font-size:11px; color:var(--fg-5); margin-bottom:6px;">no system prompt file captured</div>`;
+
+  $('detailsBody').innerHTML = `
+    <dl>
+      <dt>pid</dt><dd>${spawn.pid}</dd>
+      <dt>cwd</dt><dd>${escapeHtml(spawn.cwd)}</dd>
+      <dt>resume</dt><dd>${spawn.resumedSessionId ? escapeHtml(spawn.resumedSessionId) + ' <span style="color:var(--fg-5)">(continuing)</span>' : '<span style="color:var(--fg-5)">— (fresh session)</span>'}</dd>
+      <dt>agent</dt><dd>${escapeHtml(spawn.agentType || '— (default)')}</dd>
+    </dl>
+    <div style="font-size:11px; color:var(--fg-4); margin-bottom:6px; letter-spacing:0.08em; text-transform:uppercase;">command</div>
+    <pre class="transcript">${argsHtml}</pre>
+    <div style="font-size:11px; color:var(--fg-4); margin-bottom:6px; letter-spacing:0.08em; text-transform:uppercase;">user prompt (${spawn.prompt.length} chars)</div>
+    <pre class="transcript">${escapeHtml(spawn.prompt)}</pre>
+    ${sysPromptHtml}
+    <div style="font-size:11px; color:var(--fg-4); margin:14px 0 6px; letter-spacing:0.08em; text-transform:uppercase;">env keys (values redacted)</div>
+    <div style="font-family: var(--mono); font-size:11px; padding:8px 0;">${envHtml}</div>
+  `;
+  $('detailsBg').classList.add('open');
+}
+
+// ─── Persona state polling + reload ────────────────────────────────────────
+async function refreshPersonaState() {
+  try {
+    const r = await fetch('/api/persona/state');
+    const d = await r.json();
+    const banner = $('personaWarn');
+    if (d.anyStale) {
+      const stale = d.files.filter(f => f.stale).map(f => f.name).join(', ');
+      banner.innerHTML = `<span>⚠ persona out of date:</span><span class="stale-files">${escapeHtml(stale)} edited since boot</span><button id="banner-reload-btn">reload now</button>`;
+      banner.style.display = 'flex';
+      $('banner-reload-btn').onclick = reloadPersona;
+    } else {
+      banner.style.display = 'none';
+    }
+  } catch { /* network blip — leave banner state as-is */ }
+}
+
+async function reloadPersona() {
+  const btn = $('reloadPersonaBtn');
+  btn.classList.add('busy');
+  btn.textContent = 'reloading…';
+  try {
+    const r = await fetch('/api/persona/reload', { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'reload failed');
+    btn.textContent = 'reloaded ✓';
+    setTimeout(() => { btn.textContent = 'reload persona'; btn.classList.remove('busy'); }, 1500);
+    await refreshPersonaState();
+  } catch (e) {
+    btn.textContent = 'reload failed';
+    btn.classList.remove('busy');
+    setTimeout(() => btn.textContent = 'reload persona', 2000);
+    alert('persona reload failed: ' + e.message);
+  }
+}
+
+$('reloadPersonaBtn').onclick = reloadPersona;
+refreshPersonaState();
+setInterval(refreshPersonaState, 10_000);
+
+function render(state) {
+  // Rebuild the worktree lookup before rendering any thread cards.
+  wtByTid = new Map(((state.system.worktrees && state.system.worktrees.list) || []).map(w => [w.threadId, w]));
+  renderTopbar(state);
+  renderWorktreePanel(state);
+  renderLiveTab(state);
+  renderThreadsTab(state);
+}
+
+function renderWorktreePanel(state) {
+  const wt = state.system.worktrees;
+  const el = $('worktreePanel');
+  if (!el) return;
+  if (!wt || !wt.list.length) {
+    el.innerHTML = '<div class="empty">no active worktrees</div>';
+    return;
+  }
+  const pct = wt.capBytes ? Math.min(100, Math.round((wt.totalBytes / wt.capBytes) * 100)) : 0;
+  const barCls = pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'green';
+  const dirtyCount = wt.list.filter(w => w.dirty).length;
+  const rows = [...wt.list]
+    .sort((a, b) => b.diskBytes - a.diskBytes)
+    .map(w => {
+      const t = (state.threads || []).find(x => x.threadId === w.threadId);
+      const repoChan = t && t.channelName ? '#' + t.channelName : w.repoName;
+      return `<div class="wt-row${w.dirty ? ' dirty' : ''}">
+        <span class="wt-state" title="${w.dirty ? 'uncommitted changes — never auto-evicted' : 'clean — evictable under disk pressure'}">${w.dirty ? '●' : '○'}</span>
+        <span class="wt-repo">${escapeHtml(w.repoName)}</span>
+        <span class="wt-branch" title="${escapeHtml(w.branch || '')}">${escapeHtml(w.branch || '—')}</span>
+        <span class="wt-chan">${escapeHtml(repoChan)}</span>
+        <span class="wt-disk">${fmtBytes(w.diskBytes)}</span>
+        <button class="wt-purge" data-repo="${escapeHtml(w.repoName)}" data-tid="${escapeHtml(w.threadId)}" data-dirty="${w.dirty ? '1' : ''}" title="purge this worktree (free ${fmtBytes(w.diskBytes)})">✕</button>
+      </div>`;
+    }).join('');
+  el.innerHTML = `
+    <div class="wt-summary">
+      <div class="wt-bar"><div class="wt-bar-fill ${barCls}" style="width:${pct}%"></div></div>
+      <div class="wt-summary-text">
+        <b>${wt.list.length}</b> worktree${wt.list.length === 1 ? '' : 's'} ·
+        <b>${fmtBytes(wt.totalBytes)}</b> / ${fmtBytes(wt.capBytes)} cap (${pct}%)
+        ${dirtyCount ? ` · <span class="wt-dirty-count">${dirtyCount} dirty</span>` : ''}
+      </div>
+    </div>
+    <div class="wt-list">${rows}</div>`;
+}
+
+// ─── Files tab ─────────────────────────────────────────────────────────────
+let currentDir = 'memory';
+let currentFile = null;
+let currentFileContent = '';
+let dirty = false;
+
+const FILE_ROOTS = [
+  { label: 'memory', path: 'memory' },
+  { label: 'personality', path: 'friday-personal' },
+  { label: 'skills', path: '.claude/skills' },
+  { label: 'src', path: 'src' },
+  { label: 'bin', path: 'bin' },
+  { label: 'hooks', path: 'hooks' },
+  { label: 'docs', path: 'docs' },
+  { label: 'logs', path: 'logs' },
+];
+
+function renderRootPicker(activePath) {
+  const picker = $('rootPicker');
+  if (!picker) return;
+  picker.innerHTML = FILE_ROOTS.map(r =>
+    `<button class="root-btn${(activePath === r.path || activePath.startsWith(r.path + '/')) ? ' active' : ''}" data-root="${r.path}">${escapeHtml(r.label)}</button>`
+  ).join('');
+  picker.querySelectorAll('button.root-btn').forEach(b => {
+    b.onclick = () => loadFiles(b.dataset.root);
+  });
+}
+
+async function loadFiles(p) {
+  currentDir = p;
+  $('filePath').textContent = p + '/';
+  renderRootPicker(p);
+  try {
+    const r = await fetch('/api/files?path=' + encodeURIComponent(p));
+    const data = await r.json();
+    if (data.error) { $('fileList').innerHTML = `<div class="empty">${escapeHtml(data.error)}</div>`; return; }
+    $('fileUp').disabled = !data.parent;
+    $('fileUp').onclick = () => data.parent ? loadFiles(data.parent) : null;
+    $('fileList').innerHTML = data.entries.map(e => {
+      const cls = 'file-row' + (e.isDir ? ' dir' : '') + (currentFile && currentFile === e.path ? ' active' : '');
+      const icon = e.isDir ? '📁' : (e.name.endsWith('.md') ? '📄' : e.name.endsWith('.ts') || e.name.endsWith('.js') ? '⚙' : '📝');
+      const sizeLabel = e.isDir ? '' : fmtBytes(e.size);
+      return `<div class="${cls}" data-path="${escapeHtml(e.path)}" data-isdir="${e.isDir}">
+        <span class="icon">${icon}</span>
+        <span class="name" title="${escapeHtml(e.relPath)}">${escapeHtml(e.name)}</span>
+        <span class="size">${sizeLabel}</span>
+      </div>`;
+    }).join('');
+    $('fileList').querySelectorAll('.file-row').forEach(row => {
+      row.onclick = () => {
+        if (row.dataset.isdir === 'true') loadFiles(row.dataset.path);
+        else openFile(row.dataset.path);
+      };
+    });
+  } catch (e) {
+    $('fileList').innerHTML = `<div class="empty">${escapeHtml(String(e))}</div>`;
+  }
+}
+
+async function openFile(p) {
+  if (dirty && !await openModal('Unsaved changes', 'Discard your unsaved edits?')) return;
+  currentFile = p;
+  dirty = false;
+  try {
+    const r = await fetch('/api/file?path=' + encodeURIComponent(p));
+    const data = await r.json();
+    if (data.error) { $('fileEditor').innerHTML = `<div class="empty">${escapeHtml(data.error)}</div>`; return; }
+    currentFileContent = data.content;
+    renderEditor(data);
+  } catch (e) {
+    $('fileEditor').innerHTML = `<div class="empty">${escapeHtml(String(e))}</div>`;
+  }
+}
+
+function renderEditor(data) {
+  const editable = data.editable;
+  $('fileEditor').innerHTML = `
+    <div class="editor-bar">
+      <span class="path">${escapeHtml(data.relPath)}</span>
+      <span class="meta">${fmtBytes(data.size)} · mtime ${new Date(data.mtimeMs).toLocaleString()}</span>
+      ${editable ? `<button class="btn primary" id="saveBtn" disabled>Save</button>` : `<span class="meta" style="color:var(--yellow)">read-only</span>`}
+      <span id="saveStatus" class="save-status" style="display:none"></span>
+    </div>
+    <textarea class="editor" id="editorTA" ${editable ? '' : 'readonly'}></textarea>
+  `;
+  $('editorTA').value = data.content;
+  if (editable) {
+    $('editorTA').addEventListener('input', () => {
+      dirty = $('editorTA').value !== currentFileContent;
+      $('saveBtn').disabled = !dirty;
+      const s = $('saveStatus');
+      if (dirty) { s.className = 'save-status dirty'; s.textContent = 'unsaved'; s.style.display = 'inline-block'; }
+      else { s.style.display = 'none'; }
+    });
+    $('saveBtn').onclick = saveFile;
+    document.addEventListener('keydown', editorHotkey);
+  }
+}
+
+function editorHotkey(e) {
+  if ((e.metaKey || e.ctrlKey) && e.key === 's' && currentFile) {
+    e.preventDefault();
+    if (!$('saveBtn')?.disabled) saveFile();
+  }
+}
+
+async function saveFile() {
+  const content = $('editorTA').value;
+  $('saveBtn').disabled = true;
+  const s = $('saveStatus');
+  s.className = 'save-status dirty'; s.textContent = 'saving…'; s.style.display = 'inline-block';
+  try {
+    const r = await fetch('/api/file', {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({ path: currentFile, content }),
+    });
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+    currentFileContent = content;
+    dirty = false;
+    s.className = 'save-status ok'; s.textContent = 'saved · ' + fmtBytes(data.size);
+    setTimeout(() => { s.style.display = 'none'; }, 2000);
+  } catch (e) {
+    s.className = 'save-status err'; s.textContent = 'error: ' + e.message;
+    $('saveBtn').disabled = false;
+  }
+}
+
+// ─── Processes tab ─────────────────────────────────────────────────────────
+let lastProcData = null;
+
+async function loadProcesses() {
+  try {
+    const r = await fetch('/api/processes');
+    const data = await r.json();
+    lastProcData = data;
+    renderProcesses();
+  } catch (e) {
+    $('procTable').innerHTML = `<div class="empty">${escapeHtml(String(e))}</div>`;
+  }
+}
+
+function renderProcesses() {
+  const data = lastProcData;
+  if (!data) return;
+  const fridayOnly = $('fridayOnly').checked;
+  const claudes = (data.claudes || []).filter(c => !fridayOnly || c.friday);
+  const hiddenCount = (data.claudes?.length || 0) - claudes.length;
+
+  const rows = [];
+  rows.push(`<div class="proc-row head"><div>kind</div><div>pid / name</div><div>command / thread</div><div>extra</div><div></div></div>`);
+  if (data.bunPid) {
+    rows.push(`<div class="proc-row">
+      <div><span class="kind-cell bun">bun</span></div>
+      <div class="pid">${data.bunPid}</div>
+      <div class="cmd">bun src/index.ts (Friday main)</div>
+      <div></div>
+      <div class="actions">
+        <button class="btn tiny" data-view-pid="${data.bunPid}">view</button>
+        <button class="btn danger tiny" data-pid="${data.bunPid}" data-label="Friday main process">restart</button>
+      </div>
+    </div>`);
+  }
+  for (const c of claudes) {
+    const fridayBadge = c.friday ? '<span class="friday-flag">FRIDAY</span>' : '';
+    const attachBtn = c.friday && c.tmuxSession
+      ? `<button class="btn tiny" data-attach="${escapeHtml(c.tmuxSession)}">attach</button>`
+      : '';
+    rows.push(`<div class="proc-row">
+      <div><span class="kind-cell claude">claude</span></div>
+      <div class="pid">${c.pid}</div>
+      <div class="cmd" title="${escapeHtml(c.cmd)}">${escapeHtml(c.cmd)}</div>
+      <div>${c.threadId ? `thread ${c.threadId}${fridayBadge}` : ''}</div>
+      <div class="actions">
+        <button class="btn tiny" data-view-pid="${c.pid}">view</button>
+        ${attachBtn}
+        <button class="btn danger tiny" data-pid="${c.pid}" data-label="claude (${c.threadId || 'unknown'})">kill</button>
+      </div>
+    </div>`);
+  }
+  for (const t of data.tmuxes || []) {
+    const idleSec = Math.floor(Date.now()/1000) - t.activitySec;
+    const idleStr = idleSec < 60 ? idleSec + 's' : idleSec < 3600 ? Math.floor(idleSec/60)+'m' : Math.floor(idleSec/3600)+'h';
+    rows.push(`<div class="proc-row">
+      <div><span class="kind-cell tmux">tmux</span></div>
+      <div class="pid">${escapeHtml(t.name)}</div>
+      <div class="cmd">thread ${t.threadId}</div>
+      <div>idle ${idleStr}${t.attached ? ' · attached' : ''}</div>
+      <div class="actions">
+        <button class="btn tiny" data-attach="${escapeHtml(t.name)}">attach</button>
+        <button class="btn danger tiny" data-tmux="${escapeHtml(t.name)}" data-label="tmux ${t.name}">kill</button>
+      </div>
+    </div>`);
+  }
+  if (fridayOnly && hiddenCount > 0) {
+    rows.push(`<div class="proc-row" style="grid-template-columns:1fr; color:var(--fg-5); font-size:11px; justify-items:center"><div>${hiddenCount} non-friday claude${hiddenCount === 1 ? '' : 's'} hidden — uncheck "friday only" to show</div></div>`);
+  }
+  $('procTable').innerHTML = rows.join('');
+  const total = claudes.length + (data.tmuxes?.length || 0) + (data.bunPid ? 1 : 0);
+  $('processesCount').textContent = total;
+  $('tabProcCount').textContent = total;
+
+  // View buttons
+  $('procTable').querySelectorAll('button[data-view-pid]').forEach(btn => {
+    btn.onclick = () => viewProcess(Number(btn.dataset.viewPid));
+  });
+  // Attach buttons (claude row + tmux row)
+  $('procTable').querySelectorAll('button[data-attach]').forEach(btn => {
+    btn.onclick = () => attachToTmux(btn.dataset.attach);
+  });
+  // Kill buttons
+  $('procTable').querySelectorAll('button.danger').forEach(btn => {
+    btn.onclick = async () => {
+      const label = btn.dataset.label;
+      const ok = await openModal('Confirm kill', `Kill <b>${escapeHtml(label)}</b>?<br><br>${btn.dataset.pid && Number(btn.dataset.pid) === data.bunPid ? "⚠️ This is Friday’s main process. launchd will respawn it." : ''}`);
+      if (!ok) return;
+      try {
+        const body = btn.dataset.tmux ? { kind: 'tmux', tmuxName: btn.dataset.tmux } : { pid: Number(btn.dataset.pid) };
+        const r = await fetch('/api/kill', {
+          method: 'POST', headers: {'content-type': 'application/json'},
+          body: JSON.stringify(body),
+        });
+        const data2 = await r.json();
+        if (!data2.ok) throw new Error(data2.error || 'kill failed');
+        setTimeout(loadProcesses, 700);
+      } catch (e) {
+        alert('kill failed: ' + e.message);
+      }
+    };
+  });
+}
+
+async function viewProcess(pid) {
+  $('detailsTitle').textContent = `Process ${pid}`;
+  $('detailsSub').textContent = '';
+  $('detailsBody').innerHTML = '<div class="empty">loading…</div>';
+  $('detailsBg').classList.add('open');
+  try {
+    const r = await fetch('/api/process?pid=' + pid);
+    const d = await r.json();
+    if (d.error) { $('detailsBody').innerHTML = `<div class="empty">${escapeHtml(d.error)}</div>`; return; }
+    $('detailsTitle').textContent = `Process ${d.pid}` + (d.threadId ? ` · thread ${d.threadId}` : '');
+    $('detailsSub').textContent = `up ${d.etime} · ${d.user}`;
+
+    let html = '';
+    if (d.thread) {
+      const t = d.thread;
+      html += `<dl>
+        <dt>thread</dt><dd>${escapeHtml(t.threadId)}</dd>
+        <dt>channel</dt><dd>${escapeHtml(t.channel || '—')}</dd>
+        <dt>status</dt><dd>${escapeHtml(t.status)}${t.muted ? ' · muted' : ''}</dd>
+        <dt>agent</dt><dd>${escapeHtml(t.agentType || '—')}</dd>
+        <dt>session id</dt><dd>${escapeHtml(t.sessionId || '—')}</dd>
+        <dt>turns</dt><dd>${t.totalTurns || 0}</dd>
+        <dt>cost</dt><dd>${fmtCost(t.totalCost || 0)}</dd>
+        <dt>last user</dt><dd>${escapeHtml((t.lastUserText || '').slice(0, 240))}</dd>
+        <dt>last reply</dt><dd>${escapeHtml((t.lastAssistantText || '').slice(0, 240))}</dd>
+      </dl>`;
+    }
+
+    html += `<dl>
+      <dt>pid</dt><dd>${d.pid}</dd>
+      <dt>parent pid</dt><dd>${d.ppid}${d.parentCmd ? ' · ' + escapeHtml(d.parentCmd.slice(0, 100)) : ''}</dd>
+      <dt>cwd</dt><dd>${escapeHtml(d.cwd || '—')}</dd>
+      <dt>cmd</dt><dd>${escapeHtml(d.cmd)}</dd>
+      ${d.tmuxSession ? `<dt>tmux</dt><dd>${escapeHtml(d.tmuxSession)}</dd>` : ''}
+    </dl>`;
+
+    if (d.tmuxSession) {
+      html += `<div class="attach-cmd">
+        <code>tmux attach -t ${escapeHtml(d.tmuxSession)}</code>
+        <button class="btn tiny" id="copyAttachBtn">copy</button>
+        <button class="btn tiny" id="openTermBtn">open in terminal</button>
+      </div>`;
+    }
+
+    if (d.tmuxTranscript) {
+      html += `<div style="font-size:11px; color:var(--fg-4); margin-bottom:6px; letter-spacing:0.08em; text-transform:uppercase;">tmux pane (last lines)</div>
+        <pre class="transcript">${escapeHtml(d.tmuxTranscript)}</pre>`;
+    }
+
+    $('detailsBody').innerHTML = html;
+
+    if (d.tmuxSession) {
+      $('copyAttachBtn').onclick = () => {
+        navigator.clipboard.writeText(`tmux attach -t ${d.tmuxSession}`);
+        $('copyAttachBtn').textContent = 'copied';
+        setTimeout(() => $('copyAttachBtn').textContent = 'copy', 1200);
+      };
+      $('openTermBtn').onclick = () => attachToTmux(d.tmuxSession);
+    }
+  } catch (e) {
+    $('detailsBody').innerHTML = `<div class="empty">error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function attachToTmux(name) {
+  try {
+    const r = await fetch('/api/attach', {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({ tmuxSession: name }),
+    });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'attach failed');
+  } catch (e) {
+    alert('attach failed: ' + e.message);
+  }
+}
+
+$('detailsClose').onclick = () => $('detailsBg').classList.remove('open');
+$('detailsBg').onclick = (e) => { if (e.target.id === 'detailsBg') $('detailsBg').classList.remove('open'); };
+$('refreshProcs').onclick = loadProcesses;
+$('fridayOnly').onchange = renderProcesses;
+
+// ─── SSE wire-up ───────────────────────────────────────────────────────────
+const es = new EventSource('/events');
+es.onmessage = (msg) => {
+  try {
+    const data = JSON.parse(msg.data);
+    if (data.payload) { lastState = data.payload; render(lastState); }
+  } catch (e) { console.error('parse', e); }
+};
+es.onerror = () => { $('updatedAt').textContent = 'disconnected · retrying…'; };
+
+// Re-render every second so "idle" timers tick smoothly between events
+setInterval(() => { if (lastState) render(lastState); }, 1000);
+
+// Auto-refresh processes every 5s while that tab is active
+setInterval(() => { if ($('panel-processes').classList.contains('active')) loadProcesses(); }, 5000);
+// ─── Memory tab: engram neuron graph ─────────────────────────────────────────
+const EDGE_COLORS = {
+  similar: '#7aa2f7', temporal_next: '#7dcfff', about: '#bb9af7',
+  lesson_from: '#9ece6a', caused: '#f7768e', supersedes: '#e0af68',
+};
+const TIER_COLORS = {
+  episodic: '#7dcfff', semantic: '#9ece6a', procedural: '#e0af68',
+  working: '#bb9af7', null: '#7aa2f7',
+};
+// Emotional tone → tint. Positive greens, negative reds, arousal yellows.
+const EMOTION_COLORS = {
+  positive: '#9ece6a', excited: '#9ece6a', proud: '#9ece6a', happy: '#9ece6a', amused: '#73daca', glad: '#9ece6a', grateful: '#9ece6a',
+  negative: '#f7768e', frustrated: '#f7768e', angry: '#f7768e', annoyed: '#ff9e64', anxious: '#e0af68', sad: '#7aa2f7', worried: '#e0af68', stressed: '#ff9e64',
+};
+function emotionColor(emotion, intensity) {
+  if (!emotion || emotion === 'neutral') return null;
+  const c = EMOTION_COLORS[emotion.toLowerCase()];
+  return (c && (intensity || 0) >= 0.25) ? c : null;
+}
+const Mem = {
+  inited: false, loading: false, nodes: [], edges: [], byId: new Map(),
+  on: { similar: true, temporal_next: true, about: false, lesson_from: true, caused: true, supersedes: true },
+  view: { x: 0, y: 0, scale: 1 }, drag: null, selected: null, hover: null,
+  alpha: 0, raf: null, recall: null, hideArchived: false, // recall = { seeds:Set, act:Map, pulses:[], t0 }
+};
+
+function initMemoryTab() {
+  if (Mem.inited) { resizeMemCanvas(); return; }
+  Mem.inited = true;
+  const cv = $('memCanvas');
+
+  // Edge-type toggles
+  document.querySelectorAll('#panel-memory .etype').forEach(el => {
+    const et = el.dataset.etype;
+    el.classList.toggle('on', !!Mem.on[et]);
+    el.addEventListener('click', () => { Mem.on[et] = !Mem.on[et]; el.classList.toggle('on', Mem.on[et]); });
+  });
+  $('memRecallForm').addEventListener('submit', (e) => { e.preventDefault(); runMemRecall($('memQuery').value.trim()); });
+  $('memClearBtn').addEventListener('click', clearMemRecall);
+  $('memRefresh').addEventListener('click', () => loadMemGraph());
+  $('memReindex').addEventListener('click', reindexMem);
+  $('memDream').addEventListener('click', dreamMem);
+  $('memArchToggle').addEventListener('click', () => {
+    Mem.hideArchived = !Mem.hideArchived;
+    $('memArchToggle').classList.toggle('on', !Mem.hideArchived);
+  });
+
+  // Pan / zoom / select
+  cv.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+    const f = e.deltaY < 0 ? 1.12 : 1 / 1.12, v = Mem.view;
+    const wx = (mx - v.x) / v.scale, wy = (my - v.y) / v.scale;
+    v.scale = Math.max(0.15, Math.min(6, v.scale * f));
+    v.x = mx - wx * v.scale; v.y = my - wy * v.scale;
+  }, { passive: false });
+  cv.addEventListener('mousedown', (e) => {
+    const r = cv.getBoundingClientRect();
+    Mem.drag = { x: e.clientX - r.left, y: e.clientY - r.top, ox: Mem.view.x, oy: Mem.view.y, moved: false };
+    cv.classList.add('dragging');
+  });
+  window.addEventListener('mousemove', (e) => {
+    const cv = $('memCanvas'); if (!cv) return;
+    const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+    if (Mem.drag) {
+      Mem.view.x = Mem.drag.ox + (mx - Mem.drag.x); Mem.view.y = Mem.drag.oy + (my - Mem.drag.y);
+      if (Math.abs(mx - Mem.drag.x) + Math.abs(my - Mem.drag.y) > 4) Mem.drag.moved = true;
+    } else { Mem.hover = pickNode(mx, my); }
+  });
+  window.addEventListener('mouseup', (e) => {
+    const cv = $('memCanvas'); if (!cv) return;
+    cv.classList.remove('dragging');
+    if (Mem.drag && !Mem.drag.moved) {
+      const r = cv.getBoundingClientRect();
+      const n = pickNode(e.clientX - r.left, e.clientY - r.top);
+      if (n) selectMemNode(n); else { Mem.selected = null; $('memNodeCard').hidden = true; }
+    }
+    Mem.drag = null;
+  });
+  window.addEventListener('resize', () => { if ($('panel-memory').classList.contains('active')) resizeMemCanvas(); });
+
+  resizeMemCanvas();
+  loadMemGraph();
+  startMemLoop();
+}
+
+function resizeMemCanvas() {
+  const cv = $('memCanvas'); if (!cv) return;
+  const dpr = window.devicePixelRatio || 1, r = cv.getBoundingClientRect();
+  cv.width = Math.max(1, r.width * dpr); cv.height = Math.max(1, r.height * dpr);
+  Mem._dpr = dpr; Mem._w = r.width; Mem._h = r.height;
+}
+
+async function loadMemGraph() {
+  if (Mem.loading) return;
+  Mem.loading = true; $('memEmpty').hidden = false; $('memEmpty').textContent = 'loading the graph…';
+  try {
+    const res = await fetch('/api/engram/graph'); const data = await res.json();
+    if (data.needsIndex) {
+      $('memEmpty').innerHTML = 'no index yet — click <b>reindex</b> to build it from Friday’s memory/';
+      Mem.loading = false; return;
+    }
+    if (data.error) { $('memEmpty').textContent = 'error: ' + data.error; Mem.loading = false; return; }
+    buildMemGraph(data);
+    $('memEmpty').hidden = true;
+  } catch (err) { $('memEmpty').textContent = 'failed to load: ' + err; }
+  Mem.loading = false;
+}
+
+function buildMemGraph(data) {
+  const W = Mem._w || 800, H = Mem._h || 600;
+  const deg = new Map();
+  for (const e of data.edges) { deg.set(e.src, (deg.get(e.src) || 0) + 1); deg.set(e.dst, (deg.get(e.dst) || 0) + 1); }
+  Mem.byId = new Map();
+  Mem.nodes = data.nodes.map((n, i) => {
+    const a = (i / data.nodes.length) * Math.PI * 2, rad = 30 + Math.random() * Math.min(W, H) * 0.42;
+    const node = {
+      id: n.id, label: n.label, tier: n.tier, importance: n.importance, source: n.source,
+      archived: !!n.archived, salience: n.salience || 0,
+      emotion: n.emotion, emotionIntensity: n.emotionIntensity || 0, topic: n.topic,
+      deg: deg.get(n.id) || 0, x: W / 2 + Math.cos(a) * rad, y: H / 2 + Math.sin(a) * rad, vx: 0, vy: 0,
+    };
+    Mem.byId.set(n.id, node); return node;
+  });
+  Mem.edges = data.edges.filter(e => Mem.byId.has(e.src) && Mem.byId.has(e.dst))
+    .map(e => ({ s: Mem.byId.get(e.src), d: Mem.byId.get(e.dst), type: e.type, w: e.weight }));
+  Mem.recall = null; Mem.selected = null; $('memNodeCard').hidden = true; $('memResults').hidden = true;
+  const archN = Mem.nodes.filter(n => n.archived).length;
+  $('memStats').textContent = `${data.nodes.length} neurons · ${data.edges.length} synapses · ${data.stats?.entities ?? 0} entities${archN ? ` · ${archN} archived` : ''}`;
+  $('tabMemCount').textContent = data.nodes.length;
+  Mem.alpha = 1; Mem.view = { x: 0, y: 0, scale: 1 }; // re-settle layout
+  fitMemView(Mem.nodes, 0);
+}
+
+// Force-directed layout: a few iterations per frame, cooling, then freeze.
+function stepLayout() {
+  if (Mem.alpha <= 0.02) {
+    if (Mem.alpha !== 0 && !Mem.recall) fitMemView(Mem.nodes, 50); // one-time fit once settled
+    Mem.alpha = 0; return;
+  }
+  const ns = Mem.nodes, n = ns.length, REP = 1400, a = Mem.alpha;
+  // Repulsion (O(n^2) — bounded; only while cooling).
+  for (let i = 0; i < n; i++) {
+    const A = ns[i]; let fx = 0, fy = 0;
+    for (let j = 0; j < n; j++) {
+      if (i === j) continue;
+      const B = ns[j]; let dx = A.x - B.x, dy = A.y - B.y; let d2 = dx * dx + dy * dy;
+      if (d2 < 0.01) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 0.25; }
+      if (d2 > 90000) continue; // ignore far pairs — keeps it fast & local
+      const f = REP / d2; fx += dx * f; fy += dy * f;
+    }
+    A.vx = (A.vx + fx) * 0.5; A.vy = (A.vy + fy) * 0.5;
+  }
+  // Springs along visible edges.
+  for (const e of Mem.edges) {
+    if (!Mem.on[e.type]) continue;
+    const dx = e.d.x - e.s.x, dy = e.d.y - e.s.y, dist = Math.hypot(dx, dy) || 1;
+    const target = 70, k = 0.02 * (0.4 + e.w), f = (dist - target) * k;
+    const ux = dx / dist, uy = dy / dist;
+    e.s.vx += ux * f; e.s.vy += uy * f; e.d.vx -= ux * f; e.d.vy -= uy * f;
+  }
+  // Integrate + gentle gravity to centre.
+  const cx = Mem._w / 2, cy = Mem._h / 2;
+  for (const A of ns) {
+    A.vx += (cx - A.x) * 0.0009; A.vy += (cy - A.y) * 0.0009;
+    A.x += A.vx * a; A.y += A.vy * a; A.vx *= 0.86; A.vy *= 0.86;
+  }
+  Mem.alpha *= 0.985;
+}
+
+function fitMemView(nodes, pad) {
+  if (!nodes.length) return;
+  let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+  for (const n of nodes) { minX = Math.min(minX, n.x); minY = Math.min(minY, n.y); maxX = Math.max(maxX, n.x); maxY = Math.max(maxY, n.y); }
+  const w = Mem._w, h = Mem._h, gw = (maxX - minX) || 1, gh = (maxY - minY) || 1;
+  const m = pad || 60, scale = Math.max(0.15, Math.min(3, Math.min((w - m) / gw, (h - m) / gh)));
+  Mem.view.scale = scale;
+  Mem.view.x = w / 2 - ((minX + maxX) / 2) * scale;
+  Mem.view.y = h / 2 - ((minY + maxY) / 2) * scale;
+}
+
+function pickNode(mx, my) {
+  const v = Mem.view, wx = (mx - v.x) / v.scale, wy = (my - v.y) / v.scale;
+  let best = null, bd = 14 * 14 / (v.scale * v.scale);
+  for (const n of Mem.nodes) {
+    const dx = n.x - wx, dy = n.y - wy, d2 = dx * dx + dy * dy;
+    if (d2 < bd) { bd = d2; best = n; }
+  }
+  return best;
+}
+
+function nodeRadius(n) { return 2.6 + Math.sqrt(n.deg) * 0.6 + n.importance * 2 + (n.salience || 0) * 1.1; }
+
+function startMemLoop() {
+  if (Mem.raf) return;
+  const draw = () => {
+    Mem.raf = requestAnimationFrame(draw);
+    if (!$('panel-memory').classList.contains('active')) return;
+    stepLayout();
+    renderMem();
+  };
+  Mem.raf = requestAnimationFrame(draw);
+}
+
+function renderMem() {
+  const cv = $('memCanvas'); if (!cv) return;
+  const ctx = cv.getContext('2d'), dpr = Mem._dpr || 1, v = Mem.view;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, Mem._w, Mem._h);
+  ctx.save(); ctx.translate(v.x, v.y); ctx.scale(v.scale, v.scale);
+
+  const rec = Mem.recall, now = performance.now();
+  const lit = (id) => rec && (rec.seeds.has(id) || rec.act.has(id));
+
+  // Edges
+  ctx.lineCap = 'round';
+  for (const e of Mem.edges) {
+    if (Mem.hideArchived && (e.s.archived || e.d.archived)) continue;
+    const active = rec && lit(e.s.id) && lit(e.d.id);
+    // Always draw the firing path; only inactive edges respect the type toggle.
+    if (!active && !Mem.on[e.type]) continue;
+    ctx.beginPath(); ctx.moveTo(e.s.x, e.s.y); ctx.lineTo(e.d.x, e.d.y);
+    ctx.strokeStyle = EDGE_COLORS[e.type] || '#5a6478';
+    // Stronger synapses (higher weight, e.g. Hebbian-reinforced) draw thicker/brighter.
+    const w = e.w || 0.5;
+    ctx.globalAlpha = active ? 0.55 : (rec ? 0.04 : 0.1 + w * 0.14);
+    ctx.lineWidth = active ? 1.2 + w * 1.2 : 0.4 + w * 1.1;
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // Activation pulses traveling along traversed edges
+  if (rec) {
+    for (const p of rec.pulses) {
+      const t = (now - rec.t0 - p.delay) / p.dur;
+      if (t < 0 || t > 1) continue;
+      const x = p.from.x + (p.to.x - p.from.x) * t, y = p.from.y + (p.to.y - p.from.y) * t;
+      ctx.beginPath(); ctx.arc(x, y, 3.2, 0, 7);
+      ctx.fillStyle = EDGE_COLORS[p.type] || '#fff'; ctx.shadowBlur = 14; ctx.shadowColor = ctx.fillStyle;
+      ctx.fill(); ctx.shadowBlur = 0;
+    }
+  }
+
+  // Nodes
+  for (const n of Mem.nodes) {
+    if (Mem.hideArchived && n.archived) continue;
+    const r = nodeRadius(n);
+    const isSeed = rec && rec.seeds.has(n.id);
+    const actLvl = rec ? (rec.act.get(n.id) || 0) : 0;
+    const rel = rec && actLvl > 0 ? Math.min(1, actLvl / rec.maxAct) : 0; // strongest = 1
+    const dim = rec && !lit(n.id);
+    const fired = isSeed || actLvl > 0;
+    // Cold-archived neurons render grey + faded — visibly "forgotten".
+    // Otherwise emotion (if tagged + intense enough) tints the neuron, else tier.
+    const base = (n.archived && !fired)
+      ? '#4a5260'
+      : (emotionColor(n.emotion, n.emotionIntensity) || TIER_COLORS[n.tier] || TIER_COLORS.null);
+
+    if (fired) {
+      const pulse = 0.65 + 0.35 * Math.sin(now / 300 + n.x * 0.05);
+      const glow = isSeed ? 30 : 12 + rel * 26;
+      ctx.shadowBlur = glow * (0.7 + 0.3 * pulse); ctx.shadowColor = isSeed ? '#fff3b0' : base;
+    } else { ctx.shadowBlur = dim ? 0 : 6; ctx.shadowColor = base; }
+
+    // Expanding pulse ring on seeds — the "firing" tell.
+    if (isSeed) {
+      const ringT = ((now - rec.t0) % 1400) / 1400;
+      ctx.globalAlpha = (1 - ringT) * 0.5; ctx.beginPath();
+      ctx.arc(n.x, n.y, r * 1.6 + ringT * 26, 0, 7);
+      ctx.strokeStyle = '#fff3b0'; ctx.lineWidth = 1.4; ctx.stroke(); ctx.globalAlpha = 1;
+    }
+
+    const drawR = r * (isSeed ? 1.7 : 1.15 + rel * 0.7);
+    const grd = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, drawR * 2);
+    grd.addColorStop(0, isSeed ? '#fff3b0' : base);
+    grd.addColorStop(0.5, base);
+    grd.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalAlpha = dim ? 0.16 : (n.archived && !fired ? 0.3 : 1);
+    ctx.beginPath(); ctx.arc(n.x, n.y, drawR, 0, 7); ctx.fillStyle = grd; ctx.fill();
+    ctx.shadowBlur = 0;
+
+    if (n === Mem.selected) {
+      ctx.globalAlpha = 1; ctx.beginPath(); ctx.arc(n.x, n.y, r + 4, 0, 7);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+    } else if (n === Mem.hover) {
+      ctx.globalAlpha = 0.8; ctx.beginPath(); ctx.arc(n.x, n.y, r + 3, 0, 7);
+      ctx.strokeStyle = base; ctx.lineWidth = 1; ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
+
+function selectMemNode(n) {
+  Mem.selected = n;
+  const nbrs = [];
+  for (const e of Mem.edges) {
+    if (e.s === n) nbrs.push({ t: e.type, w: e.w, o: e.d });
+    else if (e.d === n) nbrs.push({ t: e.type, w: e.w, o: e.s });
+  }
+  nbrs.sort((a, b) => b.w - a.w);
+  const card = $('memNodeCard');
+  const emo = n.emotion && n.emotion !== 'neutral'
+    ? ` · <span style="color:${emotionColor(n.emotion, n.emotionIntensity) || 'var(--fg-3)'}">${escapeHtml(n.emotion)}${n.emotionIntensity ? ` ${Math.round(n.emotionIntensity * 100)}%` : ''}</span>`
+    : '';
+  const topic = n.topic ? ` · ${escapeHtml(n.topic)}` : '';
+  card.innerHTML = `<h4>${escapeHtml(n.tier || 'memory')} · deg ${n.deg}</h4>
+    <div class="meta">${escapeHtml(n.source || n.id)} · importance ${n.importance.toFixed(2)}${emo}${topic}</div>
+    <div class="body">${escapeHtml(n.label)}</div>
+    ${nbrs.length ? `<div class="nbrs">${nbrs.slice(0, 12).map(b =>
+      `<div class="nbr" data-id="${escapeHtml(b.o.id)}"><span class="et" style="color:${EDGE_COLORS[b.t] || '#aaa'}">${escapeHtml(b.t)}</span> ${escapeHtml((b.o.label || '').slice(0, 46))}</div>`).join('')}</div>` : ''}`;
+  card.querySelectorAll('.nbr').forEach(el => el.addEventListener('click', () => {
+    const o = Mem.byId.get(el.dataset.id); if (o) { selectMemNode(o); fitMemView([o, ...Mem.edges.filter(e => e.s === o || e.d === o).map(e => e.s === o ? e.d : e.s)], 120); }
+  }));
+  card.hidden = false;
+}
+
+async function runMemRecall(query) {
+  if (!query || !Mem.nodes.length) return;
+  const btn = $('memRecallBtn'); btn.disabled = true; btn.textContent = 'firing…';
+  try {
+    const res = await fetch('/api/engram/recall', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, k: 8 }),
+    });
+    const data = await res.json();
+    if (data.needsIndex || data.error) { $('memStats').textContent = data.error || 'no index'; return; }
+    applyMemRecall(data);
+  } catch (err) { $('memStats').textContent = 'recall failed: ' + err; }
+  btn.disabled = false; btn.textContent = 'recall ⚡';
+}
+
+function applyMemRecall(data) {
+  // The engine can activate hundreds of nodes over the dense `about` graph —
+  // far too many to read. Visualise only the strongest seeds + activations so
+  // the "firing" is legible; the results panel still shows the true top-k.
+  const allSeeds = data.trace.seeds || [], allAct = data.trace.activations || [];
+  const seedTop = [...allSeeds].sort((a, b) => b.score - a.score).slice(0, 12);
+  const seeds = new Set(seedTop.map(s => s.id));
+  const actTop = allAct.filter(a => !seeds.has(a.id)).sort((a, b) => b.activation - a.activation).slice(0, 40);
+  const act = new Map(actTop.map(a => [a.id, a.activation]));
+  const pulses = [];
+  for (const a of actTop) {
+    const to = Mem.byId.get(a.id), from = a.via && Mem.byId.get(a.via.from);
+    if (to && from) pulses.push({ from, to, type: a.via.type, delay: (a.via.hop - 1) * 480, dur: 620 });
+  }
+  const maxAct = actTop.length ? actTop[0].activation : 1;
+  Mem.recall = { seeds, act, pulses, maxAct, t0: performance.now() };
+
+  // Fit view to the active subgraph.
+  const activeNodes = [...seeds, ...act.keys()].map(id => Mem.byId.get(id)).filter(Boolean);
+  if (activeNodes.length) fitMemView(activeNodes, 140);
+
+  // Results panel
+  const rp = $('memResults');
+  rp.innerHTML = `<h4>recalled · ${data.results.length}</h4>` + data.results.map(r =>
+    `<div class="mem-res" data-id="${escapeHtml(r.id)}">
+       <span class="score">${r.score.toFixed(4)}</span>
+       <div class="txt">${escapeHtml((r.content || '').slice(0, 150))}</div>
+       <div class="why">${escapeHtml(r.why || '')}</div>
+     </div>`).join('');
+  rp.querySelectorAll('.mem-res').forEach(el => el.addEventListener('click', () => {
+    const n = Mem.byId.get(el.dataset.id); if (n) selectMemNode(n);
+  }));
+  rp.hidden = false;
+  $('memStats').textContent = `fired ${seeds.size}/${allSeeds.length} seeds → showing ${act.size}/${allAct.length} activated`;
+}
+
+function clearMemRecall() {
+  Mem.recall = null; $('memResults').hidden = true; $('memQuery').value = '';
+  fitMemView(Mem.nodes, 60);
+}
+
+async function dreamMem() {
+  if (!Mem.nodes.length) return;
+  const btn = $('memDream'); btn.disabled = true; btn.textContent = '💤 dreaming…';
+  try {
+    // Archive the lowest-salience ~25% so the consolidation is visible.
+    const capacity = Math.max(1, Math.floor(Mem.nodes.filter(n => !n.archived).length * 0.75));
+    const res = await fetch('/api/engram/dream', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ capacity }),
+    });
+    const data = await res.json();
+    if (data.error) { $('memStats').textContent = 'dream failed: ' + data.error; }
+    else { Mem.recall = null; $('memResults').hidden = true; await loadMemGraph();
+      $('memStats').textContent += ` · just archived ${data.archived ?? 0}`; }
+  } catch (err) { $('memStats').textContent = 'dream failed: ' + err; }
+  btn.disabled = false; btn.textContent = '💤 dream';
+}
+
+async function reindexMem() {
+  const btn = $('memReindex'); btn.disabled = true; btn.textContent = 'indexing…';
+  $('memEmpty').hidden = false; $('memEmpty').textContent = 'reindexing from memory/ …';
+  try {
+    const res = await fetch('/api/engram/reindex', { method: 'POST' });
+    const data = await res.json();
+    if (data.error) { $('memEmpty').textContent = 'reindex failed: ' + data.error; }
+    else await loadMemGraph();
+  } catch (err) { $('memEmpty').textContent = 'reindex failed: ' + err; }
+  btn.disabled = false; btn.textContent = 'reindex';
+}
+</script>
+</body>
+</html>
