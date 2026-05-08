@@ -2,13 +2,27 @@ import type { App } from "@slack/bolt";
 import { log } from "../logger.ts";
 
 /**
- * Observe-only health monitor. We log socket state transitions and track
- * time since last event so we can warn if Slack goes silent. Reconnection
- * is left to Bolt's native autoReconnectEnabled — forcing reconnects from
- * here races with Bolt and ends in a loop, so we don't.
+ * Active socket health check.
+ *
+ * Bolt's native autoReconnectEnabled is supposed to handle dropped websockets,
+ * but in practice we've seen it leave the socket dead for 60+ minutes without
+ * recovering — the ping/pong handshake gets stuck and `monitorSocketHealth`'s
+ * earlier observe-only mode just escalated WARN logs while messages went
+ * unreceived (events filed during the dead window are NOT replayed on reconnect,
+ * they're lost). 2026-05-07: the kenko-life DM in #fridaytest landed at 70s
+ * before a manual kickstart and never reached Friday.
+ *
+ * This monitor now actively probes Slack via auth.test() each interval, tracks
+ * websocket inactivity, and forces a process exit (KeepAlive respawns via
+ * launchd) when the websocket has been silent past STALE_HARD_MS while Slack
+ * itself is still reachable. We don't try to call client.disconnect()/start()
+ * directly — Bolt's reconnect machinery races with that and we end in
+ * inconsistent state. A clean exit + launchd respawn is bulletproof and the
+ * downtime (~3s) is far less than the silent-socket failure mode.
  */
-const STALE_WARN_MS = 5 * 60 * 1000;
-const CHECK_INTERVAL_MS = 60 * 1000;
+const CHECK_INTERVAL_MS = 30 * 1000;
+const STALE_WARN_MS = 3 * 60 * 1000;   // start warning after 3 minutes silent
+const STALE_HARD_MS = 10 * 60 * 1000;  // give up after 10 minutes; exit and let launchd respawn
 
 interface SocketModeClientLike {
   on(event: string, fn: (...args: unknown[]) => void): void;
@@ -41,22 +55,52 @@ export function monitorSocketHealth(app: App): void {
     client.on("slack_event", () => {
       lastActivityAt = Date.now();
     });
+    // CRITICAL: Slack sends keepalive pings every ~30s even when there's no
+    // user activity. Without listening for them, an idle overnight window
+    // looks identical to a wedged socket and we'd respawn every 3 min until
+    // morning. 2026-05-08 incident: 10 launchd respawns between 01:46-06:04
+    // killed today's standup kickoff timer (death by heartbeat, ironic).
+    for (const heartbeat of [
+      "ping",
+      "pong",
+      "slack_event_ack",
+      "outgoing_message",
+      "websocket_open",
+      "websocket_close",
+    ] as const) {
+      client.on(heartbeat, () => {
+        lastActivityAt = Date.now();
+      });
+    }
   } else {
     log.warn("socket", "Receiver does not expose a SocketModeClient — skipping state listeners");
   }
 
   const interval = setInterval(async () => {
+    let slackReachable = false;
     try {
       await app.client.auth.test();
+      slackReachable = true;
     } catch (err) {
+      // Slack itself is unreachable (Slack outage / network split). Don't
+      // exit — restarting wouldn't help and would just thrash. Just log.
       log.warn("socket", `auth.test probe failed: ${err}`);
-      return;
     }
     const silentFor = Date.now() - lastActivityAt;
+    if (silentFor > STALE_HARD_MS && slackReachable) {
+      // Slack API works but our websocket has been silent for too long —
+      // websocket is wedged. Exit; launchd KeepAlive respawns the process
+      // and Bolt rebuilds the socket cleanly.
+      log.error(
+        "socket",
+        `websocket silent for ${Math.round(silentFor / 1000)}s while Slack API is reachable — exiting for launchd respawn`,
+      );
+      process.exit(1);
+    }
     if (silentFor > STALE_WARN_MS) {
       log.warn(
         "socket",
-        `no socket activity for ${Math.round(silentFor / 1000)}s — Bolt will auto-reconnect if the ping timeout trips`,
+        `no socket activity for ${Math.round(silentFor / 1000)}s — will force respawn at ${Math.round(STALE_HARD_MS / 1000)}s if still silent`,
       );
     }
   }, CHECK_INTERVAL_MS);

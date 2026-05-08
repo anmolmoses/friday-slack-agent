@@ -90,6 +90,7 @@ describe("createSession", () => {
       "lastActivity",
       "lastError",
       "mcpConfigPath",
+      "muted",
       "pendingMessages",
       "pid",
       "recentJabs",

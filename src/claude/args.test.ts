@@ -24,6 +24,7 @@ function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
     createdAt: Date.now(),
     spiralScore: 0,
     recentJabs: [],
+    muted: false,
     ...overrides,
   };
 }

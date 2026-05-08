@@ -41,6 +41,13 @@ export interface ThreadSession {
   spiralScore: number;
   /** Recent ragebait-shaped jabs from non-Anmol users in vibes channels. */
   recentJabs: RagebaitJab[];
+  /**
+   * When true, Friday is disconnected from this thread — incoming messages
+   * are ignored entirely (no spawn, no eyes-reaction, no buffering). Set
+   * via `!mute`, cleared via `!unmute`. Anyone in the thread can toggle.
+   * @mentions, app_mentions, and pattern routing all yield to this flag.
+   */
+  muted: boolean;
 }
 
 export function createSession(
@@ -66,5 +73,6 @@ export function createSession(
     createdAt: Date.now(),
     spiralScore: 0,
     recentJabs: [],
+    muted: false,
   };
 }

@@ -96,6 +96,14 @@ export class SessionManager {
       }
     }
 
+    // Muted threads: ignore everything EXCEPT !unmute (so the user can wake
+    // her back up) and !mute itself (so a re-mute gets a confirmation
+    // instead of confusing silence). No spawn, no eyes-react, no buffering,
+    // no pattern routing — this thread is shut for Friday until !unmute.
+    if (session.muted && event.command !== "unmute" && event.command !== "mute") {
+      return;
+    }
+
     if (event.command) {
       const handled = await this.handleCommand(session, event);
       if (handled) return;
@@ -172,7 +180,7 @@ export class SessionManager {
           ? `${Math.round((Date.now() - session.lastActivity) / 1000)}s ago`
           : "never";
         const lines = [
-          `*Status:* ${session.status}`,
+          `*Status:* ${session.status}${session.muted ? " (muted)" : ""}`,
           `*Agent:* ${session.agentType ?? "default"}`,
           `*Repo:* ${session.targetRepo ?? "none"}`,
           `*Worktree:* ${session.worktreePath ?? "none"}`,
@@ -205,6 +213,8 @@ export class SessionManager {
           "`!done <id>` — Mark a dump entry done",
           "`!pending` — Show open dumps (last 7 days)",
           "`!digest` — Preview the morning digest now",
+          "`!mute` — Disconnect Friday from this thread (no replies until `!unmute`)",
+          "`!unmute` — Reconnect Friday to this thread",
           "`!help` — Show this help",
         ].join("\n");
         this.onCommandResponse?.(event, helpText);
@@ -229,6 +239,28 @@ export class SessionManager {
         session.verbosity = "normal";
         await this.store.set(session.threadId, session);
         this.onCommandResponse?.(event, "Normal mode.");
+        return true;
+      }
+
+      case "mute": {
+        if (session.muted) {
+          this.onCommandResponse?.(event, "Already muted on this thread. `!unmute` to wake me back up.");
+        } else {
+          session.muted = true;
+          await this.store.set(session.threadId, session);
+          this.onCommandResponse?.(event, "Muted on this thread :zipper_mouth_face: I won't reply to anything here until `!unmute`.");
+        }
+        return true;
+      }
+
+      case "unmute": {
+        if (!session.muted) {
+          this.onCommandResponse?.(event, "Not muted — I'm already listening.");
+        } else {
+          session.muted = false;
+          await this.store.set(session.threadId, session);
+          this.onCommandResponse?.(event, "Unmuted :bell: back online for this thread.");
+        }
         return true;
       }
 

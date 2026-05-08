@@ -60,17 +60,22 @@ export async function handleFocusBotMessage(
   if (!pending || pending.date !== istDate()) {
     log.info(
       "standup/handler",
-      `focus bot posted but no pending standup (status=${pending?.status ?? "none"})`,
+      `focus bot posted but no pending standup (status=${pending?.status ?? "none"}) — NOT inventing one`,
     );
-    // Still record the thread for today so a later approval can post.
-    if (!pending) {
-      setPending({
-        date: istDate(),
-        focusBotThreadTs: event.ts,
-        status: "awaiting-input",
-      });
-    } else {
-      updatePending((p) => ({ ...p, focusBotThreadTs: event.ts }));
+    // Do NOT create a phantom "awaiting-input" pending state. The previous
+    // behavior here did exactly that, which then made the scheduler skip
+    // the next day's kickoff with "already in flight". 2026-05-08:
+    // a missed kickoff (heartbeat-respawn loop killed today's timer) plus
+    // a focus-bot post created phantom state that would've blocked Mon
+    // too. If there's no pending standup, the focus-bot's thread ts is
+    // not useful — there's nothing to post into it. Just log and bail.
+    if (pending && pending.date !== istDate()) {
+      // Stale prior-day pending — clear it so tomorrow can fire cleanly.
+      log.info(
+        "standup/handler",
+        `clearing stale prior-day pending standup (date=${pending.date} status=${pending.status})`,
+      );
+      setPending(undefined);
     }
     return true;
   }

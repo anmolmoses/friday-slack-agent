@@ -19,6 +19,8 @@ const KNOWN_COMMANDS = new Set([
   "done",
   "pending",
   "digest",
+  "mute",
+  "unmute",
 ]);
 
 export interface ParsedCommand {

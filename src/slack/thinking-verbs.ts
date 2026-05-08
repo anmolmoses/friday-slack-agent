@@ -75,7 +75,7 @@ export const THINKING_VERBS: readonly string[] = [
   "Cringemaxxing", "Delusionmaxxing", "Copemaxxing", "Hopemaxxing", "Joymaxxing",
   "Sillymaxxing", "Goblinmaxxing", "Gremlinmaxxing", "Buildmaxxing", "Shippingmaxxing",
   "Bugfixmaxxing", "Tokenmaxxing", "Promptmaxxing", "Survivalmaxxing", "Officemaxxing",
-  "Proteinmaxxing",
+  "Proteinmaxxing", "mentally-stabbing-pranav"
 ] as const;
 
 /**
