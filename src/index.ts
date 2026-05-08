@@ -18,6 +18,7 @@ import { monitorSocketHealth } from "./slack/socket-health.ts";
 import { startNightlyDream } from "./memory/scheduler.ts";
 import { startDumpDigest } from "./dumps/scheduler.ts";
 import { startStandupScheduler } from "./standup/scheduler.ts";
+import { isStandupThread } from "./standup/handler.ts";
 import { log } from "./logger.ts";
 
 const config = loadConfig();
@@ -59,7 +60,11 @@ sessionManager.onResponse = (session, response) => {
   responder.deleteStatus(session.channel, session.threadId);
   if (response && !silent) {
     let toPost = response;
-    if (isVibesChannel(session.channel)) {
+    // Skip vibes-lint inside the active standup kickoff thread — standup
+    // drafts are inherently multi-line (*Yesterday* + *Today* blocks with
+    // bullets) and the 3-line cap mangles them. C0AUYJHK6UW is both the
+    // standup channel AND a vibes channel, hence the explicit thread check.
+    if (isVibesChannel(session.channel) && !isStandupThread(session.threadId)) {
       const lint = lintVibesResponse(response);
       if (lint.truncated) {
         log.warn(

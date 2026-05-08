@@ -18,13 +18,22 @@ import {
 } from "./state.ts";
 import { parseStandup } from "./formatter.ts";
 
+// Phrases that approve the current standup draft and trigger the actual
+// post into the focus-bot thread (as Anmol via SLACK_USER_TOKEN). We've
+// lost standups because Anmol said "send this to the standup bot as me"
+// and the older list only matched the literal "ship/post it/approve" set.
+// 2026-05-08 incident: Anmol's natural-language approval got treated as a
+// regular message and Friday just echoed the draft instead of posting it.
 const APPROVAL_PHRASES = [
-  /\bapproved\b/i,
-  /\bapprove\b/i,
-  /\bpost it\b/i,
-  /\bship it\b/i,
-  /\bship\b/i,
+  /\bapproved?\b/i,                               // approve / approved
+  /\bpost (it|this|that|as me|on my behalf)\b/i,  // post it / post as me
+  /\bsend (it|this|that|to (the )?standup|as me|on my behalf)\b/i,
+  /\bship (it|this|that)?\b/i,
+  /\bgo (ahead|for it)\b/i,
+  /\bdo it\b/i,
   /\blgtm\b/i,
+  /\b(looks |is )?good\b/i,
+  /^\s*(yes|yep|yup|sure|ok|okay|aight)\s*[.!]?\s*$/i, // bare affirmation
   /^\s*👍\s*$/,
   /^\s*✅\s*$/,
 ];
@@ -32,6 +41,21 @@ const APPROVAL_PHRASES = [
 export function isApproval(text: string): boolean {
   if (!text) return false;
   return APPROVAL_PHRASES.some((re) => re.test(text));
+}
+
+/**
+ * True when `threadId` is the active standup kickoff thread (the one Friday
+ * posted "Focus for the day…" in). Standup channel C0AUYJHK6UW is also a
+ * vibes channel, so without this check the vibes-lint 3-line cap would
+ * truncate Friday's multi-line standup draft (the *Yesterday* / *Today*
+ * blocks are inherently multi-line). Used by index.ts onResponse to skip
+ * vibes-lint inside the standup thread.
+ */
+export function isStandupThread(threadId: string): boolean {
+  if (!threadId) return false;
+  const pending = getPending();
+  if (!pending) return false;
+  return pending.fridayTestThreadTs === threadId;
 }
 
 /**
