@@ -1,4 +1,5 @@
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import type { Config } from "../config.ts";
 import type { SessionStore } from "../session/store/interface.ts";
 import { handleHealth } from "./routes/health.ts";
@@ -7,9 +8,21 @@ import { handleLogs } from "./routes/logs.ts";
 import { handleMemoryList, handleMemoryRead } from "./routes/memory.ts";
 import { handleChatSend, handleChatStream } from "./routes/chat.ts";
 import { ChatManager } from "./chat-manager.ts";
+import { getSnapshot, subscribe, type DashboardEvent } from "./dashboard-state.ts";
+import {
+  handleListFiles,
+  handleReadFile,
+  handleWriteFile,
+  handleListProcesses,
+  handleProcessDetails,
+  handleAttachTerminal,
+  handleKillProcess,
+} from "./dashboard-api.ts";
+import { clearPersonaCache, getPersonaState } from "../claude/args.ts";
 import { log } from "../logger.ts";
 
 const PUBLIC_DIR = path.resolve(import.meta.dir, "../../public");
+const DASHBOARD_HTML_PATH = path.join(import.meta.dir, "dashboard.html");
 const startedAt = new Date().toISOString();
 
 function cors(res: Response): Response {
@@ -28,6 +41,7 @@ export function startHttpServer(deps: {
 
   const server = Bun.serve({
     port: config.http.port,
+    hostname: "127.0.0.1",
     idleTimeout: 255, // max for SSE connections (seconds)
     async fetch(req) {
       const url = new URL(req.url);
@@ -55,6 +69,19 @@ export function startHttpServer(deps: {
           return cors(res);
         }
 
+        // Live dashboard (Live/Threads/Files/Processes)
+        if (url.pathname === "/live" || url.pathname === "/dashboard") {
+          try {
+            const html = readFileSync(DASHBOARD_HTML_PATH, "utf-8");
+            res = new Response(html, {
+              headers: { "Content-Type": "text/html; charset=utf-8" },
+            });
+          } catch (err) {
+            res = new Response(`dashboard html missing: ${err}`, { status: 500 });
+          }
+          return cors(res);
+        }
+
         // API routes
         if (url.pathname === "/api/health") {
           res = await handleHealth(store, config, startedAt);
@@ -78,6 +105,67 @@ export function startHttpServer(deps: {
         } else if (url.pathname === "/api/chat/sessions") {
           const sessions = chatManager.getAllSessions();
           res = Response.json({ sessions });
+        } else if (url.pathname === "/api/state") {
+          res = Response.json(getSnapshot());
+        } else if (url.pathname === "/api/files" && req.method === "GET") {
+          res = await handleListFiles(url);
+        } else if (url.pathname === "/api/file" && req.method === "GET") {
+          res = await handleReadFile(url);
+        } else if (url.pathname === "/api/file" && req.method === "POST") {
+          res = await handleWriteFile(req);
+        } else if (url.pathname === "/api/processes" && req.method === "GET") {
+          res = await handleListProcesses();
+        } else if (url.pathname === "/api/process" && req.method === "GET") {
+          res = await handleProcessDetails(url);
+        } else if (url.pathname === "/api/attach" && req.method === "POST") {
+          res = await handleAttachTerminal(req);
+        } else if (url.pathname === "/api/persona/state") {
+          res = Response.json(getPersonaState());
+        } else if (url.pathname === "/api/persona/reload" && req.method === "POST") {
+          clearPersonaCache();
+          log.info("persona", "cache cleared via dashboard — next spawn will re-read friday-personal/*.md");
+          res = Response.json({ ok: true, ...getPersonaState() });
+        } else if (url.pathname === "/api/kill" && req.method === "POST") {
+          res = await handleKillProcess(req);
+        } else if (url.pathname === "/events") {
+          const stream = new ReadableStream({
+            start(controller) {
+              const encoder = new TextEncoder();
+              const send = (obj: unknown) => {
+                try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`)); }
+                catch { /* client gone */ }
+              };
+
+              send({ type: "snapshot", payload: getSnapshot() });
+
+              const unsub = subscribe((ev: DashboardEvent | { kind: "snapshot" }) => {
+                if ("kind" in ev && ev.kind === "snapshot") {
+                  send({ type: "snapshot", payload: getSnapshot() });
+                } else {
+                  send({ type: "tick", event: ev, payload: getSnapshot() });
+                }
+              });
+
+              const hb = setInterval(() => {
+                try { controller.enqueue(encoder.encode(`: heartbeat\n\n`)); }
+                catch { /* client gone */ }
+              }, 15_000);
+
+              req.signal.addEventListener("abort", () => {
+                unsub();
+                clearInterval(hb);
+                try { controller.close(); } catch { /* */ }
+              });
+            },
+          });
+          res = new Response(stream, {
+            headers: {
+              "content-type": "text/event-stream",
+              "cache-control": "no-cache, no-transform",
+              "connection": "keep-alive",
+              "x-accel-buffering": "no",
+            },
+          });
         } else {
           res = Response.json({ error: "not found" }, { status: 404 });
         }

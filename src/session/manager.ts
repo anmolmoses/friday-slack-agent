@@ -45,6 +45,7 @@ export class SessionManager {
   worktreeManager?: WorktreeManager;
   onResponse?: (session: ThreadSession, response: string) => void;
   onEvent?: (session: ThreadSession, event: StreamEvent) => void;
+  onSpawn?: (session: ThreadSession, info: SpawnHandle["spawnInfo"]) => void;
   onMessageBuffered?: (event: SlackMessageEvent) => void;
   onError?: (session: ThreadSession, error: string | null) => void;
   onCommandResponse?: (event: SlackMessageEvent, response: string) => void;
@@ -570,6 +571,8 @@ export class SessionManager {
       });
       this.handles.set(session.threadId, handle);
       session.pid = handle.pid;
+      try { this.onSpawn?.(session, rawHandle.spawnInfo); }
+      catch (err) { console.warn("[manager] onSpawn threw:", err); }
 
       handle.onEvent((event: StreamEvent) => {
         if (event.type === "system" && event.subtype === "init") {

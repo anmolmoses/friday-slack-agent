@@ -19,7 +19,6 @@ import { startNightlyDream } from "./memory/scheduler.ts";
 import { startDumpDigest } from "./dumps/scheduler.ts";
 import { startStandupScheduler } from "./standup/scheduler.ts";
 import { isStandupThread } from "./standup/handler.ts";
-import { startDashboardServer } from "./http/dashboard-server.ts";
 import {
   ensureThread,
   setThreadMeta,
@@ -28,6 +27,7 @@ import {
   recordError as dashRecordError,
   recordIncomingMessage as dashRecordIncomingMessage,
   recordRouting as dashRecordRouting,
+  recordSpawn as dashRecordSpawn,
 } from "./http/dashboard-state.ts";
 import { log } from "./logger.ts";
 
@@ -119,6 +119,21 @@ sessionManager.onEvent = (session, event) => {
   }
 };
 
+sessionManager.onSpawn = (session, info) => {
+  ensureThread(session.threadId, session.channel);
+  dashRecordSpawn(session.threadId, {
+    pid: info.pid ?? -1,
+    argv: info.argv,
+    cwd: info.cwd,
+    prompt: info.prompt,
+    envKeys: info.envKeys,
+    agentType: session.agentType,
+    resumedSessionId: info.resumedSessionId,
+    systemPromptFile: info.systemPromptFile,
+    systemPromptContent: info.systemPromptContent,
+  });
+};
+
 sessionManager.onMessageBuffered = (event) => {
   log.info("buffered", `thread=${event.threadId} user=${event.user}`);
   responder.addReaction(event.channel, event.ts, "eyes");
@@ -204,10 +219,11 @@ setInterval(() => {
     sessionManager.handleMessage(event);
   }, store, selfBotId, sessionManager.botUserId);
 
-  // Start the always-on live dashboard at http://localhost:3457
-  startDashboardServer();
-
-  // Legacy optional HTTP server (config.http.enabled) — separate from dashboard
+  // Unified HTTP server on config.http.port (default 3000):
+  //   /         → chat/memory UI (public/index.html)
+  //   /live     → live dashboard (Live/Threads/Files/Processes)
+  //   /api/*    → chat, memory, sessions, dashboard state, files, processes
+  //   /events   → SSE stream of dashboard updates
   if (config.http.enabled) {
     const { startHttpServer } = await import("./http/server.ts");
     startHttpServer({ store, config });

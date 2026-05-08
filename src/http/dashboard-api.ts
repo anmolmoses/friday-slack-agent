@@ -142,6 +142,26 @@ export async function handleWriteFile(req: Request): Promise<Response> {
 
 // ─── Process ops ────────────────────────────────────────────────────────────
 
+function tmuxSessionForThread(threadId: string): string {
+  return `friday-thread-${threadId.replace(/\./g, "-")}`;
+}
+
+// Strip secrets from a tmux capture-pane snapshot before sending to the
+// browser. The dispatch script's `export FOO=bar` lines surface bot tokens,
+// API keys, etc. Even though the dashboard is localhost-only, secrets in
+// the DOM are easy to leak (devtools, screenshots, screen-share).
+function redactTranscript(text: string): string {
+  return text
+    // export FOO_TOKEN=…  /  export FOO_SECRET=…  /  …KEY=…  /  …PASSWORD=…
+    .replace(/^(\s*export\s+\w*(?:TOKEN|SECRET|KEY|PASSWORD|API|AUTH)\w*=).*$/gim, "$1<redacted>")
+    // Inline tokens with recognizable prefixes
+    .replace(/xox[bpsa]-[A-Za-z0-9-]{10,}/g, "<redacted-slack-token>")
+    .replace(/xapp-\d-[A-Z0-9]+-\d+-[a-f0-9]+/g, "<redacted-slack-app-token>")
+    .replace(/sk-ant-[A-Za-z0-9_-]{20,}/g, "<redacted-anthropic-key>")
+    .replace(/sk-[A-Za-z0-9]{32,}/g, "<redacted-api-key>")
+    .replace(/gh[pousr]_[A-Za-z0-9]{30,}/g, "<redacted-github-token>");
+}
+
 export async function handleListProcesses(): Promise<Response> {
   // claude children
   const claudeProc = Bun.spawnSync(["pgrep", "-fl", "claude "]);
@@ -154,11 +174,14 @@ export async function handleListProcesses(): Promise<Response> {
       const cmd = rest.join(" ");
       // Pull MCP-config thread id if visible
       const mcpMatch = cmd.match(/friday-mcp\/([\d.]+)\.json/);
+      const threadId = mcpMatch?.[1] ?? null;
       return {
         kind: "claude" as const,
         pid: Number(pid),
         cmd,
-        threadId: mcpMatch?.[1] ?? null,
+        threadId,
+        friday: threadId !== null,
+        tmuxSession: threadId ? tmuxSessionForThread(threadId) : null,
       };
     })
     .filter((p) => Number.isFinite(p.pid));
@@ -198,6 +221,116 @@ export async function handleListProcesses(): Promise<Response> {
     claudes,
     tmuxes,
   });
+}
+
+export async function handleProcessDetails(url: URL): Promise<Response> {
+  const pidStr = url.searchParams.get("pid");
+  if (!pidStr) return Response.json({ error: "pid required" }, { status: 400 });
+  const pid = Number(pidStr);
+  if (!Number.isFinite(pid) || pid <= 1) {
+    return Response.json({ error: "invalid pid" }, { status: 400 });
+  }
+
+  // Verify the pid exists and is something we'd surface (claude / bun / tmux child)
+  const ps = Bun.spawnSync([
+    "ps", "-p", String(pid), "-o", "pid=,ppid=,etime=,user=,command=",
+  ]);
+  const psLine = (ps.stdout?.toString() ?? "").trim();
+  if (!psLine) return Response.json({ error: "process not found" }, { status: 404 });
+  const m = psLine.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.*)$/);
+  if (!m) return Response.json({ error: "ps parse failed", raw: psLine }, { status: 500 });
+  const [, , ppid, etime, user, cmd] = m;
+
+  // Working directory (lsof FD 'cwd')
+  let cwd: string | null = null;
+  try {
+    const lsofCwd = Bun.spawnSync(["lsof", "-a", "-p", String(pid), "-d", "cwd", "-Fn"]);
+    const out = lsofCwd.stdout?.toString() ?? "";
+    const cwdLine = out.split("\n").find((l) => l.startsWith("n"));
+    if (cwdLine) cwd = cwdLine.slice(1);
+  } catch { /* ignore */ }
+
+  // Parent process command
+  let parentCmd: string | null = null;
+  try {
+    const pp = Bun.spawnSync(["ps", "-p", ppid, "-o", "command="]);
+    parentCmd = (pp.stdout?.toString() ?? "").trim() || null;
+  } catch { /* ignore */ }
+
+  // Friday-owned? Pull thread metadata + tmux capture-pane snapshot.
+  const mcpMatch = cmd.match(/friday-mcp\/([\d.]+)\.json/);
+  const threadId = mcpMatch?.[1] ?? null;
+  let tmuxSession: string | null = null;
+  let tmuxTranscript: string | null = null;
+  let thread: unknown = null;
+
+  if (threadId) {
+    tmuxSession = tmuxSessionForThread(threadId);
+
+    // Live tmux pane capture (last ~200 lines)
+    try {
+      const cap = Bun.spawnSync([
+        "/opt/homebrew/bin/tmux", "capture-pane", "-p", "-t", tmuxSession, "-S", "-200",
+      ]);
+      if (cap.exitCode === 0) tmuxTranscript = redactTranscript(cap.stdout?.toString() ?? "");
+    } catch { /* tmux session may have died */ }
+
+    // Thread metadata from dashboard state (avoids importing session-store directly)
+    try {
+      const { getSnapshot } = await import("./dashboard-state.ts");
+      const snap = getSnapshot();
+      thread = snap.threads.find((t) => t.threadId === threadId) ?? null;
+    } catch { /* ignore */ }
+  }
+
+  return Response.json({
+    pid,
+    ppid: Number(ppid),
+    user,
+    etime,
+    cmd,
+    cwd,
+    parentCmd,
+    threadId,
+    tmuxSession,
+    tmuxTranscript,
+    thread,
+  });
+}
+
+export async function handleAttachTerminal(req: Request): Promise<Response> {
+  let body: { tmuxSession?: string };
+  try { body = await req.json(); }
+  catch { return Response.json({ error: "invalid JSON body" }, { status: 400 }); }
+
+  const session = body.tmuxSession;
+  if (!session || typeof session !== "string") {
+    return Response.json({ error: "tmuxSession required" }, { status: 400 });
+  }
+  if (!/^friday-thread-[\d-]+$/.test(session)) {
+    return Response.json({ error: "only friday-thread-* sessions are attachable" }, { status: 403 });
+  }
+
+  // Verify the tmux session exists
+  const exists = Bun.spawnSync(["/opt/homebrew/bin/tmux", "has-session", "-t", session]);
+  if (exists.exitCode !== 0) {
+    return Response.json({ error: "tmux session not found" }, { status: 404 });
+  }
+
+  // Open Terminal.app and run tmux attach. Each call opens a new window.
+  const script = `tell application "Terminal"
+  activate
+  do script "tmux attach -t ${session.replace(/"/g, '\\"')}"
+end tell`;
+
+  const r = Bun.spawnSync(["osascript", "-e", script]);
+  if (r.exitCode !== 0) {
+    const err = r.stderr?.toString() ?? "";
+    log.warn("dashboard", `attach terminal failed for ${session}: ${err}`);
+    return Response.json({ error: "osascript failed", detail: err }, { status: 500 });
+  }
+  log.info("dashboard", `opened Terminal attached to ${session}`);
+  return Response.json({ ok: true });
 }
 
 export async function handleKillProcess(req: Request): Promise<Response> {

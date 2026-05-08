@@ -1,5 +1,5 @@
 import path from "node:path";
-import { writeFileSync, mkdirSync, readFileSync, existsSync, readdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import type { Config } from "../config.ts";
 import type { ThreadSession } from "../session/types.ts";
 import type { AgentDefinition } from "../agents/loader.ts";
@@ -7,34 +7,72 @@ import type { AgentDefinition } from "../agents/loader.ts";
 const FRIDAY_ROOT = path.resolve(import.meta.dir, "../..");
 const PROMPT_TMP_DIR = "/tmp/friday-prompts";
 
-// Pre-build persona content once (cached across calls)
+const PERSONA_FILES = [
+  "IDENTITY.md",
+  "SOUL.md",
+  "AGENTS.md",
+  "USER.md",
+  "TOOLS.md",
+  "MEMORY.md",
+  "HEARTBEAT.md",
+] as const;
+
+const PERSONA_DIRS = [
+  path.join(FRIDAY_ROOT, "friday-personal"),
+  path.join(FRIDAY_ROOT, "openclaw"),
+];
+
+// Pre-build persona content once (cached across calls). The cache is
+// invalidated by clearPersonaCache() — used by /api/persona/reload so edits
+// to friday-personal/*.md take effect on the next spawn without a restart.
 let cachedPersonaContent: string | null = null;
+let personaLoadedAt: number | null = null;
+
+export function clearPersonaCache(): void {
+  cachedPersonaContent = null;
+  personaLoadedAt = null;
+}
+
+/** Returns persona file mtimes vs the last cache load time. */
+export function getPersonaState(): {
+  loadedAt: number | null;
+  files: { name: string; path: string | null; mtimeMs: number | null; stale: boolean }[];
+  anyStale: boolean;
+} {
+  const files = PERSONA_FILES.map((name) => {
+    let foundPath: string | null = null;
+    let mtimeMs: number | null = null;
+    for (const dir of PERSONA_DIRS) {
+      const p = path.join(dir, name);
+      if (existsSync(p)) {
+        foundPath = p;
+        try { mtimeMs = statSync(p).mtimeMs; }
+        catch { /* ignore */ }
+        break;
+      }
+    }
+    const stale = personaLoadedAt !== null && mtimeMs !== null && mtimeMs > personaLoadedAt;
+    return { name, path: foundPath, mtimeMs, stale };
+  });
+  return {
+    loadedAt: personaLoadedAt,
+    files,
+    anyStale: files.some((f) => f.stale),
+  };
+}
 
 function loadPersonaContent(): string {
   if (cachedPersonaContent !== null) return cachedPersonaContent;
 
-  const personaFiles = [
-    "IDENTITY.md",
-    "SOUL.md",
-    "AGENTS.md",
-    "USER.md",
-    "TOOLS.md",
-    "MEMORY.md",
-    "HEARTBEAT.md",
-  ];
   // Persona files moved out of openclaw/ to friday-personal/ in commit f16882d
   // (May 2026) so each developer's identity stays gitignored. Try the new
   // location first, fall back to the legacy one for un-migrated checkouts.
-  const candidateDirs = [
-    path.join(FRIDAY_ROOT, "friday-personal"),
-    path.join(FRIDAY_ROOT, "openclaw"),
-  ];
   const parts: string[] = [];
   const missing: string[] = [];
 
-  for (const file of personaFiles) {
+  for (const file of PERSONA_FILES) {
     let loaded = false;
-    for (const dir of candidateDirs) {
+    for (const dir of PERSONA_DIRS) {
       const filePath = path.join(dir, file);
       if (existsSync(filePath)) {
         try {
@@ -49,11 +87,12 @@ function loadPersonaContent(): string {
 
   if (missing.length > 0) {
     console.warn(
-      `[persona] missing persona files: ${missing.join(", ")} — searched ${candidateDirs.join(", ")}. Friday will run without these sections.`,
+      `[persona] missing persona files: ${missing.join(", ")} — searched ${PERSONA_DIRS.join(", ")}. Friday will run without these sections.`,
     );
   }
 
   cachedPersonaContent = parts.join("\n\n");
+  personaLoadedAt = Date.now();
   return cachedPersonaContent;
 }
 

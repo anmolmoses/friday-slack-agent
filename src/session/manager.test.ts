@@ -29,6 +29,16 @@ function createMockHandle(
     onEvent: (cb) => listeners.push(cb),
     kill: mock(() => {}),
     pid: 12345,
+    spawnInfo: {
+      pid: 12345,
+      argv: ["claude", "-p", "mock"],
+      cwd: "/tmp",
+      prompt: "mock prompt",
+      envKeys: [],
+      resumedSessionId: null,
+      systemPromptFile: null,
+      systemPromptContent: null,
+    },
     _complete: (resp?: string, sid?: string) => {
       const finalResponse = resp ?? response;
       const finalSessionId = sid ?? sessionId;

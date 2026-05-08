@@ -34,5 +34,6 @@ export function withTimeout(
     onEvent: handle.onEvent,
     kill: handle.kill,
     pid: handle.pid,
+    spawnInfo: handle.spawnInfo,
   };
 }

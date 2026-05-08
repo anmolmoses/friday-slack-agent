@@ -224,6 +224,22 @@
   .kind.info { background: var(--bg-3); color: var(--fg-3); }
   .kind.ask_anmol,
   .kind.ask-anmol { background: var(--yellow-soft); color: var(--yellow); }
+  .kind.spawn {
+    background: rgba(192,168,224,0.22); color: var(--magenta);
+    cursor: pointer; text-decoration: underline dotted;
+  }
+  .kind.spawn:hover { background: rgba(192,168,224,0.35); }
+  .kind.post { background: rgba(125,207,255,0.22); color: var(--cyan); }
+  .kind.post_edit,
+  .kind.post-edit { background: rgba(125,207,255,0.12); color: var(--cyan); }
+  .kind.post_failed,
+  .kind.post-failed { background: var(--red-soft); color: var(--red); }
+  .row .slack-link {
+    margin-left: 6px; font-size: 10px; padding: 1px 6px;
+    background: var(--bg-3); color: var(--accent);
+    border-radius: 3px; text-decoration: none;
+  }
+  .row .slack-link:hover { background: var(--bg-4); text-decoration: underline; }
   .row .body {
     color: var(--fg-2); white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis;
@@ -266,6 +282,21 @@
   .file-row.active { background: var(--bg-4); color: var(--fg); }
   .file-row .icon { width: 14px; text-align: center; }
   .file-row .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .root-picker {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    padding: 8px 10px; border-bottom: 1px solid var(--line);
+    background: var(--bg-2);
+  }
+  .root-picker .root-btn {
+    background: transparent; color: var(--fg-3);
+    border: 1px solid var(--line); border-radius: 4px;
+    padding: 3px 9px; font-family: var(--mono); font-size: 11px;
+    cursor: pointer; transition: all 0.1s;
+  }
+  .root-picker .root-btn:hover { color: var(--fg); border-color: var(--fg-4); }
+  .root-picker .root-btn.active {
+    background: var(--accent); color: var(--bg-0); border-color: var(--accent);
+  }
   .file-row .size { color: var(--fg-5); font-size: 10px; }
   .file-row.dir .name { color: var(--accent); }
 
@@ -310,17 +341,52 @@
   .save-status.err { color: var(--red); background: var(--red-soft); }
   .save-status.dirty { color: var(--yellow); background: var(--yellow-soft); }
 
+  /* ─── Persona reload + stale banner ───────────────────────────────────── */
+  .persona-btn {
+    margin-left: 8px;
+    background: transparent; color: var(--fg-3);
+    border: 1px solid var(--line);
+  }
+  .persona-btn:hover { color: var(--fg); border-color: var(--accent); }
+  .persona-btn.busy { opacity: 0.5; pointer-events: none; }
+  .persona-warn {
+    background: var(--yellow-soft); color: var(--yellow);
+    border-bottom: 1px solid var(--yellow);
+    padding: 7px 18px; font-size: 12px;
+    display: flex; align-items: center; gap: 14px;
+    font-family: var(--mono);
+  }
+  .persona-warn .stale-files { color: var(--fg-2); }
+  .persona-warn button {
+    margin-left: auto;
+    background: var(--yellow); color: var(--bg-0); border: 0;
+    padding: 4px 12px; border-radius: 4px; font-weight: 600;
+    cursor: pointer;
+  }
+
   /* ─── Processes tab ──────────────────────────────────────────────────── */
   .proc-table {
     background: var(--bg-1); border: 1px solid var(--line);
     border-radius: var(--radius); overflow: hidden;
   }
   .proc-row {
-    display: grid; grid-template-columns: 80px 100px 1fr 200px 120px;
+    display: grid; grid-template-columns: 80px 110px 1fr 200px 200px;
     gap: 10px; padding: 10px 14px;
     border-bottom: 1px solid var(--line); align-items: center;
     font-family: var(--mono); font-size: 12px;
   }
+  .proc-row .friday-flag {
+    display: inline-block; font-size: 9.5px; padding: 1px 5px;
+    border-radius: 3px; margin-left: 6px; letter-spacing: 0.06em;
+    background: var(--accent-soft, rgba(125,207,255,0.18)); color: var(--accent);
+    font-weight: 600;
+  }
+  .filter-toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    margin-left: 12px; font-size: 11.5px; color: var(--fg-3);
+    cursor: pointer; user-select: none;
+  }
+  .filter-toggle input { accent-color: var(--accent); }
   .proc-row:last-child { border-bottom: 0; }
   .proc-row.head {
     background: var(--bg-2); color: var(--fg-4);
@@ -373,6 +439,34 @@
   .modal p { color: var(--fg-3); margin: 0 0 16px 0; }
   .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
 
+  /* Larger modal for process details / transcripts */
+  .modal-lg {
+    background: var(--bg-1); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 22px;
+    width: min(960px, 90vw); max-height: 86vh;
+    display: flex; flex-direction: column;
+    box-shadow: var(--shadow);
+  }
+  .modal-lg h3 { margin: 0 0 14px 0; font-size: 15px; display: flex; align-items: baseline; gap: 10px; }
+  .modal-lg h3 .sub { color: var(--fg-4); font-size: 11.5px; font-family: var(--mono); font-weight: 400; }
+  .modal-lg .body { flex: 1; min-height: 0; overflow-y: auto; padding-right: 4px; }
+  .modal-lg dl { display: grid; grid-template-columns: 130px 1fr; gap: 6px 14px; margin: 0 0 14px 0; font-family: var(--mono); font-size: 12px; }
+  .modal-lg dt { color: var(--fg-4); }
+  .modal-lg dd { margin: 0; color: var(--fg); word-break: break-all; }
+  .modal-lg pre.transcript {
+    background: var(--bg-0); border: 1px solid var(--line); border-radius: 6px;
+    padding: 12px; font-family: var(--mono); font-size: 11.5px;
+    color: var(--fg-2); margin: 0 0 14px 0; max-height: 40vh; overflow: auto;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  .modal-lg .attach-cmd {
+    display: flex; gap: 8px; align-items: center;
+    background: var(--bg-0); border: 1px solid var(--line); border-radius: 6px;
+    padding: 8px 12px; font-family: var(--mono); font-size: 12px;
+    color: var(--fg-2); margin: 0 0 14px 0;
+  }
+  .modal-lg .attach-cmd code { flex: 1; color: var(--accent); }
+
   /* Scrollbars */
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-track { background: var(--bg-1); }
@@ -397,8 +491,10 @@
     <div class="stat">cost <b id="totalCost">$0.00</b></div>
     <div class="stat">turns <b id="totalTurns">0</b></div>
     <div class="stat" id="schedulers"></div>
+    <button class="btn tiny persona-btn" id="reloadPersonaBtn" title="invalidate the cached SOUL/AGENTS/IDENTITY content so the next claude spawn re-reads friday-personal/*.md">reload persona</button>
     <div class="updated" id="updatedAt">connecting…</div>
   </div>
+  <div id="personaWarn" class="persona-warn" style="display:none"></div>
 
   <!-- Tabs -->
   <div class="tabs">
@@ -409,7 +505,7 @@
   </div>
 
   <!-- Panels -->
-  <div style="overflow:hidden">
+  <div style="min-height:0; overflow-y:auto">
     <!-- LIVE -->
     <div class="panel active" id="panel-live">
       <div class="section">
@@ -438,6 +534,7 @@
     <div class="panel" id="panel-files">
       <div class="files-layout">
         <div class="file-tree" id="fileTree">
+          <div class="root-picker" id="rootPicker"></div>
           <div class="crumb">
             <button class="up" id="fileUp">↑ up</button>
             <span class="crumb-path" id="filePath">memory/</span>
@@ -454,6 +551,7 @@
     <div class="panel" id="panel-processes">
       <div class="section">
         <h2>processes <span class="count" id="processesCount">0</span><span class="rule"></span>
+          <label class="filter-toggle"><input type="checkbox" id="fridayOnly" checked> friday only</label>
           <button class="btn tiny" id="refreshProcs">refresh</button>
         </h2>
         <div class="proc-table" id="procTable"></div>
@@ -471,6 +569,17 @@
     <div class="modal-actions">
       <button class="btn" id="modalCancel">Cancel</button>
       <button class="btn danger" id="modalConfirm">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Process / thread details modal -->
+<div class="modal-bg" id="detailsBg">
+  <div class="modal-lg">
+    <h3><span id="detailsTitle">Process</span> <span class="sub" id="detailsSub"></span></h3>
+    <div class="body" id="detailsBody">loading…</div>
+    <div class="modal-actions" style="margin-top:14px">
+      <button class="btn" id="detailsClose">Close</button>
     </div>
   </div>
 </div>
@@ -611,9 +720,7 @@ function renderThreadCard(t) {
 
   const events = (t.events || []).slice(-15).reverse();
   const eventsHtml = events.length
-    ? `<div class="card-events">${events.map(e =>
-        `<div class="row"><span class="ts">${fmtTs(e.ts)}</span><span class="kind ${e.kind}">${e.kind.replace('_','·')}</span><span class="body" title="${escapeHtml(e.text)}">${escapeHtml(e.text)}</span></div>`
-      ).join('')}</div>`
+    ? `<div class="card-events">${events.map(e => renderEventRow(e, t)).join('')}</div>`
     : '';
 
   return `<div class="${cls}" data-tid="${escapeHtml(t.threadId)}">
@@ -639,8 +746,20 @@ function renderLiveTab(state) {
 
   // System feed
   const evs = (state.system.recentEvents || []).slice(-60).reverse();
+  const threadByTid = new Map(state.threads.map(t => [t.threadId, t]));
   $('systemFeed').innerHTML = evs.length
-    ? evs.map(e => `<div class="row"><span class="ts">${fmtTs(e.ts)}</span><span class="kind ${e.kind}" style="display:inline-block">${e.kind.replace('_','·')}</span><span class="tid">${escapeHtml(e.threadId || '—')}</span><span class="body" title="${escapeHtml(e.text)}">${escapeHtml(e.text)}</span></div>`).join('')
+    ? evs.map(e => {
+        const t = threadByTid.get(e.threadId) || { threadId: e.threadId || '', channel: e.channel };
+        const isSpawn = e.kind === 'spawn';
+        const isPost = e.kind === 'post' || e.kind === 'post_edit';
+        const kindAttrs = isSpawn ? ` data-spawn-pid="${(e.data && e.data.pid) || ''}" data-spawn-tid="${escapeHtml(t.threadId)}"` : '';
+        let extra = '';
+        if (isPost && e.data && e.data.messageTs) {
+          const url = slackPermalink(e.channel || t.channel, e.data.messageTs);
+          if (url) extra = ` <a class="slack-link" target="_blank" rel="noopener" href="${url}">open ↗</a>`;
+        }
+        return `<div class="row"><span class="ts">${fmtTs(e.ts)}</span><span class="kind ${e.kind}" style="display:inline-block"${kindAttrs}>${e.kind.replace('_','·')}</span><span class="tid">${escapeHtml(e.threadId || '—')}</span><span class="body" title="${escapeHtml(e.text)}">${escapeHtml(e.text)}${extra}</span></div>`;
+      }).join('')
     : '<div class="empty">no events yet</div>';
 
   // Warns
@@ -657,6 +776,130 @@ function renderThreadsTab(state) {
   $('allThreads').innerHTML = all.length ? all.map(renderThreadCard).join('') : '<div class="empty">no threads tracked</div>';
 }
 
+// Slack workspace for permalinks. The team is fixed for this install.
+const SLACK_WORKSPACE = 'teamgrowthx';
+function slackPermalink(channel, messageTs) {
+  if (!channel || !messageTs) return null;
+  return `https://${SLACK_WORKSPACE}.slack.com/archives/${channel}/p${messageTs.replace('.','')}`;
+}
+
+function renderEventRow(e, thread) {
+  const ts = fmtTs(e.ts);
+  const kindLabel = e.kind.replace('_','·');
+  const isSpawn = e.kind === 'spawn';
+  const isPost = e.kind === 'post' || e.kind === 'post_edit';
+  const kindAttrs = isSpawn
+    ? ` data-spawn-pid="${(e.data && e.data.pid) || ''}" data-spawn-tid="${escapeHtml(thread.threadId)}"`
+    : '';
+
+  let extra = '';
+  if (isPost && e.data && e.data.messageTs) {
+    const url = slackPermalink(e.channel || thread.channel, e.data.messageTs);
+    if (url) extra = ` <a class="slack-link" target="_blank" rel="noopener" href="${url}">open ↗</a>`;
+  }
+  return `<div class="row"><span class="ts">${ts}</span><span class="kind ${e.kind}"${kindAttrs}>${kindLabel}</span><span class="body" title="${escapeHtml(e.text)}">${escapeHtml(e.text)}${extra}</span></div>`;
+}
+
+// Delegated click handler: clicking a SPAWN pill opens the spawn details modal.
+document.addEventListener('click', (e) => {
+  const target = e.target.closest('.kind.spawn');
+  if (!target) return;
+  const pid = Number(target.dataset.spawnPid);
+  const tid = target.dataset.spawnTid;
+  if (pid && tid) viewSpawn(tid, pid);
+});
+
+function viewSpawn(threadId, pid) {
+  const t = (lastState?.threads || []).find(x => x.threadId === threadId);
+  if (!t) return;
+  const spawn = (t.spawns || []).find(s => s.pid === pid) || (t.spawns || []).slice(-1)[0];
+  if (!spawn) {
+    $('detailsTitle').textContent = `Spawn pid ${pid}`;
+    $('detailsSub').textContent = '';
+    $('detailsBody').innerHTML = '<div class="empty">no spawn record (pre-restart?)</div>';
+    $('detailsBg').classList.add('open');
+    return;
+  }
+  $('detailsTitle').textContent = `claude spawn · pid ${spawn.pid}`;
+  $('detailsSub').textContent = `${fmtTs(spawn.ts)} · thread ${threadId}`;
+
+  const argsHtml = spawn.argv.map(a => `<span style="color:var(--cyan)">${escapeHtml(a)}</span>`).join(' ');
+  const envHtml = spawn.envKeys && spawn.envKeys.length
+    ? spawn.envKeys.map(k => `<span style="display:inline-block; padding:1px 6px; margin:2px; background:var(--bg-2); border-radius:3px; font-size:11px;">${escapeHtml(k)}</span>`).join('')
+    : '<span style="color:var(--fg-5)">—</span>';
+
+  const sysPrompt = spawn.systemPromptContent || '';
+  const sysPromptFile = spawn.systemPromptFile || '';
+  const sysPromptHtml = sysPrompt
+    ? `
+      <div style="font-size:11px; color:var(--fg-4); margin-bottom:6px; letter-spacing:0.08em; text-transform:uppercase;">
+        system prompt
+        <span style="color:var(--fg-5); margin-left:8px; text-transform:none; letter-spacing:0;">${escapeHtml(sysPromptFile)} · ${sysPrompt.length} chars</span>
+      </div>
+      <details>
+        <summary style="cursor:pointer; color:var(--accent); font-family:var(--mono); font-size:11px; padding:6px 0;">expand · SOUL · AGENTS · IDENTITY · USER · TOOLS · MEMORY · HEARTBEAT</summary>
+        <pre class="transcript" style="max-height:50vh">${escapeHtml(sysPrompt)}</pre>
+      </details>`
+    : `<div style="font-size:11px; color:var(--fg-5); margin-bottom:6px;">no system prompt file captured</div>`;
+
+  $('detailsBody').innerHTML = `
+    <dl>
+      <dt>pid</dt><dd>${spawn.pid}</dd>
+      <dt>cwd</dt><dd>${escapeHtml(spawn.cwd)}</dd>
+      <dt>resume</dt><dd>${spawn.resumedSessionId ? escapeHtml(spawn.resumedSessionId) + ' <span style="color:var(--fg-5)">(continuing)</span>' : '<span style="color:var(--fg-5)">— (fresh session)</span>'}</dd>
+      <dt>agent</dt><dd>${escapeHtml(spawn.agentType || '— (default)')}</dd>
+    </dl>
+    <div style="font-size:11px; color:var(--fg-4); margin-bottom:6px; letter-spacing:0.08em; text-transform:uppercase;">command</div>
+    <pre class="transcript">${argsHtml}</pre>
+    <div style="font-size:11px; color:var(--fg-4); margin-bottom:6px; letter-spacing:0.08em; text-transform:uppercase;">user prompt (${spawn.prompt.length} chars)</div>
+    <pre class="transcript">${escapeHtml(spawn.prompt)}</pre>
+    ${sysPromptHtml}
+    <div style="font-size:11px; color:var(--fg-4); margin:14px 0 6px; letter-spacing:0.08em; text-transform:uppercase;">env keys (values redacted)</div>
+    <div style="font-family: var(--mono); font-size:11px; padding:8px 0;">${envHtml}</div>
+  `;
+  $('detailsBg').classList.add('open');
+}
+
+// ─── Persona state polling + reload ────────────────────────────────────────
+async function refreshPersonaState() {
+  try {
+    const r = await fetch('/api/persona/state');
+    const d = await r.json();
+    const banner = $('personaWarn');
+    if (d.anyStale) {
+      const stale = d.files.filter(f => f.stale).map(f => f.name).join(', ');
+      banner.innerHTML = `<span>⚠ persona out of date:</span><span class="stale-files">${escapeHtml(stale)} edited since boot</span><button id="banner-reload-btn">reload now</button>`;
+      banner.style.display = 'flex';
+      $('banner-reload-btn').onclick = reloadPersona;
+    } else {
+      banner.style.display = 'none';
+    }
+  } catch { /* network blip — leave banner state as-is */ }
+}
+
+async function reloadPersona() {
+  const btn = $('reloadPersonaBtn');
+  btn.classList.add('busy');
+  btn.textContent = 'reloading…';
+  try {
+    const r = await fetch('/api/persona/reload', { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'reload failed');
+    btn.textContent = 'reloaded ✓';
+    setTimeout(() => { btn.textContent = 'reload persona'; btn.classList.remove('busy'); }, 1500);
+    await refreshPersonaState();
+  } catch (e) {
+    btn.textContent = 'reload failed';
+    btn.classList.remove('busy');
+    setTimeout(() => btn.textContent = 'reload persona', 2000);
+    alert('persona reload failed: ' + e.message);
+  }
+}
+
+$('reloadPersonaBtn').onclick = reloadPersona;
+refreshPersonaState();
+setInterval(refreshPersonaState, 10_000);
+
 function render(state) {
   renderTopbar(state);
   renderLiveTab(state);
@@ -669,9 +912,32 @@ let currentFile = null;
 let currentFileContent = '';
 let dirty = false;
 
+const FILE_ROOTS = [
+  { label: 'memory', path: 'memory' },
+  { label: 'personality', path: 'friday-personal' },
+  { label: 'skills', path: '.claude/skills' },
+  { label: 'src', path: 'src' },
+  { label: 'bin', path: 'bin' },
+  { label: 'hooks', path: 'hooks' },
+  { label: 'docs', path: 'docs' },
+  { label: 'logs', path: 'logs' },
+];
+
+function renderRootPicker(activePath) {
+  const picker = $('rootPicker');
+  if (!picker) return;
+  picker.innerHTML = FILE_ROOTS.map(r =>
+    `<button class="root-btn${(activePath === r.path || activePath.startsWith(r.path + '/')) ? ' active' : ''}" data-root="${r.path}">${escapeHtml(r.label)}</button>`
+  ).join('');
+  picker.querySelectorAll('button.root-btn').forEach(b => {
+    b.onclick = () => loadFiles(b.dataset.root);
+  });
+}
+
 async function loadFiles(p) {
   currentDir = p;
   $('filePath').textContent = p + '/';
+  renderRootPicker(p);
   try {
     const r = await fetch('/api/files?path=' + encodeURIComponent(p));
     const data = await r.json();
@@ -769,69 +1035,190 @@ async function saveFile() {
 }
 
 // ─── Processes tab ─────────────────────────────────────────────────────────
+let lastProcData = null;
+
 async function loadProcesses() {
   try {
     const r = await fetch('/api/processes');
     const data = await r.json();
-    const rows = [];
-    rows.push(`<div class="proc-row head"><div>kind</div><div>pid / name</div><div>command / thread</div><div>extra</div><div></div></div>`);
-    if (data.bunPid) {
-      rows.push(`<div class="proc-row">
-        <div><span class="kind-cell bun">bun</span></div>
-        <div class="pid">${data.bunPid}</div>
-        <div class="cmd">bun src/index.ts (Friday main)</div>
-        <div></div>
-        <div class="actions"><button class="btn danger tiny" data-pid="${data.bunPid}" data-label="Friday main process">restart</button></div>
-      </div>`);
-    }
-    for (const c of data.claudes || []) {
-      rows.push(`<div class="proc-row">
-        <div><span class="kind-cell claude">claude</span></div>
-        <div class="pid">${c.pid}</div>
-        <div class="cmd" title="${escapeHtml(c.cmd)}">${escapeHtml(c.cmd)}</div>
-        <div>${c.threadId ? `thread ${c.threadId}` : ''}</div>
-        <div class="actions"><button class="btn danger tiny" data-pid="${c.pid}" data-label="claude (${c.threadId || 'unknown'})">kill</button></div>
-      </div>`);
-    }
-    for (const t of data.tmuxes || []) {
-      const idleSec = Math.floor(Date.now()/1000) - t.activitySec;
-      const idleStr = idleSec < 60 ? idleSec + 's' : idleSec < 3600 ? Math.floor(idleSec/60)+'m' : Math.floor(idleSec/3600)+'h';
-      rows.push(`<div class="proc-row">
-        <div><span class="kind-cell tmux">tmux</span></div>
-        <div class="pid">${escapeHtml(t.name)}</div>
-        <div class="cmd">thread ${t.threadId}</div>
-        <div>idle ${idleStr}${t.attached ? ' · attached' : ''}</div>
-        <div class="actions"><button class="btn danger tiny" data-tmux="${escapeHtml(t.name)}" data-label="tmux ${t.name}">kill</button></div>
-      </div>`);
-    }
-    $('procTable').innerHTML = rows.join('');
-    $('processesCount').textContent = (data.claudes?.length || 0) + (data.tmuxes?.length || 0) + (data.bunPid ? 1 : 0);
-    $('tabProcCount').textContent = $('processesCount').textContent;
-
-    $('procTable').querySelectorAll('button.danger').forEach(btn => {
-      btn.onclick = async () => {
-        const label = btn.dataset.label;
-        const ok = await openModal('Confirm kill', `Kill <b>${escapeHtml(label)}</b>?<br><br>${btn.dataset.pid && Number(btn.dataset.pid) === data.bunPid ? '⚠️ This is Friday\\'s main process. launchd will respawn it.' : ''}`);
-        if (!ok) return;
-        try {
-          const body = btn.dataset.tmux ? { kind: 'tmux', tmuxName: btn.dataset.tmux } : { pid: Number(btn.dataset.pid) };
-          const r = await fetch('/api/kill', {
-            method: 'POST', headers: {'content-type': 'application/json'},
-            body: JSON.stringify(body),
-          });
-          const data2 = await r.json();
-          if (!data2.ok) throw new Error(data2.error || 'kill failed');
-          setTimeout(loadProcesses, 700);
-        } catch (e) {
-          alert('kill failed: ' + e.message);
-        }
-      };
-    });
+    lastProcData = data;
+    renderProcesses();
   } catch (e) {
     $('procTable').innerHTML = `<div class="empty">${escapeHtml(String(e))}</div>`;
   }
 }
+
+function renderProcesses() {
+  const data = lastProcData;
+  if (!data) return;
+  const fridayOnly = $('fridayOnly').checked;
+  const claudes = (data.claudes || []).filter(c => !fridayOnly || c.friday);
+  const hiddenCount = (data.claudes?.length || 0) - claudes.length;
+
+  const rows = [];
+  rows.push(`<div class="proc-row head"><div>kind</div><div>pid / name</div><div>command / thread</div><div>extra</div><div></div></div>`);
+  if (data.bunPid) {
+    rows.push(`<div class="proc-row">
+      <div><span class="kind-cell bun">bun</span></div>
+      <div class="pid">${data.bunPid}</div>
+      <div class="cmd">bun src/index.ts (Friday main)</div>
+      <div></div>
+      <div class="actions">
+        <button class="btn tiny" data-view-pid="${data.bunPid}">view</button>
+        <button class="btn danger tiny" data-pid="${data.bunPid}" data-label="Friday main process">restart</button>
+      </div>
+    </div>`);
+  }
+  for (const c of claudes) {
+    const fridayBadge = c.friday ? '<span class="friday-flag">FRIDAY</span>' : '';
+    const attachBtn = c.friday && c.tmuxSession
+      ? `<button class="btn tiny" data-attach="${escapeHtml(c.tmuxSession)}">attach</button>`
+      : '';
+    rows.push(`<div class="proc-row">
+      <div><span class="kind-cell claude">claude</span></div>
+      <div class="pid">${c.pid}</div>
+      <div class="cmd" title="${escapeHtml(c.cmd)}">${escapeHtml(c.cmd)}</div>
+      <div>${c.threadId ? `thread ${c.threadId}${fridayBadge}` : ''}</div>
+      <div class="actions">
+        <button class="btn tiny" data-view-pid="${c.pid}">view</button>
+        ${attachBtn}
+        <button class="btn danger tiny" data-pid="${c.pid}" data-label="claude (${c.threadId || 'unknown'})">kill</button>
+      </div>
+    </div>`);
+  }
+  for (const t of data.tmuxes || []) {
+    const idleSec = Math.floor(Date.now()/1000) - t.activitySec;
+    const idleStr = idleSec < 60 ? idleSec + 's' : idleSec < 3600 ? Math.floor(idleSec/60)+'m' : Math.floor(idleSec/3600)+'h';
+    rows.push(`<div class="proc-row">
+      <div><span class="kind-cell tmux">tmux</span></div>
+      <div class="pid">${escapeHtml(t.name)}</div>
+      <div class="cmd">thread ${t.threadId}</div>
+      <div>idle ${idleStr}${t.attached ? ' · attached' : ''}</div>
+      <div class="actions">
+        <button class="btn tiny" data-attach="${escapeHtml(t.name)}">attach</button>
+        <button class="btn danger tiny" data-tmux="${escapeHtml(t.name)}" data-label="tmux ${t.name}">kill</button>
+      </div>
+    </div>`);
+  }
+  if (fridayOnly && hiddenCount > 0) {
+    rows.push(`<div class="proc-row" style="grid-template-columns:1fr; color:var(--fg-5); font-size:11px; justify-items:center"><div>${hiddenCount} non-friday claude${hiddenCount === 1 ? '' : 's'} hidden — uncheck "friday only" to show</div></div>`);
+  }
+  $('procTable').innerHTML = rows.join('');
+  const total = claudes.length + (data.tmuxes?.length || 0) + (data.bunPid ? 1 : 0);
+  $('processesCount').textContent = total;
+  $('tabProcCount').textContent = total;
+
+  // View buttons
+  $('procTable').querySelectorAll('button[data-view-pid]').forEach(btn => {
+    btn.onclick = () => viewProcess(Number(btn.dataset.viewPid));
+  });
+  // Attach buttons (claude row + tmux row)
+  $('procTable').querySelectorAll('button[data-attach]').forEach(btn => {
+    btn.onclick = () => attachToTmux(btn.dataset.attach);
+  });
+  // Kill buttons
+  $('procTable').querySelectorAll('button.danger').forEach(btn => {
+    btn.onclick = async () => {
+      const label = btn.dataset.label;
+      const ok = await openModal('Confirm kill', `Kill <b>${escapeHtml(label)}</b>?<br><br>${btn.dataset.pid && Number(btn.dataset.pid) === data.bunPid ? "⚠️ This is Friday’s main process. launchd will respawn it." : ''}`);
+      if (!ok) return;
+      try {
+        const body = btn.dataset.tmux ? { kind: 'tmux', tmuxName: btn.dataset.tmux } : { pid: Number(btn.dataset.pid) };
+        const r = await fetch('/api/kill', {
+          method: 'POST', headers: {'content-type': 'application/json'},
+          body: JSON.stringify(body),
+        });
+        const data2 = await r.json();
+        if (!data2.ok) throw new Error(data2.error || 'kill failed');
+        setTimeout(loadProcesses, 700);
+      } catch (e) {
+        alert('kill failed: ' + e.message);
+      }
+    };
+  });
+}
+
+async function viewProcess(pid) {
+  $('detailsTitle').textContent = `Process ${pid}`;
+  $('detailsSub').textContent = '';
+  $('detailsBody').innerHTML = '<div class="empty">loading…</div>';
+  $('detailsBg').classList.add('open');
+  try {
+    const r = await fetch('/api/process?pid=' + pid);
+    const d = await r.json();
+    if (d.error) { $('detailsBody').innerHTML = `<div class="empty">${escapeHtml(d.error)}</div>`; return; }
+    $('detailsTitle').textContent = `Process ${d.pid}` + (d.threadId ? ` · thread ${d.threadId}` : '');
+    $('detailsSub').textContent = `up ${d.etime} · ${d.user}`;
+
+    let html = '';
+    if (d.thread) {
+      const t = d.thread;
+      html += `<dl>
+        <dt>thread</dt><dd>${escapeHtml(t.threadId)}</dd>
+        <dt>channel</dt><dd>${escapeHtml(t.channel || '—')}</dd>
+        <dt>status</dt><dd>${escapeHtml(t.status)}${t.muted ? ' · muted' : ''}</dd>
+        <dt>agent</dt><dd>${escapeHtml(t.agentType || '—')}</dd>
+        <dt>session id</dt><dd>${escapeHtml(t.sessionId || '—')}</dd>
+        <dt>turns</dt><dd>${t.totalTurns || 0}</dd>
+        <dt>cost</dt><dd>${fmtCost(t.totalCost || 0)}</dd>
+        <dt>last user</dt><dd>${escapeHtml((t.lastUserText || '').slice(0, 240))}</dd>
+        <dt>last reply</dt><dd>${escapeHtml((t.lastAssistantText || '').slice(0, 240))}</dd>
+      </dl>`;
+    }
+
+    html += `<dl>
+      <dt>pid</dt><dd>${d.pid}</dd>
+      <dt>parent pid</dt><dd>${d.ppid}${d.parentCmd ? ' · ' + escapeHtml(d.parentCmd.slice(0, 100)) : ''}</dd>
+      <dt>cwd</dt><dd>${escapeHtml(d.cwd || '—')}</dd>
+      <dt>cmd</dt><dd>${escapeHtml(d.cmd)}</dd>
+      ${d.tmuxSession ? `<dt>tmux</dt><dd>${escapeHtml(d.tmuxSession)}</dd>` : ''}
+    </dl>`;
+
+    if (d.tmuxSession) {
+      html += `<div class="attach-cmd">
+        <code>tmux attach -t ${escapeHtml(d.tmuxSession)}</code>
+        <button class="btn tiny" id="copyAttachBtn">copy</button>
+        <button class="btn tiny" id="openTermBtn">open in terminal</button>
+      </div>`;
+    }
+
+    if (d.tmuxTranscript) {
+      html += `<div style="font-size:11px; color:var(--fg-4); margin-bottom:6px; letter-spacing:0.08em; text-transform:uppercase;">tmux pane (last lines)</div>
+        <pre class="transcript">${escapeHtml(d.tmuxTranscript)}</pre>`;
+    }
+
+    $('detailsBody').innerHTML = html;
+
+    if (d.tmuxSession) {
+      $('copyAttachBtn').onclick = () => {
+        navigator.clipboard.writeText(`tmux attach -t ${d.tmuxSession}`);
+        $('copyAttachBtn').textContent = 'copied';
+        setTimeout(() => $('copyAttachBtn').textContent = 'copy', 1200);
+      };
+      $('openTermBtn').onclick = () => attachToTmux(d.tmuxSession);
+    }
+  } catch (e) {
+    $('detailsBody').innerHTML = `<div class="empty">error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function attachToTmux(name) {
+  try {
+    const r = await fetch('/api/attach', {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({ tmuxSession: name }),
+    });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'attach failed');
+  } catch (e) {
+    alert('attach failed: ' + e.message);
+  }
+}
+
+$('detailsClose').onclick = () => $('detailsBg').classList.remove('open');
+$('detailsBg').onclick = (e) => { if (e.target.id === 'detailsBg') $('detailsBg').classList.remove('open'); };
 $('refreshProcs').onclick = loadProcesses;
+$('fridayOnly').onchange = renderProcesses;
 
 // ─── SSE wire-up ───────────────────────────────────────────────────────────
 const es = new EventSource('/events');

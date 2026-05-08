@@ -72,4 +72,15 @@ export interface SpawnHandle {
   onEvent: (cb: (event: StreamEvent) => void) => void;
   kill: () => void;
   pid: number | null;
+  /** Snapshot of the invocation: argv, cwd, prompt, env keys (no values). */
+  spawnInfo: {
+    pid: number | null;
+    argv: string[];
+    cwd: string;
+    prompt: string;
+    envKeys: string[];
+    resumedSessionId: string | null;
+    systemPromptFile: string | null;
+    systemPromptContent: string | null;
+  };
 }

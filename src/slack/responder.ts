@@ -1,6 +1,7 @@
 import type { App } from "@slack/bolt";
 import { splitResponse, toSlackMrkdwn } from "./formatting.ts";
 import { pickThinkingVerb } from "./thinking-verbs.ts";
+import { recordSlackPost, recordSlackPostFailed } from "../http/dashboard-state.ts";
 
 interface StatusEntry {
   messageTs: string;
@@ -68,13 +69,15 @@ export class SlackResponder {
     const chunks = splitResponse(slackified);
     for (const chunk of chunks) {
       try {
-        await this.app.client.chat.postMessage({
+        const r = await this.app.client.chat.postMessage({
           channel,
           thread_ts: threadTs,
           text: chunk,
         });
+        if (r.ts) recordSlackPost(threadTs, channel, r.ts, "create", chunk);
       } catch (err) {
         console.error("[responder] Failed to post message:", err);
+        recordSlackPostFailed(threadTs, channel, "create", err instanceof Error ? err.message : String(err));
       }
     }
   }
@@ -111,9 +114,11 @@ export class SlackResponder {
             heartbeatVerb: "",
             heartbeatVerbPickedAt: 0,
           });
+          recordSlackPost(threadTs, channel, result.ts, "create", text);
         }
       } catch (err) {
         console.error("[responder] Failed to post status:", err);
+        recordSlackPostFailed(threadTs, channel, "create", err instanceof Error ? err.message : String(err));
       }
       return;
     }
@@ -165,8 +170,10 @@ export class SlackResponder {
       });
       entry.lastUpdateTime = Date.now();
       entry.lastSentText = text;
+      recordSlackPost(threadTs, channel, entry.messageTs, "edit", text);
     } catch (err) {
       console.error("[responder] Failed to update status:", err);
+      recordSlackPostFailed(threadTs, channel, "edit", err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -249,9 +256,11 @@ export class SlackResponder {
           heartbeatVerbPickedAt: startedAt,
         };
         this.statusMessages.set(threadTs, entry);
+        recordSlackPost(threadTs, channel, result.ts, "create", text);
         this.scheduleHeartbeatTick(channel, threadTs);
       } catch (err) {
         console.error("[responder] Failed to post heartbeat:", err);
+        recordSlackPostFailed(threadTs, channel, "create", err instanceof Error ? err.message : String(err));
       }
     } else {
       existing.heartbeatActive = true;

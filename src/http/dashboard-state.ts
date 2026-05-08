@@ -21,11 +21,15 @@ import type { StreamEvent } from "../claude/types.ts";
 
 export type DashboardEventKind =
   | "init"           // system.init: session id assigned
+  | "spawn"          // claude -p subprocess spawned (argv, cwd, prompt captured)
   | "tool_use"       // assistant: tool call started
   | "tool_result"    // user: tool result returned
   | "thinking"       // assistant: thinking block
   | "text"           // assistant: text chunk
   | "response"       // turn complete: final text posted to slack
+  | "post"           // chat.postMessage succeeded (initial status message)
+  | "post_edit"      // chat.update succeeded (status message edited mid-stream)
+  | "post_failed"    // chat.postMessage / update threw
   | "silent_fail"    // turn complete: no text, no error (the bad case)
   | "error"          // turn errored
   | "routing"        // pattern routing decision
@@ -36,6 +40,29 @@ export type DashboardEventKind =
   | "buffered"       // message queued during busy turn
   | "muted"          // !mute / !unmute
   | "info";          // catchall
+
+export interface SpawnInfo {
+  ts: number;
+  pid: number;
+  argv: string[];           // ["claude", "-p", ...]
+  cwd: string;
+  prompt: string;           // full prompt text passed to claude (-p / stdin)
+  envKeys: string[];        // names only — never values, since some are tokens
+  agentType?: string | null;
+  resumedSessionId?: string | null;
+  systemPromptFile?: string | null;     // e.g. /tmp/friday-prompts/<tid>.md
+  systemPromptContent?: string | null;  // SOUL+AGENTS+IDENTITY+memory bundle
+}
+
+export interface SlackPostInfo {
+  ts: number;
+  action: "create" | "edit" | "failed";
+  channel: string;
+  messageTs?: string;       // slack message ts (for permalink)
+  textLen: number;
+  preview: string;
+  error?: string;
+}
 
 export interface DashboardEvent {
   ts: number;                  // ms epoch
@@ -80,6 +107,10 @@ export interface ThreadState {
   memoryWrites: { ts: number; path: string; preview?: string }[];
   // Slack posts she made via friday-slack MCP (vs onResponse path)
   mcpSlackPosts: { ts: number; tool: string; channel?: string; preview?: string }[];
+  // Claude subprocess spawns for this thread (full argv + prompt)
+  spawns: SpawnInfo[];
+  // Slack posts via responder.ts (initial post + each edit)
+  slackPosts: SlackPostInfo[];
 }
 
 export interface SystemState {
@@ -150,6 +181,8 @@ export function ensureThread(threadId: string, channel: string, channelName?: st
       events: [],
       memoryWrites: [],
       mcpSlackPosts: [],
+      spawns: [],
+      slackPosts: [],
       createdAt: Date.now(),
       lastActivityAt: Date.now(),
       totalCost: 0,
@@ -270,6 +303,79 @@ export function recordStreamEvent(threadId: string, event: StreamEvent): void {
     }
     return;
   }
+}
+
+const SPAWN_RING_SIZE = 20;
+const POST_RING_SIZE = 60;
+
+/** Friday spawned a new claude subprocess for this thread. */
+export function recordSpawn(threadId: string, info: Omit<SpawnInfo, "ts">): void {
+  const t = threads.get(threadId);
+  if (!t) return;
+  const stamped: SpawnInfo = { ts: Date.now(), ...info };
+  t.spawns.push(stamped);
+  if (t.spawns.length > SPAWN_RING_SIZE) t.spawns.shift();
+  const ev: DashboardEvent = {
+    ts: stamped.ts, kind: "spawn", threadId,
+    text: `pid ${info.pid} · ${info.argv.length - 1} args${info.resumedSessionId ? ` · resume ${info.resumedSessionId.slice(0,8)}` : ""}`,
+    data: { pid: info.pid, argv: info.argv.length, prompt: info.prompt.length },
+  };
+  pushThreadEvent(threadId, ev);
+  pushSystemEvent(ev);
+  broadcast(ev);
+}
+
+/** chat.postMessage / chat.update succeeded. action='create'|'edit'. */
+export function recordSlackPost(
+  threadId: string,
+  channel: string,
+  messageTs: string,
+  action: "create" | "edit",
+  text: string,
+): void {
+  const t = threads.get(threadId);
+  if (!t) return;
+  const post: SlackPostInfo = {
+    ts: Date.now(), action, channel, messageTs, textLen: text.length,
+    preview: preview(text, 200),
+  };
+  t.slackPosts.push(post);
+  if (t.slackPosts.length > POST_RING_SIZE) t.slackPosts.shift();
+  const ev: DashboardEvent = {
+    ts: post.ts, kind: action === "create" ? "post" : "post_edit", threadId, channel,
+    text: `${action === "create" ? "posted" : "edited"} · ${text.length} chars · ${preview(text, 80)}`,
+    data: { messageTs, action, channel, textLen: text.length },
+  };
+  pushThreadEvent(threadId, ev);
+  pushSystemEvent(ev);
+  broadcast(ev);
+}
+
+/** chat.postMessage / chat.update threw. */
+export function recordSlackPostFailed(
+  threadId: string,
+  channel: string,
+  action: "create" | "edit",
+  errMsg: string,
+): void {
+  const t = threads.get(threadId);
+  if (t) {
+    t.slackPosts.push({
+      ts: Date.now(), action: "failed", channel, textLen: 0,
+      preview: preview(errMsg, 200), error: errMsg,
+    });
+    if (t.slackPosts.length > POST_RING_SIZE) t.slackPosts.shift();
+  }
+  const ev: DashboardEvent = {
+    ts: Date.now(), kind: "post_failed", threadId, channel,
+    text: `${action} failed: ${preview(errMsg, 200)}`,
+    data: { action },
+  };
+  pushThreadEvent(threadId, ev);
+  pushSystemEvent(ev);
+  broadcast(ev);
+  system.recentWarns.push({ ts: ev.ts, tag: "slack-post", text: `${action}: ${errMsg}` });
+  if (system.recentWarns.length > RECENT_WARNS_SIZE) system.recentWarns.shift();
 }
 
 /** Final assistant text was posted to slack (responder.postResponse). */

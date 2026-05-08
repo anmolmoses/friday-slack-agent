@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { Config } from "../config.ts";
 import type { ThreadSession } from "../session/types.ts";
 import type { AgentDefinition } from "../agents/loader.ts";
@@ -16,29 +17,27 @@ export function spawnClaude(
 ): SpawnHandle {
   const args = buildClaudeArgs(session, prompt, config, agentDef);
   const cwd = session.worktreePath ?? targetRepoCwd ?? process.cwd();
+  const argv = ["claude", ...args];
 
-  const proc = Bun.spawn(["claude", ...args], {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: {
-      ...process.env,
-      FRIDAY_SPAWNED: "1",
-      SLACK_CHANNEL: session.channel,
-      SLACK_THREAD_TS: session.threadId,
-      // Identifies which Slack user this spawn is acting on behalf of.
-      // The PreToolUse self-edit guard hook in ~/.claude/settings.json
-      // uses this to enforce that only Anmol can mutate Friday's own
-      // source. Empty string when unknown — hook treats that as
-      // non-Anmol (fail-safe).
-      SLACK_USER_ID: requestingUser ?? "",
-      // Lets the self-edit guard tell whether the spawn is rooted in Friday's
-      // own checkout (in which case relative-path writes also need scrutiny).
-      FRIDAY_SPAWN_CWD: cwd,
-      FRIDAY_MEMORY_DIR: new URL("../../memory", import.meta.url).pathname,
-      ...(botToken ? { SLACK_BOT_TOKEN: botToken } : {}),
-    },
-  });
+  const env: Record<string, string> = {
+    ...(process.env as Record<string, string>),
+    FRIDAY_SPAWNED: "1",
+    SLACK_CHANNEL: session.channel,
+    SLACK_THREAD_TS: session.threadId,
+    // Identifies which Slack user this spawn is acting on behalf of.
+    // The PreToolUse self-edit guard hook in ~/.claude/settings.json
+    // uses this to enforce that only Anmol can mutate Friday's own
+    // source. Empty string when unknown — hook treats that as
+    // non-Anmol (fail-safe).
+    SLACK_USER_ID: requestingUser ?? "",
+    // Lets the self-edit guard tell whether the spawn is rooted in Friday's
+    // own checkout (in which case relative-path writes also need scrutiny).
+    FRIDAY_SPAWN_CWD: cwd,
+    FRIDAY_MEMORY_DIR: new URL("../../memory", import.meta.url).pathname,
+    ...(botToken ? { SLACK_BOT_TOKEN: botToken } : {}),
+  };
+
+  const proc = Bun.spawn(argv, { cwd, stdout: "pipe", stderr: "pipe", env });
 
   const listeners: Array<(event: StreamEvent) => void> = [];
   const events: StreamEvent[] = [];
@@ -125,5 +124,28 @@ export function spawnClaude(
       proc.kill();
     },
     pid: proc.pid,
+    spawnInfo: (() => {
+      // Recover the system-prompt file from argv so the dashboard can show
+      // the actual SOUL/AGENTS/IDENTITY content Friday was given.
+      const idx = argv.indexOf("--append-system-prompt-file");
+      const systemPromptFile = idx >= 0 && argv[idx + 1] ? argv[idx + 1] : null;
+      let systemPromptContent: string | null = null;
+      if (systemPromptFile) {
+        try { systemPromptContent = readFileSync(systemPromptFile, "utf-8"); }
+        catch { /* file may not exist on disk yet */ }
+      }
+      return {
+        pid: proc.pid ?? null,
+        argv,
+        cwd,
+        prompt,
+        // Names only — values may contain SLACK_BOT_TOKEN and the user's full
+        // shell environment. Surfacing values would leak secrets to the dashboard.
+        envKeys: Object.keys(env).sort(),
+        resumedSessionId: session.sessionId ?? null,
+        systemPromptFile,
+        systemPromptContent,
+      };
+    })(),
   };
 }
