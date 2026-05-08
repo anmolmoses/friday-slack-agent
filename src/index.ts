@@ -19,6 +19,16 @@ import { startNightlyDream } from "./memory/scheduler.ts";
 import { startDumpDigest } from "./dumps/scheduler.ts";
 import { startStandupScheduler } from "./standup/scheduler.ts";
 import { isStandupThread } from "./standup/handler.ts";
+import { startDashboardServer } from "./http/dashboard-server.ts";
+import {
+  ensureThread,
+  setThreadMeta,
+  recordStreamEvent as dashRecordStreamEvent,
+  recordResponse as dashRecordResponse,
+  recordError as dashRecordError,
+  recordIncomingMessage as dashRecordIncomingMessage,
+  recordRouting as dashRecordRouting,
+} from "./http/dashboard-state.ts";
 import { log } from "./logger.ts";
 
 const config = loadConfig();
@@ -75,20 +85,29 @@ sessionManager.onResponse = (session, response) => {
       }
     }
     responder.postResponse(session.channel, session.threadId, toPost);
+    dashRecordResponse(session.threadId, toPost);
   }
+  // Reflect status into the dashboard
+  setThreadMeta(session.threadId, {
+    status: session.status, agentType: session.agentType, pid: session.pid,
+    pendingCount: session.pendingMessages.length, muted: session.muted, sessionId: session.sessionId,
+  });
 };
 
 sessionManager.onEvent = (session, event) => {
   if (event.type === "system" && event.subtype === "init") {
     log.info("session", `thread=${session.threadId} sessionId=${session.sessionId}`);
   }
+  // Always feed the live dashboard, regardless of session.verbosity.
+  ensureThread(session.threadId, session.channel);
+  setThreadMeta(session.threadId, {
+    status: session.status, agentType: session.agentType, pid: session.pid,
+    pendingCount: session.pendingMessages.length, muted: session.muted, sessionId: session.sessionId,
+  });
+  dashRecordStreamEvent(session.threadId, event);
+
   if (session.verbosity === "quiet") return;
   if (event.type === "assistant") {
-    // The Slack-facing status stays as the rotating thinking-verb heartbeat —
-    // we DO NOT post per-tool ("📖 Reading X", "⚙️ git diff", "🔧 Using Y") or
-    // per-thinking-snippet status updates anymore (Anmol's call: too noisy,
-    // wants only the verb animation). We still log the same information for
-    // operator visibility in friday-launchd.log.
     const thinking = extractThinkingStatus(event);
     if (thinking) {
       log.info("thinking", `thread=${session.threadId} ${thinking.slice(0, 200)}`);
@@ -113,10 +132,13 @@ sessionManager.onCommandResponse = (event, response) => {
 sessionManager.onError = (session, error) => {
   log.error("error", `thread=${session.threadId} ${error ?? "Unknown error"}`);
   responder.deleteStatus(session.channel, session.threadId);
+  // Detect silent-fail surface (manager.ts wraps with `_silent fail —`)
+  const isSilent = typeof error === "string" && error.includes("silent fail");
+  dashRecordError(session.threadId, error ?? "Unknown error", isSilent ? "silent_fail" : "error");
   responder.postResponse(
     session.channel,
     session.threadId,
-    `Error: ${error ?? "Unknown error"}`,
+    isSilent ? error! : `Error: ${error ?? "Unknown error"}`,
   );
 };
 
@@ -162,6 +184,12 @@ setInterval(() => {
 
   registerEventHandlers(app, (event) => {
     log.info("event", `thread=${event.threadId} user=${event.user} cmd=${event.command ?? "-"} text=${event.text.slice(0, 100)}`);
+    // Feed dashboard
+    ensureThread(event.threadId, event.channel);
+    dashRecordIncomingMessage(event.threadId, event.channel, event.user, event.text);
+    if (event.routingHint) {
+      dashRecordRouting(event.threadId, event.channel, event.routingHint, "auto");
+    }
     // For auto-routed triggers (PR URL, bug report), ack immediately with 👀
     // so the sender knows Friday saw it — she may take a bit to produce output.
     if (event.routingHint === "pr-review" || event.routingHint === "bug-triage") {
@@ -176,7 +204,10 @@ setInterval(() => {
     sessionManager.handleMessage(event);
   }, store, selfBotId, sessionManager.botUserId);
 
-  // Start HTTP dashboard server
+  // Start the always-on live dashboard at http://localhost:3457
+  startDashboardServer();
+
+  // Legacy optional HTTP server (config.http.enabled) — separate from dashboard
   if (config.http.enabled) {
     const { startHttpServer } = await import("./http/server.ts");
     startHttpServer({ store, config });

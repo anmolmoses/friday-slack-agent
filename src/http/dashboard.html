@@ -1,0 +1,853 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>friday — control plane</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  /* ─── Theme tokens ───────────────────────────────────────────────────────
+     Tokyo-night-ish palette. Single source of truth — change here, propagate. */
+  :root {
+    --bg-0: #0b0e13;
+    --bg-1: #11151c;
+    --bg-2: #161b24;
+    --bg-3: #1c222d;
+    --bg-4: #232a36;
+    --bg-5: #2d3441;
+    --line: #2a3140;
+    --line-strong: #3a4253;
+    --fg: #e8eaed;
+    --fg-2: #c8cdd4;
+    --fg-3: #8b9098;
+    --fg-4: #6b7280;
+    --fg-5: #4a5260;
+    --accent: #7aa2f7;
+    --accent-2: #bb9af7;
+    --green: #9ece6a;
+    --green-soft: rgba(158,206,106,0.14);
+    --green-strong: rgba(158,206,106,0.5);
+    --yellow: #e0af68;
+    --yellow-soft: rgba(224,175,104,0.14);
+    --yellow-strong: rgba(224,175,104,0.5);
+    --red: #f7768e;
+    --red-soft: rgba(247,118,142,0.14);
+    --red-strong: rgba(247,118,142,0.5);
+    --cyan: #7dcfff;
+    --magenta: #c0a8e0;
+    --mono: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
+    --shadow: 0 4px 24px rgba(0,0,0,0.4);
+    --radius: 10px;
+    --radius-sm: 6px;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg-0); color: var(--fg);
+    font-family: var(--sans); font-size: 13.5px; line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font-family: inherit; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ─── App shell ───────────────────────────────────────────────────────── */
+  .app { display: grid; grid-template-rows: auto auto 1fr; height: 100vh; }
+
+  /* Top bar — sticky brand + global stats */
+  .topbar {
+    background: linear-gradient(180deg, var(--bg-1) 0%, var(--bg-0) 100%);
+    border-bottom: 1px solid var(--line);
+    padding: 10px 22px;
+    display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  }
+  .brand {
+    font-weight: 700; letter-spacing: 0.04em; font-size: 13px;
+    display: flex; align-items: baseline; gap: 6px;
+  }
+  .brand .name { color: var(--accent); }
+  .brand .sep { color: var(--fg-5); }
+  .brand .role { color: var(--accent-2); font-weight: 500; }
+  .stat { display: flex; align-items: center; gap: 5px; color: var(--fg-3); font-family: var(--mono); font-size: 11.5px; }
+  .stat b { color: var(--fg); font-weight: 600; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+  .dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot.yellow { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
+  .dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
+  .pulse { animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+  .updated { margin-left: auto; color: var(--fg-4); font-family: var(--mono); font-size: 11px; }
+
+  /* Tab bar */
+  .tabs {
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--line);
+    padding: 0 22px;
+    display: flex; gap: 0;
+  }
+  .tab {
+    background: transparent; border: 0; cursor: pointer;
+    color: var(--fg-3); padding: 12px 18px; font-size: 13px; font-weight: 500;
+    border-bottom: 2px solid transparent;
+    display: flex; align-items: center; gap: 8px;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .tab:hover { color: var(--fg); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab .badge {
+    background: var(--bg-3); color: var(--fg-3); font-size: 10.5px;
+    font-family: var(--mono); padding: 1px 7px; border-radius: 10px;
+  }
+  .tab.active .badge { background: var(--accent); color: var(--bg-0); }
+
+  /* Tab panels */
+  .panel { display: none; padding: 22px; overflow-y: auto; }
+  .panel.active { display: block; }
+
+  /* ─── Cards ──────────────────────────────────────────────────────────── */
+  .section h2 {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.14em;
+    color: var(--fg-4); text-transform: uppercase;
+    margin: 0 0 12px 0; display: flex; align-items: center; gap: 10px;
+  }
+  .section h2 .count { color: var(--accent); font-family: var(--mono); }
+  .section h2 .rule { flex: 1; height: 1px; background: var(--line); }
+  .section + .section { margin-top: 22px; }
+
+  .threads-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(460px, 1fr)); gap: 14px; }
+  .card {
+    background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;
+    transition: border-color 0.3s, box-shadow 0.3s;
+  }
+  .card.busy {
+    border-color: var(--green-strong);
+    box-shadow: 0 0 18px rgba(158,206,106,0.06);
+  }
+  .card.draining { border-color: var(--yellow-strong); }
+  .card.muted { opacity: 0.55; }
+
+  .card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .pill {
+    font-size: 10px; font-family: var(--mono); padding: 2px 9px; border-radius: 11px;
+    font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  .pill.idle { background: var(--bg-3); color: var(--fg-3); }
+  .pill.busy { background: var(--green-soft); color: var(--green); }
+  .pill.draining { background: var(--yellow-soft); color: var(--yellow); }
+  .pill.muted { background: var(--red-soft); color: var(--red); }
+  .chan { font-family: var(--mono); font-size: 11.5px; color: var(--cyan); }
+  .agent { font-size: 11px; color: var(--fg-4); }
+  .age { font-family: var(--mono); font-size: 11px; color: var(--fg-4); margin-left: auto; }
+  .tid { font-family: var(--mono); font-size: 11px; color: var(--fg-4); }
+
+  .running {
+    background: rgba(122,162,247,0.06);
+    border-left: 3px solid var(--accent);
+    padding: 8px 12px; border-radius: var(--radius-sm);
+    font-family: var(--mono); font-size: 12.5px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .running .label {
+    font-size: 9.5px; letter-spacing: 0.14em;
+    color: var(--accent); text-transform: uppercase; font-weight: 600;
+  }
+  .running .desc { flex: 1; word-break: break-word; }
+  .running .elapsed { color: var(--fg-4); font-size: 11px; white-space: nowrap; }
+
+  .thinking {
+    background: var(--bg-2); border-left: 3px solid var(--magenta);
+    padding: 7px 12px; border-radius: var(--radius-sm);
+    font-style: italic; font-size: 12px; color: var(--fg-3);
+  }
+
+  .last-text {
+    background: var(--bg-2); border-left: 3px solid var(--green);
+    border-radius: var(--radius-sm); padding: 10px 12px;
+    font-size: 12.5px; white-space: pre-wrap; word-break: break-word;
+    max-height: 220px; overflow-y: auto;
+  }
+  .last-text .meta {
+    font-size: 10px; letter-spacing: 0.12em;
+    color: var(--green); text-transform: uppercase;
+    margin-bottom: 6px; font-weight: 600;
+  }
+
+  .metrics {
+    display: flex; gap: 16px; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 11.5px; color: var(--fg-3);
+    padding: 4px 0;
+  }
+  .metrics span b { color: var(--fg); }
+
+  .sub-section {
+    border-top: 1px dashed var(--line); padding-top: 8px;
+  }
+  .sub-section h3 {
+    font-size: 10px; letter-spacing: 0.14em; color: var(--fg-4);
+    text-transform: uppercase; margin: 0 0 6px 0; font-weight: 600;
+  }
+  .sub-row {
+    font-family: var(--mono); font-size: 11.5px; padding: 3px 0;
+    display: grid; grid-template-columns: 56px 1fr; gap: 8px; color: var(--fg-3);
+  }
+  .sub-row .ts { color: var(--fg-5); }
+  .sub-row .body {
+    color: var(--fg-2); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+
+  /* Event log inside a card */
+  .card-events {
+    font-family: var(--mono); font-size: 11px; max-height: 240px; overflow-y: auto;
+    background: var(--bg-2); border-radius: var(--radius-sm); padding: 6px;
+  }
+  .card-events .row {
+    display: grid; grid-template-columns: 58px 78px 1fr; gap: 8px;
+    padding: 2px 4px; align-items: baseline; border-radius: 3px;
+  }
+  .kind {
+    text-transform: uppercase; font-size: 9px; letter-spacing: 0.1em;
+    font-weight: 600; padding: 1px 6px; border-radius: 3px;
+    text-align: center; white-space: nowrap; font-family: var(--mono);
+  }
+  .kind.tool_use,
+  .kind.tool-use { background: var(--bg-3); color: var(--fg-3); }
+  .kind.text { background: rgba(125,207,255,0.18); color: var(--cyan); }
+  .kind.response { background: var(--green-soft); color: var(--green); }
+  .kind.silent_fail,
+  .kind.silent-fail { background: var(--red-soft); color: var(--red); }
+  .kind.error { background: var(--red-soft); color: var(--red); }
+  .kind.routing { background: rgba(122,162,247,0.18); color: var(--accent); }
+  .kind.init { background: rgba(192,168,224,0.18); color: var(--magenta); }
+  .kind.info { background: var(--bg-3); color: var(--fg-3); }
+  .kind.ask_anmol,
+  .kind.ask-anmol { background: var(--yellow-soft); color: var(--yellow); }
+  .row .body {
+    color: var(--fg-2); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .row .ts { color: var(--fg-5); }
+
+  .empty {
+    color: var(--fg-4); font-size: 12px; padding: 18px;
+    text-align: center; font-style: italic;
+    background: var(--bg-1); border: 1px dashed var(--line); border-radius: var(--radius);
+  }
+
+  /* ─── Files tab ──────────────────────────────────────────────────────── */
+  .files-layout {
+    display: grid; grid-template-columns: 320px 1fr; gap: 22px;
+    height: calc(100vh - 130px);
+  }
+  .file-tree {
+    background: var(--bg-1); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 10px;
+    overflow-y: auto; font-family: var(--mono); font-size: 12px;
+  }
+  .crumb {
+    display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+    color: var(--fg-3); font-size: 11px; border-bottom: 1px solid var(--line);
+    margin-bottom: 8px;
+  }
+  .crumb .up {
+    background: var(--bg-3); border: 0; color: var(--fg);
+    padding: 3px 8px; border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 11px;
+  }
+  .crumb .up:hover { background: var(--bg-4); }
+  .crumb-path { color: var(--accent); }
+  .file-row {
+    padding: 6px 8px; cursor: pointer; border-radius: 4px;
+    display: flex; align-items: center; gap: 8px;
+    color: var(--fg-2);
+  }
+  .file-row:hover { background: var(--bg-3); }
+  .file-row.active { background: var(--bg-4); color: var(--fg); }
+  .file-row .icon { width: 14px; text-align: center; }
+  .file-row .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .file-row .size { color: var(--fg-5); font-size: 10px; }
+  .file-row.dir .name { color: var(--accent); }
+
+  .file-editor { display: flex; flex-direction: column; gap: 10px; }
+  .editor-bar {
+    background: var(--bg-1); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 8px 12px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .editor-bar .path {
+    font-family: var(--mono); font-size: 12px; color: var(--accent); flex: 1;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .editor-bar .meta { font-family: var(--mono); font-size: 11px; color: var(--fg-4); }
+  .btn {
+    background: var(--bg-3); border: 1px solid var(--line-strong);
+    color: var(--fg); padding: 5px 12px; border-radius: 5px; cursor: pointer;
+    font-family: inherit; font-size: 12px; font-weight: 500;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .btn:hover:not(:disabled) { background: var(--bg-4); border-color: var(--accent); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn.primary { background: var(--accent); color: var(--bg-0); border-color: var(--accent); }
+  .btn.primary:hover:not(:disabled) { filter: brightness(1.1); }
+  .btn.danger { background: var(--red-soft); color: var(--red); border-color: var(--red-strong); }
+  .btn.danger:hover:not(:disabled) { background: rgba(247,118,142,0.25); }
+  .btn.tiny { padding: 3px 8px; font-size: 11px; }
+
+  textarea.editor {
+    flex: 1; min-height: 400px;
+    background: var(--bg-1); color: var(--fg);
+    border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6;
+    resize: vertical; outline: none;
+  }
+  textarea.editor:focus { border-color: var(--accent); }
+  .save-status {
+    font-family: var(--mono); font-size: 11px;
+    padding: 6px 10px; border-radius: 4px;
+  }
+  .save-status.ok { color: var(--green); background: var(--green-soft); }
+  .save-status.err { color: var(--red); background: var(--red-soft); }
+  .save-status.dirty { color: var(--yellow); background: var(--yellow-soft); }
+
+  /* ─── Processes tab ──────────────────────────────────────────────────── */
+  .proc-table {
+    background: var(--bg-1); border: 1px solid var(--line);
+    border-radius: var(--radius); overflow: hidden;
+  }
+  .proc-row {
+    display: grid; grid-template-columns: 80px 100px 1fr 200px 120px;
+    gap: 10px; padding: 10px 14px;
+    border-bottom: 1px solid var(--line); align-items: center;
+    font-family: var(--mono); font-size: 12px;
+  }
+  .proc-row:last-child { border-bottom: 0; }
+  .proc-row.head {
+    background: var(--bg-2); color: var(--fg-4);
+    font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 600;
+  }
+  .proc-row .pid { color: var(--accent); font-weight: 600; }
+  .proc-row .kind-cell {
+    font-size: 10px; padding: 2px 8px; border-radius: 10px;
+    text-align: center; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  .proc-row .kind-cell.claude { background: var(--green-soft); color: var(--green); }
+  .proc-row .kind-cell.tmux { background: rgba(192,168,224,0.18); color: var(--magenta); }
+  .proc-row .kind-cell.bun { background: rgba(125,207,255,0.18); color: var(--cyan); }
+  .proc-row .cmd {
+    color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .proc-row .actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+  /* ─── System feed (Live tab footer) ─────────────────────────────────── */
+  .system-feed {
+    font-family: var(--mono); font-size: 11.5px; max-height: 360px; overflow-y: auto;
+    background: var(--bg-1); border-radius: var(--radius);
+    padding: 12px; border: 1px solid var(--line);
+  }
+  .system-feed .row {
+    display: grid; grid-template-columns: 70px 90px 200px 1fr;
+    gap: 10px; padding: 3px 0; align-items: baseline;
+  }
+  .system-feed .row .ts { color: var(--fg-5); }
+  .system-feed .row .tid { color: var(--fg-4); }
+  .warn-row {
+    color: var(--red); font-family: var(--mono); font-size: 11.5px;
+    padding: 6px 10px; background: var(--red-soft);
+    border-radius: 4px; margin-bottom: 4px;
+  }
+
+  /* Modal */
+  .modal-bg {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: none; align-items: center; justify-content: center;
+    z-index: 100;
+  }
+  .modal-bg.open { display: flex; }
+  .modal {
+    background: var(--bg-1); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 24px; min-width: 360px;
+    max-width: 540px; box-shadow: var(--shadow);
+  }
+  .modal h3 { margin: 0 0 12px 0; font-size: 16px; }
+  .modal p { color: var(--fg-3); margin: 0 0 16px 0; }
+  .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+  /* Scrollbars */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: var(--bg-1); }
+  ::-webkit-scrollbar-thumb { background: var(--bg-4); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--bg-5); }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- Top bar -->
+  <div class="topbar">
+    <div class="brand">
+      <span class="name">friday</span>
+      <span class="sep">/</span>
+      <span class="role">control plane</span>
+    </div>
+    <div class="stat"><span id="processDot" class="dot green pulse"></span><span>process <b id="processStatus">…</b></span></div>
+    <div class="stat">socket idle <b id="socketIdle">…</b></div>
+    <div class="stat">claude-p <b id="claudeChildren">…</b></div>
+    <div class="stat">tmux <b id="tmuxCount">…</b></div>
+    <div class="stat">cost <b id="totalCost">$0.00</b></div>
+    <div class="stat">turns <b id="totalTurns">0</b></div>
+    <div class="stat" id="schedulers"></div>
+    <div class="updated" id="updatedAt">connecting…</div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab active" data-tab="live">⚡ Live</button>
+    <button class="tab" data-tab="threads">🧵 Threads <span class="badge" id="tabThreadCount">0</span></button>
+    <button class="tab" data-tab="files">📝 Files</button>
+    <button class="tab" data-tab="processes">⚙ Processes <span class="badge" id="tabProcCount">0</span></button>
+  </div>
+
+  <!-- Panels -->
+  <div style="overflow:hidden">
+    <!-- LIVE -->
+    <div class="panel active" id="panel-live">
+      <div class="section">
+        <h2>active threads <span class="count" id="liveThreadCount">0</span><span class="rule"></span></h2>
+        <div class="threads-grid" id="liveThreads"></div>
+      </div>
+      <div class="section">
+        <h2>system feed<span class="rule"></span></h2>
+        <div class="system-feed" id="systemFeed"></div>
+      </div>
+      <div class="section">
+        <h2>recent warns<span class="rule"></span></h2>
+        <div id="warns"></div>
+      </div>
+    </div>
+
+    <!-- THREADS (full grid, no other sections) -->
+    <div class="panel" id="panel-threads">
+      <div class="section">
+        <h2>all known threads <span class="count" id="threadsCount">0</span><span class="rule"></span></h2>
+        <div class="threads-grid" id="allThreads"></div>
+      </div>
+    </div>
+
+    <!-- FILES -->
+    <div class="panel" id="panel-files">
+      <div class="files-layout">
+        <div class="file-tree" id="fileTree">
+          <div class="crumb">
+            <button class="up" id="fileUp">↑ up</button>
+            <span class="crumb-path" id="filePath">memory/</span>
+          </div>
+          <div id="fileList"></div>
+        </div>
+        <div class="file-editor" id="fileEditor">
+          <div class="empty" style="margin-top:0">select a file to view or edit</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PROCESSES -->
+    <div class="panel" id="panel-processes">
+      <div class="section">
+        <h2>processes <span class="count" id="processesCount">0</span><span class="rule"></span>
+          <button class="btn tiny" id="refreshProcs">refresh</button>
+        </h2>
+        <div class="proc-table" id="procTable"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Confirm modal (kill / overwrite confirms) -->
+<div class="modal-bg" id="modalBg">
+  <div class="modal">
+    <h3 id="modalTitle">Confirm</h3>
+    <p id="modalBody">Are you sure?</p>
+    <div class="modal-actions">
+      <button class="btn" id="modalCancel">Cancel</button>
+      <button class="btn danger" id="modalConfirm">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
+function fmtAge(ms) {
+  if (!ms) return "—";
+  const s = Math.floor((Date.now() - ms) / 1000);
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s/60) + "m" + (s % 60 < 10 ? "0":"") + (s % 60) + "s";
+  if (s < 86400) return Math.floor(s/3600) + "h" + Math.floor((s%3600)/60) + "m";
+  return Math.floor(s/86400) + "d";
+}
+function fmtTs(ms) { if (!ms) return ""; return new Date(ms).toTimeString().slice(0,8); }
+function fmtNum(n) {
+  if (!n) return "0";
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return (n/1000).toFixed(1) + "k";
+  return (n/1_000_000).toFixed(2) + "M";
+}
+function fmtCost(usd) {
+  if (!usd) return "$0.00";
+  if (usd < 0.01) return "$" + usd.toFixed(4);
+  return "$" + usd.toFixed(2);
+}
+function fmtBytes(b) {
+  if (b < 1024) return b + "B";
+  if (b < 1024*1024) return (b/1024).toFixed(1) + "K";
+  return (b/1024/1024).toFixed(1) + "M";
+}
+function escapeHtml(s) {
+  if (s == null) return "";
+  return String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+}
+
+// ─── Tabs ──────────────────────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    $('panel-' + t.dataset.tab).classList.add('active');
+    if (t.dataset.tab === 'files') loadFiles(currentDir || 'memory');
+    if (t.dataset.tab === 'processes') loadProcesses();
+  });
+});
+
+// ─── Modal ─────────────────────────────────────────────────────────────────
+let modalResolver = null;
+function openModal(title, body) {
+  $('modalTitle').textContent = title;
+  $('modalBody').innerHTML = body;
+  $('modalBg').classList.add('open');
+  return new Promise((resolve) => { modalResolver = resolve; });
+}
+$('modalCancel').onclick = () => { $('modalBg').classList.remove('open'); modalResolver?.(false); };
+$('modalConfirm').onclick = () => { $('modalBg').classList.remove('open'); modalResolver?.(true); };
+$('modalBg').onclick = (e) => { if (e.target.id === 'modalBg') { $('modalBg').classList.remove('open'); modalResolver?.(false); } };
+
+// ─── State ─────────────────────────────────────────────────────────────────
+let lastState = null;
+
+function renderTopbar(state) {
+  const sys = state.system;
+  const socketAge = Math.floor((Date.now() - sys.socketLastActivityAt) / 1000);
+  $('socketIdle').textContent = fmtAge(sys.socketLastActivityAt);
+  const dot = $('processDot');
+  dot.className = 'dot pulse ' + (socketAge < 60 ? 'green' : socketAge < 180 ? 'yellow' : 'red');
+  $('processStatus').textContent = 'alive · up ' + fmtAge(sys.bootTime);
+
+  let totalCost = 0, totalTurns = 0, busy = 0;
+  for (const t of state.threads) {
+    totalCost += t.totalCost || 0;
+    totalTurns += t.totalTurns || 0;
+    if (t.status === 'busy' || t.status === 'draining') busy++;
+  }
+  $('totalCost').textContent = fmtCost(totalCost);
+  $('totalTurns').textContent = fmtNum(totalTurns);
+  $('claudeChildren').textContent = String(busy);
+
+  const scheds = Object.values(sys.schedulers || {});
+  $('schedulers').innerHTML = scheds.length
+    ? scheds.map(s => `<span style="margin-right:10px"><b>${escapeHtml(s.name)}</b>${s.nextFireMs ? ' '+new Date(s.nextFireMs).toLocaleTimeString().slice(0,5) : ''}</span>`).join('')
+    : '<span style="color:var(--fg-5)">— no scheduler ticks yet</span>';
+
+  $('updatedAt').textContent = 'live · ' + fmtTs(Date.now());
+}
+
+function renderThreadCard(t) {
+  const isBusy = t.status === 'busy';
+  const isDraining = t.status === 'draining';
+  const cls = 'card' + (isBusy ? ' busy' : '') + (isDraining ? ' draining' : '') + (t.muted ? ' muted' : '');
+  const statusPillCls = 'pill ' + (isBusy ? 'busy' : isDraining ? 'draining' : t.muted ? 'muted' : 'idle');
+  const statusLabel = t.muted ? 'muted' : t.status;
+
+  let curToolHtml = '';
+  if (t.currentTool) {
+    const elapsed = Math.floor((Date.now() - t.currentTool.startedAt) / 1000);
+    curToolHtml = `<div class="running"><span class="label">running</span><span class="desc">${escapeHtml(t.currentTool.description)}</span><span class="elapsed">${elapsed}s</span></div>`;
+  }
+  let thinkingHtml = '';
+  if (t.thinkingPreview) {
+    thinkingHtml = `<div class="thinking">${escapeHtml(t.thinkingPreview)}</div>`;
+  }
+  let lastTextHtml = '';
+  if (t.lastAssistantText) {
+    lastTextHtml = `<div class="last-text"><div class="meta">last reply · ${fmtTs(t.lastAssistantTextAt)} · ${t.lastAssistantText.length} chars</div>${escapeHtml(t.lastAssistantText)}</div>`;
+  }
+
+  const tokens = (t.inputTokens || 0) + (t.outputTokens || 0);
+  const metricsParts = [];
+  if (tokens) metricsParts.push(`<span>tokens <b>${fmtNum(tokens)}</b></span>`);
+  if (t.totalTurns) metricsParts.push(`<span>turns <b>${t.totalTurns}</b></span>`);
+  if (t.totalCost) metricsParts.push(`<span>cost <b>${fmtCost(t.totalCost)}</b></span>`);
+  if (t.cacheReadTokens) metricsParts.push(`<span>cache-read <b>${fmtNum(t.cacheReadTokens)}</b></span>`);
+  metricsParts.push(`<span>pending <b>${t.pendingCount || 0}</b></span>`);
+  if (t.sessionId) metricsParts.push(`<span title="claude session id">sid <b>${t.sessionId.slice(0,8)}</b></span>`);
+  const metrics = `<div class="metrics">${metricsParts.join('')}</div>`;
+
+  let memHtml = '';
+  if (t.memoryWrites && t.memoryWrites.length) {
+    const rows = t.memoryWrites.slice(-3).reverse().map(m =>
+      `<div class="sub-row"><span class="ts">${fmtTs(m.ts)}</span><span class="body" title="${escapeHtml(m.preview || '')}">${escapeHtml(m.path.replace(/^.*\/memory\//, "memory/"))}</span></div>`
+    ).join('');
+    memHtml = `<div class="sub-section"><h3>memory writes (${t.memoryWrites.length})</h3>${rows}</div>`;
+  }
+  let mcpHtml = '';
+  if (t.mcpSlackPosts && t.mcpSlackPosts.length) {
+    const rows = t.mcpSlackPosts.slice(-3).reverse().map(p =>
+      `<div class="sub-row"><span class="ts">${fmtTs(p.ts)}</span><span class="body" title="${escapeHtml(p.preview || '')}">${escapeHtml(p.tool)} → ${escapeHtml(p.preview || '')}</span></div>`
+    ).join('');
+    mcpHtml = `<div class="sub-section"><h3>mcp slack posts (${t.mcpSlackPosts.length})</h3>${rows}</div>`;
+  }
+
+  const events = (t.events || []).slice(-15).reverse();
+  const eventsHtml = events.length
+    ? `<div class="card-events">${events.map(e =>
+        `<div class="row"><span class="ts">${fmtTs(e.ts)}</span><span class="kind ${e.kind}">${e.kind.replace('_','·')}</span><span class="body" title="${escapeHtml(e.text)}">${escapeHtml(e.text)}</span></div>`
+      ).join('')}</div>`
+    : '';
+
+  return `<div class="${cls}" data-tid="${escapeHtml(t.threadId)}">
+    <div class="card-head">
+      <span class="${statusPillCls}">${statusLabel}</span>
+      <span class="chan">${escapeHtml(t.channelName ? '#' + t.channelName : t.channel)}</span>
+      ${t.agentType ? `<span class="agent">agent=${escapeHtml(t.agentType)}</span>` : ''}
+      <span class="age">idle ${fmtAge(t.lastActivityAt)}</span>
+    </div>
+    <div class="tid">${escapeHtml(t.threadId)}</div>
+    ${curToolHtml}${thinkingHtml}${lastTextHtml}${metrics}${memHtml}${mcpHtml}${eventsHtml}
+  </div>`;
+}
+
+function renderLiveTab(state) {
+  // Live tab: only currently active threads + last 24h idle (max 12)
+  const visible = state.threads.filter(t => {
+    if (t.status !== 'idle') return true;
+    return Date.now() - t.lastActivityAt < 24 * 60 * 60 * 1000;
+  }).slice(0, 12);
+  $('liveThreadCount').textContent = visible.length;
+  $('liveThreads').innerHTML = visible.length ? visible.map(renderThreadCard).join('') : '<div class="empty">no active threads (24h window)</div>';
+
+  // System feed
+  const evs = (state.system.recentEvents || []).slice(-60).reverse();
+  $('systemFeed').innerHTML = evs.length
+    ? evs.map(e => `<div class="row"><span class="ts">${fmtTs(e.ts)}</span><span class="kind ${e.kind}" style="display:inline-block">${e.kind.replace('_','·')}</span><span class="tid">${escapeHtml(e.threadId || '—')}</span><span class="body" title="${escapeHtml(e.text)}">${escapeHtml(e.text)}</span></div>`).join('')
+    : '<div class="empty">no events yet</div>';
+
+  // Warns
+  const w = state.system.recentWarns || [];
+  $('warns').innerHTML = w.length
+    ? w.slice().reverse().map(x => `<div class="warn-row"><span style="color:var(--fg-5)">${fmtTs(x.ts)}</span> [${escapeHtml(x.tag)}] ${escapeHtml(x.text)}</div>`).join('')
+    : '<div class="empty">no warns</div>';
+}
+
+function renderThreadsTab(state) {
+  const all = state.threads.slice(0, 60);
+  $('threadsCount').textContent = all.length;
+  $('tabThreadCount').textContent = all.length;
+  $('allThreads').innerHTML = all.length ? all.map(renderThreadCard).join('') : '<div class="empty">no threads tracked</div>';
+}
+
+function render(state) {
+  renderTopbar(state);
+  renderLiveTab(state);
+  renderThreadsTab(state);
+}
+
+// ─── Files tab ─────────────────────────────────────────────────────────────
+let currentDir = 'memory';
+let currentFile = null;
+let currentFileContent = '';
+let dirty = false;
+
+async function loadFiles(p) {
+  currentDir = p;
+  $('filePath').textContent = p + '/';
+  try {
+    const r = await fetch('/api/files?path=' + encodeURIComponent(p));
+    const data = await r.json();
+    if (data.error) { $('fileList').innerHTML = `<div class="empty">${escapeHtml(data.error)}</div>`; return; }
+    $('fileUp').disabled = !data.parent;
+    $('fileUp').onclick = () => data.parent ? loadFiles(data.parent) : null;
+    $('fileList').innerHTML = data.entries.map(e => {
+      const cls = 'file-row' + (e.isDir ? ' dir' : '') + (currentFile && currentFile === e.path ? ' active' : '');
+      const icon = e.isDir ? '📁' : (e.name.endsWith('.md') ? '📄' : e.name.endsWith('.ts') || e.name.endsWith('.js') ? '⚙' : '📝');
+      const sizeLabel = e.isDir ? '' : fmtBytes(e.size);
+      return `<div class="${cls}" data-path="${escapeHtml(e.path)}" data-isdir="${e.isDir}">
+        <span class="icon">${icon}</span>
+        <span class="name" title="${escapeHtml(e.relPath)}">${escapeHtml(e.name)}</span>
+        <span class="size">${sizeLabel}</span>
+      </div>`;
+    }).join('');
+    $('fileList').querySelectorAll('.file-row').forEach(row => {
+      row.onclick = () => {
+        if (row.dataset.isdir === 'true') loadFiles(row.dataset.path);
+        else openFile(row.dataset.path);
+      };
+    });
+  } catch (e) {
+    $('fileList').innerHTML = `<div class="empty">${escapeHtml(String(e))}</div>`;
+  }
+}
+
+async function openFile(p) {
+  if (dirty && !await openModal('Unsaved changes', 'Discard your unsaved edits?')) return;
+  currentFile = p;
+  dirty = false;
+  try {
+    const r = await fetch('/api/file?path=' + encodeURIComponent(p));
+    const data = await r.json();
+    if (data.error) { $('fileEditor').innerHTML = `<div class="empty">${escapeHtml(data.error)}</div>`; return; }
+    currentFileContent = data.content;
+    renderEditor(data);
+  } catch (e) {
+    $('fileEditor').innerHTML = `<div class="empty">${escapeHtml(String(e))}</div>`;
+  }
+}
+
+function renderEditor(data) {
+  const editable = data.editable;
+  $('fileEditor').innerHTML = `
+    <div class="editor-bar">
+      <span class="path">${escapeHtml(data.relPath)}</span>
+      <span class="meta">${fmtBytes(data.size)} · mtime ${new Date(data.mtimeMs).toLocaleString()}</span>
+      ${editable ? `<button class="btn primary" id="saveBtn" disabled>Save</button>` : `<span class="meta" style="color:var(--yellow)">read-only</span>`}
+      <span id="saveStatus" class="save-status" style="display:none"></span>
+    </div>
+    <textarea class="editor" id="editorTA" ${editable ? '' : 'readonly'}></textarea>
+  `;
+  $('editorTA').value = data.content;
+  if (editable) {
+    $('editorTA').addEventListener('input', () => {
+      dirty = $('editorTA').value !== currentFileContent;
+      $('saveBtn').disabled = !dirty;
+      const s = $('saveStatus');
+      if (dirty) { s.className = 'save-status dirty'; s.textContent = 'unsaved'; s.style.display = 'inline-block'; }
+      else { s.style.display = 'none'; }
+    });
+    $('saveBtn').onclick = saveFile;
+    document.addEventListener('keydown', editorHotkey);
+  }
+}
+
+function editorHotkey(e) {
+  if ((e.metaKey || e.ctrlKey) && e.key === 's' && currentFile) {
+    e.preventDefault();
+    if (!$('saveBtn')?.disabled) saveFile();
+  }
+}
+
+async function saveFile() {
+  const content = $('editorTA').value;
+  $('saveBtn').disabled = true;
+  const s = $('saveStatus');
+  s.className = 'save-status dirty'; s.textContent = 'saving…'; s.style.display = 'inline-block';
+  try {
+    const r = await fetch('/api/file', {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({ path: currentFile, content }),
+    });
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+    currentFileContent = content;
+    dirty = false;
+    s.className = 'save-status ok'; s.textContent = 'saved · ' + fmtBytes(data.size);
+    setTimeout(() => { s.style.display = 'none'; }, 2000);
+  } catch (e) {
+    s.className = 'save-status err'; s.textContent = 'error: ' + e.message;
+    $('saveBtn').disabled = false;
+  }
+}
+
+// ─── Processes tab ─────────────────────────────────────────────────────────
+async function loadProcesses() {
+  try {
+    const r = await fetch('/api/processes');
+    const data = await r.json();
+    const rows = [];
+    rows.push(`<div class="proc-row head"><div>kind</div><div>pid / name</div><div>command / thread</div><div>extra</div><div></div></div>`);
+    if (data.bunPid) {
+      rows.push(`<div class="proc-row">
+        <div><span class="kind-cell bun">bun</span></div>
+        <div class="pid">${data.bunPid}</div>
+        <div class="cmd">bun src/index.ts (Friday main)</div>
+        <div></div>
+        <div class="actions"><button class="btn danger tiny" data-pid="${data.bunPid}" data-label="Friday main process">restart</button></div>
+      </div>`);
+    }
+    for (const c of data.claudes || []) {
+      rows.push(`<div class="proc-row">
+        <div><span class="kind-cell claude">claude</span></div>
+        <div class="pid">${c.pid}</div>
+        <div class="cmd" title="${escapeHtml(c.cmd)}">${escapeHtml(c.cmd)}</div>
+        <div>${c.threadId ? `thread ${c.threadId}` : ''}</div>
+        <div class="actions"><button class="btn danger tiny" data-pid="${c.pid}" data-label="claude (${c.threadId || 'unknown'})">kill</button></div>
+      </div>`);
+    }
+    for (const t of data.tmuxes || []) {
+      const idleSec = Math.floor(Date.now()/1000) - t.activitySec;
+      const idleStr = idleSec < 60 ? idleSec + 's' : idleSec < 3600 ? Math.floor(idleSec/60)+'m' : Math.floor(idleSec/3600)+'h';
+      rows.push(`<div class="proc-row">
+        <div><span class="kind-cell tmux">tmux</span></div>
+        <div class="pid">${escapeHtml(t.name)}</div>
+        <div class="cmd">thread ${t.threadId}</div>
+        <div>idle ${idleStr}${t.attached ? ' · attached' : ''}</div>
+        <div class="actions"><button class="btn danger tiny" data-tmux="${escapeHtml(t.name)}" data-label="tmux ${t.name}">kill</button></div>
+      </div>`);
+    }
+    $('procTable').innerHTML = rows.join('');
+    $('processesCount').textContent = (data.claudes?.length || 0) + (data.tmuxes?.length || 0) + (data.bunPid ? 1 : 0);
+    $('tabProcCount').textContent = $('processesCount').textContent;
+
+    $('procTable').querySelectorAll('button.danger').forEach(btn => {
+      btn.onclick = async () => {
+        const label = btn.dataset.label;
+        const ok = await openModal('Confirm kill', `Kill <b>${escapeHtml(label)}</b>?<br><br>${btn.dataset.pid && Number(btn.dataset.pid) === data.bunPid ? '⚠️ This is Friday\\'s main process. launchd will respawn it.' : ''}`);
+        if (!ok) return;
+        try {
+          const body = btn.dataset.tmux ? { kind: 'tmux', tmuxName: btn.dataset.tmux } : { pid: Number(btn.dataset.pid) };
+          const r = await fetch('/api/kill', {
+            method: 'POST', headers: {'content-type': 'application/json'},
+            body: JSON.stringify(body),
+          });
+          const data2 = await r.json();
+          if (!data2.ok) throw new Error(data2.error || 'kill failed');
+          setTimeout(loadProcesses, 700);
+        } catch (e) {
+          alert('kill failed: ' + e.message);
+        }
+      };
+    });
+  } catch (e) {
+    $('procTable').innerHTML = `<div class="empty">${escapeHtml(String(e))}</div>`;
+  }
+}
+$('refreshProcs').onclick = loadProcesses;
+
+// ─── SSE wire-up ───────────────────────────────────────────────────────────
+const es = new EventSource('/events');
+es.onmessage = (msg) => {
+  try {
+    const data = JSON.parse(msg.data);
+    if (data.payload) { lastState = data.payload; render(lastState); }
+  } catch (e) { console.error('parse', e); }
+};
+es.onerror = () => { $('updatedAt').textContent = 'disconnected · retrying…'; };
+
+// Re-render every second so "idle" timers tick smoothly between events
+setInterval(() => { if (lastState) render(lastState); }, 1000);
+
+// Auto-refresh processes every 5s while that tab is active
+setInterval(() => { if ($('panel-processes').classList.contains('active')) loadProcesses(); }, 5000);
+</script>
+</body>
+</html>
