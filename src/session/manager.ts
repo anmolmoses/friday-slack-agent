@@ -635,6 +635,36 @@ export class SessionManager {
         }
       }
       this.onResponse?.(session, result.response);
+    } else if (!result.error) {
+      // Silent failure: the spawn exited cleanly (no error) but produced no
+      // response text. This happens when Claude hits --max-turns mid-tool-use,
+      // when the stream parser encounters malformed JSON, or when the model
+      // exits without emitting a final result event. Without surfacing this
+      // explicitly, the user sees a "thinking…" status that never resolves
+      // and has no way to know the run failed. (2026-05-08 incident: thread
+      // 1778225259.441429 — Friday ran 14 mongo queries + grep, then her
+      // spawn died at turn ~25 with zero text output, leaving the
+      // "Focusmaxxing…" status verb up indefinitely.)
+      const numEvents = result.events?.length ?? 0;
+      const lastSessionId = result.sessionId ?? session.sessionId ?? "unknown";
+      const transcriptHint =
+        `~/.claude/projects/-Users-anmol-Documents-GitHub-Friday/${lastSessionId}.jsonl`;
+      log.warn(
+        "silent-fail",
+        `thread=${session.threadId} session=${lastSessionId} events=${numEvents} exitCode=${result.exitCode} — spawn exited clean with no response text`,
+      );
+      session.lastError = {
+        type: "silent-fail",
+        message: `Spawn exited with code ${result.exitCode} after ${numEvents} stream events but produced no final assistant text. Likely max-turns hit or stream parse issue. Transcript: ${transcriptHint}`,
+        timestamp: Date.now(),
+      };
+      // Surface in Slack so the thread author isn't left staring at a
+      // thinking-verb that never resolves. Keep the message terse and link
+      // the diagnostic path in case Anmol wants to dig.
+      this.onError?.(
+        session,
+        `_silent fail — my run completed with no text output (events=${numEvents}, exit=${result.exitCode}). Likely \`--max-turns\` was hit. Transcript: \`${transcriptHint}\`_`,
+      );
     }
 
     if (session.pendingMessages.length > 0) {
