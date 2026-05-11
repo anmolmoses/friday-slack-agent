@@ -1,19 +1,30 @@
 #!/usr/bin/env bash
-# Reply to a Slack message (in its thread) by URL using the bot token.
-# Usage: slack-reply.sh <slack-message-url> <text>
-#        echo "<text>" | slack-reply.sh <slack-message-url>
-# Requires: SLACK_BOT_TOKEN in env (or sourced from repo .env).
+# Reply to a Slack message (in its thread) by URL.
+#
+# Usage: slack-reply.sh [--as-user] <slack-message-url> <text>
+#        echo "<text>" | slack-reply.sh [--as-user] <slack-message-url>
+#
+# By default posts as Friday (SLACK_BOT_TOKEN). Pass --as-user to post as
+# the human (SLACK_USER_TOKEN, an xoxp-… token) — required when you want to
+# *invoke* Friday from the terminal, since her event handler drops messages
+# carrying her own bot_id as self-loop noise.
 #
 # Bot token is teamgrowthx. For growthxclub, this will fail — that workspace
 # isn't wired for posting.
 
 set -euo pipefail
 
+AS_USER=false
+if [ "${1:-}" = "--as-user" ]; then
+  AS_USER=true
+  shift
+fi
+
 URL="${1:-}"
 TEXT="${2:-}"
 
 if [ -z "$URL" ]; then
-  echo "Usage: slack-reply.sh <slack-message-url> <text>" >&2
+  echo "Usage: slack-reply.sh [--as-user] <slack-message-url> <text>" >&2
   exit 1
 fi
 
@@ -26,17 +37,35 @@ if [ -z "$TEXT" ]; then
   exit 1
 fi
 
-if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
-  REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-  if [ -f "$REPO_ROOT/.env" ]; then
-    SLACK_BOT_TOKEN="$(grep -E '^SLACK_BOT_TOKEN=' "$REPO_ROOT/.env" | head -1 | cut -d= -f2-)"
-  fi
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Load tokens from .env if not already in env.
+if [ -z "${SLACK_BOT_TOKEN:-}" ] && [ -f "$REPO_ROOT/.env" ]; then
+  SLACK_BOT_TOKEN="$(grep -E '^SLACK_BOT_TOKEN=' "$REPO_ROOT/.env" | head -1 | cut -d= -f2-)"
+fi
+if [ -z "${SLACK_USER_TOKEN:-}" ] && [ -f "$REPO_ROOT/.env" ]; then
+  SLACK_USER_TOKEN="$(grep -E '^SLACK_USER_TOKEN=' "$REPO_ROOT/.env" | head -1 | cut -d= -f2-)"
 fi
 
-if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
-  echo "Error: SLACK_BOT_TOKEN not set and not found in .env" >&2
-  exit 1
+if $AS_USER; then
+  if [ -z "${SLACK_USER_TOKEN:-}" ]; then
+    echo "Error: --as-user requires SLACK_USER_TOKEN (xoxp-…) in env or .env" >&2
+    exit 1
+  fi
+  POST_TOKEN="$SLACK_USER_TOKEN"
+  IDENTITY="user"
+else
+  if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
+    echo "Error: SLACK_BOT_TOKEN not set and not found in .env" >&2
+    exit 1
+  fi
+  POST_TOKEN="$SLACK_BOT_TOKEN"
+  IDENTITY="bot"
 fi
+
+# Lookup-token: even when posting as user, channel-history lookup needs a
+# token with channels:history. The bot has it; the user token may or may not.
+LOOKUP_TOKEN="${SLACK_BOT_TOKEN:-$POST_TOKEN}"
 
 parsed=$(python3 - "$URL" <<'PY'
 import sys, re, urllib.parse
@@ -64,7 +93,7 @@ if [ -n "$THREAD_TS_QS" ]; then
   THREAD_ROOT="$THREAD_TS_QS"
 else
   LOOKUP=$(curl -sS --max-time 15 -G "https://slack.com/api/conversations.history" \
-    -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+    -H "Authorization: Bearer $LOOKUP_TOKEN" \
     --data-urlencode "channel=$CHANNEL" \
     --data-urlencode "oldest=$TS" \
     --data-urlencode "inclusive=true" \
@@ -80,7 +109,7 @@ print(m.get("thread_ts") or "")
 fi
 
 RESP=$(curl -sS --max-time 15 -X POST "https://slack.com/api/chat.postMessage" \
-  -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+  -H "Authorization: Bearer $POST_TOKEN" \
   -H "Content-Type: application/json; charset=utf-8" \
   --data "$(python3 -c '
 import json, sys
@@ -94,4 +123,4 @@ if [ "$OK" != "True" ] && [ "$OK" != "true" ]; then
   exit 1
 fi
 POSTED_TS=$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ts",""))')
-echo "Reply posted to thread $THREAD_ROOT in channel $CHANNEL (ts=$POSTED_TS)"
+echo "Reply posted as $IDENTITY to thread $THREAD_ROOT in channel $CHANNEL (ts=$POSTED_TS)"

@@ -150,8 +150,10 @@ paste_prompt() {
     "$TMUX_BIN" paste-buffer -b "$buf" -t "$TMUX_SESSION" -d -p
     # Bracketed-paste end-marker takes a beat to be processed by Claude's REPL;
     # without this sleep the immediately-following Enter gets eaten and the
-    # user has to press Enter manually to submit.
-    sleep 0.6
+    # prompt sits in the input buffer un-submitted (the dispatch returns OK
+    # but Claude never starts working). 0.6s wasn't enough — 2026-05-11
+    # incident: PR-758 review prompt sat un-submitted until manually resent.
+    sleep 1.2
     local after
     after="$("$TMUX_BIN" capture-pane -t "$TMUX_SESSION" -p 2>/dev/null || true)"
     if printf '%s' "$after" | grep -qF "$marker" || [ "$before" != "$after" ]; then

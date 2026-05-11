@@ -250,4 +250,25 @@ setInterval(() => {
   startStandupScheduler(app);
 
   log.info("boot", "Friday is running (Socket Mode)");
+
+  // Graceful shutdown: SIGTERM (from launchctl kickstart -k or `launchctl stop`)
+  // and SIGINT (Ctrl-C). Without this, the socket dies dirty and Slack keeps
+  // tracking it — eventually triggering "too_many_websockets" on respawn.
+  let shuttingDown = false;
+  const cleanShutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log.info("shutdown", `received ${signal} — closing Slack socket cleanly`);
+    try {
+      await Promise.race([
+        app.stop(),
+        new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+      ]);
+    } catch (err) {
+      log.warn("shutdown", `app.stop() failed during ${signal}: ${err}`);
+    }
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => void cleanShutdown("SIGTERM"));
+  process.on("SIGINT", () => void cleanShutdown("SIGINT"));
 })();

@@ -89,12 +89,32 @@ export function monitorSocketHealth(app: App): void {
     const silentFor = Date.now() - lastActivityAt;
     if (silentFor > STALE_HARD_MS && slackReachable) {
       // Slack API works but our websocket has been silent for too long —
-      // websocket is wedged. Exit; launchd KeepAlive respawns the process
-      // and Bolt rebuilds the socket cleanly.
+      // websocket is wedged. We need to respawn, but a naïve process.exit(1)
+      // leaves Slack thinking our old socket is still alive — repeated
+      // dirty exits trip the per-app socket limit and Slack starts rejecting
+      // new connections with `{"type":"disconnect","reason":"too_many_websockets"}`.
+      // 2026-05-11: 10+ dirty respawns in a row made every new boot deaf
+      // because Slack wouldn't accept the new socket.
+      //
+      // Fix: cleanly stop the app first (sends WS close, Slack releases the
+      // slot immediately), then sleep through launchd's ThrottleInterval so
+      // the new instance doesn't hammer connections.open before Slack has
+      // GC'd the slot.
       log.error(
         "socket",
-        `websocket silent for ${Math.round(silentFor / 1000)}s while Slack API is reachable — exiting for launchd respawn`,
+        `websocket silent for ${Math.round(silentFor / 1000)}s while Slack API is reachable — clean-stopping and exiting for launchd respawn`,
       );
+      try {
+        await Promise.race([
+          app.stop(),
+          new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+        ]);
+      } catch (err) {
+        log.warn("socket", `app.stop() during clean-respawn failed: ${err}`);
+      }
+      // Brief cooldown so Slack's connection-tracker releases the slot
+      // before launchd starts the next process and we open a new socket.
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
       process.exit(1);
     }
     if (silentFor > STALE_WARN_MS) {
