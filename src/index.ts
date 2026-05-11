@@ -179,7 +179,22 @@ setInterval(() => {
 }, config.session.cleanupIntervalMs);
 
 (async () => {
-  await app.start();
+  // Bolt's Socket Mode handshake can hang indefinitely when Slack's websocket
+  // is flaking (seen 2026-05-10: app.start() never returned for 22h while pong
+  // timeouts piled up in stderr). Race it against a hard timeout so launchd
+  // can respawn us cleanly instead of leaving a half-booted zombie.
+  const BOOT_TIMEOUT_MS = 60_000;
+  try {
+    await Promise.race([
+      app.start(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`app.start() timed out after ${BOOT_TIMEOUT_MS}ms`)), BOOT_TIMEOUT_MS),
+      ),
+    ]);
+  } catch (err) {
+    log.error("boot", `Slack Socket Mode handshake failed: ${err instanceof Error ? err.message : String(err)} — exiting for launchd respawn`);
+    process.exit(1);
+  }
 
   // Resolve bot identity before registering event handlers
   let selfBotId: string | undefined;
