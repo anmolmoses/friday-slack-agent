@@ -178,11 +178,29 @@ setInterval(() => {
   });
 }, config.session.cleanupIntervalMs);
 
+// Hard boot watchdog. Bolt's Socket Mode handshake can hang indefinitely
+// when Slack's websocket is flaking — and the gentler Promise.race timeout
+// turned out unreliable: 2026-05-13 a boot sat for 2h37m with stderr full
+// of pong-timeout warnings and the timer never fired (a wedged event loop
+// can starve user-space setTimeout callbacks). This watchdog is set BEFORE
+// anything async runs, and uses os.kill(SIGKILL) which the kernel delivers
+// regardless of event-loop state. If "Friday is running" isn't logged
+// within BOOT_WATCHDOG_MS, the process dies hard and launchd respawns it.
+let bootCompleted = false;
+const BOOT_WATCHDOG_MS = 90_000;
+const bootWatchdog = setTimeout(() => {
+  if (bootCompleted) return;
+  try {
+    log.error("boot", `boot watchdog: still not running after ${BOOT_WATCHDOG_MS / 1000}s — SIGKILL self for launchd respawn`);
+  } catch { /* logger may itself be wedged */ }
+  process.kill(process.pid, "SIGKILL");
+}, BOOT_WATCHDOG_MS);
+// unref so a completed boot doesn't keep this timer alive past its purpose
+bootWatchdog.unref();
+
 (async () => {
-  // Bolt's Socket Mode handshake can hang indefinitely when Slack's websocket
-  // is flaking (seen 2026-05-10: app.start() never returned for 22h while pong
-  // timeouts piled up in stderr). Race it against a hard timeout so launchd
-  // can respawn us cleanly instead of leaving a half-booted zombie.
+  // Soft timeout race kept as the first line of defense — when it works
+  // it gives us a clean exit log line and faster respawn.
   const BOOT_TIMEOUT_MS = 60_000;
   try {
     await Promise.race([
@@ -250,6 +268,8 @@ setInterval(() => {
   startStandupScheduler(app);
 
   log.info("boot", "Friday is running (Socket Mode)");
+  bootCompleted = true;
+  clearTimeout(bootWatchdog);
 
   // Graceful shutdown: SIGTERM (from launchctl kickstart -k or `launchctl stop`)
   // and SIGINT (Ctrl-C). Without this, the socket dies dirty and Slack keeps
