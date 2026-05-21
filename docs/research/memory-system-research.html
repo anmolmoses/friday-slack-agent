@@ -1,0 +1,1057 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Associative Memory for Friday — Research, Validation & Implementation Plan</title>
+<style>
+  :root{
+    --bg:#fbfbfd; --ink:#13131a; --ink-soft:#41414f; --muted:#71717f;
+    --line:#e7e7ef; --card:#ffffff;
+    --primary:#5b4ef0; --primary-d:#4338ca; --primary-soft:#eef0fe;
+    --teal:#0d9488; --teal-soft:#e7f6f3;
+    --amber:#b45309; --amber-soft:#fef3e2;
+    --rose:#be123c; --rose-soft:#fdeaf0;
+    --code-bg:#13131a; --code-ink:#e6e6f0;
+    --shadow:0 1px 2px rgba(20,20,40,.04),0 8px 28px rgba(20,20,40,.06);
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth;scroll-padding-top:24px}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+    line-height:1.72;font-size:17px;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  ::selection{background:#ddd6fe;color:#1e1b4b}
+  a{color:var(--primary-d);text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  /* ---------- layout ---------- */
+  .wrap{display:grid;grid-template-columns:280px minmax(0,1fr);max-width:1320px;margin:0 auto}
+  nav.toc{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;
+    padding:28px 22px;border-right:1px solid var(--line);background:#fff}
+  nav.toc h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:18px 0 8px}
+  nav.toc a{display:block;color:var(--ink-soft);font-size:14px;padding:5px 10px;border-radius:7px;margin:1px 0}
+  nav.toc a:hover{background:var(--primary-soft);text-decoration:none;color:var(--primary-d)}
+  nav.toc .brand{font-weight:700;font-size:16px;color:var(--ink);display:flex;align-items:center;gap:8px;margin-bottom:4px}
+  nav.toc .brand .dot{width:10px;height:10px;border-radius:50%;background:var(--primary);box-shadow:0 0 0 4px var(--primary-soft)}
+  nav.toc .sub{font-size:12px;color:var(--muted);margin-bottom:14px}
+  main{padding:0 56px 120px;min-width:0}
+
+  /* ---------- hero ---------- */
+  header.hero{position:relative;overflow:hidden;margin:0 -56px 52px;padding:74px 56px 60px;
+    background:
+      radial-gradient(820px 360px at 90% -25%, rgba(34,211,238,.20) 0%, transparent 58%),
+      radial-gradient(1200px 460px at 12% -10%, #6d5ef5 0%, #4a3fd1 42%, #281f6b 100%);
+    color:#fff}
+  header.hero::after{content:"";position:absolute;inset:0;pointer-events:none;
+    background-image:radial-gradient(circle at 1px 1px, rgba(255,255,255,.09) 1px, transparent 0);
+    background-size:24px 24px;
+    -webkit-mask-image:linear-gradient(to bottom, rgba(0,0,0,.85), transparent 72%);
+    mask-image:linear-gradient(to bottom, rgba(0,0,0,.85), transparent 72%)}
+  header.hero > *{position:relative;z-index:1}
+  header.hero .kicker{font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:#cbc6ff;font-weight:700}
+  header.hero h1{font-size:44px;line-height:1.07;margin:16px 0 18px;font-weight:800;letter-spacing:-.025em;color:#fff;
+    text-shadow:0 2px 30px rgba(0,0,0,.25)}
+  header.hero p.lede{font-size:19px;max-width:790px;margin:0;color:#e9e6ff;line-height:1.6;font-weight:400}
+  header.hero .meta{margin-top:28px;display:flex;gap:10px;flex-wrap:wrap}
+  header.hero .pill{background:rgba(255,255,255,.13);border:1px solid rgba(255,255,255,.26);color:#f2f0ff;
+    padding:6px 13px;border-radius:999px;font-size:13px;font-weight:500;backdrop-filter:blur(4px)}
+
+  /* ---------- typography ---------- */
+  h2.sec{display:flex;align-items:center;gap:15px;font-size:28px;font-weight:800;letter-spacing:-.02em;margin:68px 0 8px;scroll-margin-top:24px}
+  h2.sec .num{flex:none;display:inline-grid;place-items:center;width:44px;height:44px;border-radius:14px;
+    background:linear-gradient(135deg,#6d5ef5,#4338ca);color:#fff;font-size:19px;font-weight:800;
+    box-shadow:0 6px 16px rgba(91,78,240,.32);font-variant-numeric:tabular-nums}
+  h3{font-size:20px;margin:34px 0 8px;font-weight:700;letter-spacing:-.01em}
+  h4{font-size:16px;margin:22px 0 6px;font-weight:700;color:var(--ink)}
+  p{margin:12px 0;color:var(--ink-soft)}
+  .lead{font-size:18px;color:var(--ink)}
+  ul,ol{color:var(--ink-soft);padding-left:22px}
+  li{margin:6px 0}
+  strong{color:var(--ink);font-weight:650}
+  hr.div{border:0;border-top:1px solid var(--line);margin:48px 0}
+  .section-rule{height:3px;width:54px;background:linear-gradient(90deg,var(--primary),#a78bfa);border-radius:3px;margin:0 0 22px}
+
+  /* ---------- cards & callouts ---------- */
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:24px 26px;box-shadow:var(--shadow);margin:20px 0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  @media(max-width:900px){.grid2,.grid3{grid-template-columns:1fr}}
+
+  .callout{border-radius:14px;padding:18px 22px;margin:20px 0;border:1px solid;position:relative}
+  .callout .tag{font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;display:inline-block;margin-bottom:6px}
+  .callout p{margin:6px 0;color:var(--ink-soft)}
+  .callout.good{background:var(--teal-soft);border-color:#9fd9d0}
+  .callout.good .tag{color:var(--teal)}
+  .callout.warn{background:var(--amber-soft);border-color:#f3d39b}
+  .callout.warn .tag{color:var(--amber)}
+  .callout.fix{background:var(--rose-soft);border-color:#f3b6c8}
+  .callout.fix .tag{color:var(--rose)}
+  .callout.info{background:var(--primary-soft);border-color:#c7c9fb}
+  .callout.info .tag{color:var(--primary-d)}
+
+  .verdict{display:grid;grid-template-columns:auto 1fr;gap:16px;align-items:center;
+    background:linear-gradient(135deg,#0f766e,#0d9488);color:#fff;border-radius:16px;padding:22px 26px;margin:24px 0}
+  .verdict .score{font-size:42px;font-weight:800;line-height:1}
+  .verdict .score small{display:block;font-size:12px;font-weight:600;opacity:.85;letter-spacing:.08em;text-transform:uppercase}
+  .verdict p{color:#eafff9;margin:0}
+
+  /* ---------- tables ---------- */
+  table{border-collapse:collapse;width:100%;margin:18px 0;font-size:14.5px;background:#fff;border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#f4f4fb;font-weight:700;color:var(--ink);font-size:13px;letter-spacing:.02em}
+  tr:last-child td{border-bottom:0}
+  td code{font-size:12.5px}
+  .chk{color:var(--teal);font-weight:800}
+  .no{color:var(--rose);font-weight:800}
+  .mid{color:var(--amber);font-weight:800}
+
+  /* ---------- code ---------- */
+  pre{background:var(--code-bg);color:var(--code-ink);border-radius:14px;padding:20px 22px;overflow-x:auto;
+    font-family:var(--mono);font-size:13.5px;line-height:1.6;margin:18px 0}
+  code{font-family:var(--mono);background:#f0f0f7;padding:1.5px 6px;border-radius:6px;font-size:.88em;color:#3b2fae}
+  pre code{background:none;padding:0;color:inherit;font-size:inherit}
+  .c-key{color:#c4b5fd}.c-str{color:#86efac}.c-com{color:#7c7c95;font-style:italic}.c-num{color:#fcd34d}.c-fn{color:#7dd3fc}
+
+  /* ---------- formula ---------- */
+  .formula{background:#13131a;color:#fff;border-radius:14px;padding:26px;text-align:center;margin:20px 0;font-family:var(--mono);font-size:16px;line-height:2}
+  .formula .v{color:#a5b4fc}.formula .w{color:#fcd34d}.formula .op{color:#94a3b8}
+
+  /* ---------- pills / chips ---------- */
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
+  .chip{font-size:12.5px;font-weight:600;padding:5px 12px;border-radius:999px;background:#fff;border:1px solid var(--line);color:var(--ink-soft)}
+  .chip.p{background:var(--primary-soft);border-color:#c7c9fb;color:var(--primary-d)}
+
+  /* ---------- step list ---------- */
+  .steps{counter-reset:s;list-style:none;padding:0;margin:18px 0}
+  .steps li{counter-increment:s;position:relative;padding:14px 16px 14px 56px;background:#fff;border:1px solid var(--line);border-radius:12px;margin:10px 0;box-shadow:var(--shadow)}
+  .steps li::before{content:counter(s);position:absolute;left:16px;top:14px;width:28px;height:28px;border-radius:50%;
+    background:var(--primary);color:#fff;font-weight:700;display:grid;place-items:center;font-size:14px}
+  .steps li b{color:var(--ink)}
+
+  /* ---------- phase timeline ---------- */
+  .phase{border-left:3px solid var(--primary);padding:4px 0 4px 22px;margin:0 0 8px;position:relative}
+  .phase::before{content:"";position:absolute;left:-8px;top:8px;width:13px;height:13px;border-radius:50%;background:#fff;border:3px solid var(--primary)}
+  .phase h4{margin:0 0 2px}
+  .phase .when{font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+
+  figure{margin:24px 0;text-align:center}
+  figure svg{max-width:100%;height:auto}
+  figcaption{font-size:13px;color:var(--muted);margin-top:10px}
+
+  .footnote-num{font-size:.7em;vertical-align:super;color:var(--primary-d);font-weight:700}
+  .ref-list{font-size:14px;columns:1}
+  .ref-list li{margin:9px 0}
+  .ref-list .src{color:var(--muted);font-size:12.5px}
+
+  .tldr{background:#fff;border:1px solid var(--line);border-left:5px solid var(--primary);border-radius:0 12px 12px 0;padding:16px 20px;margin:16px 0;box-shadow:var(--shadow)}
+  .tldr b{color:var(--primary-d)}
+
+  /* ---------- polish pass ---------- */
+  #progress{position:fixed;top:0;left:0;height:3px;width:0;z-index:200;
+    background:linear-gradient(90deg,#5b4ef0,#a78bfa,#22d3ee);box-shadow:0 0 12px rgba(91,78,240,.55);transition:width .08s linear}
+  tbody tr:nth-child(even){background:#fafaff}
+  tbody tr:hover{background:var(--primary-soft)}
+  th:first-child{border-top-left-radius:12px}
+  th:last-child{border-top-right-radius:12px}
+  .card{transition:transform .16s ease, box-shadow .16s ease}
+  .card:hover{transform:translateY(-3px);box-shadow:0 4px 14px rgba(20,20,40,.05),0 22px 50px rgba(46,33,120,.13)}
+  nav.toc a{transition:background .12s, color .12s, box-shadow .12s}
+  nav.toc a.active{background:var(--primary-soft);color:var(--primary-d);font-weight:650;box-shadow:inset 3px 0 0 var(--primary)}
+  .callout{transition:transform .16s ease}
+  .callout:hover{transform:translateX(2px)}
+  @media(max-width:980px){
+    .wrap{grid-template-columns:1fr}
+    nav.toc{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line)}
+    main{padding:0 24px 80px}
+    header.hero{margin:0 -24px 40px;padding:48px 24px 40px}
+    header.hero h1{font-size:34px}
+  }
+</style>
+</head>
+<body>
+<div id="progress"></div>
+<div class="wrap">
+
+<!-- ====================== TOC ====================== -->
+<nav class="toc">
+  <div class="brand"><span class="dot"></span> Friday Memory</div>
+  <div class="sub">Associative recall — research &amp; build plan</div>
+  <h2>Contents</h2>
+  <a href="#verdict">Verdict (TL;DR)</a>
+  <a href="#audit">1 · Auditing today's system</a>
+  <a href="#idea">2 · Your idea, decoded</a>
+  <a href="#science">3 · The cognitive science</a>
+  <a href="#prior">4 · What's been built</a>
+  <a href="#corrections">5 · Course corrections</a>
+  <a href="#architecture">6 · Proposed architecture</a>
+  <a href="#scoring">7 · The recall scoring model</a>
+  <a href="#schema">8 · Data model &amp; schema</a>
+  <a href="#retrieval">9 · Retrieval flow</a>
+  <a href="#consolidation">10 · Dreaming: cache GC &amp; retention</a>
+  <a href="#storage">11 · Storage choices</a>
+  <a href="#mvp">12 · MVP roadmap</a>
+  <a href="#risks">13 · Risks &amp; edge cases</a>
+  <a href="#audit-recall">14 · Measuring recall</a>
+  <a href="#reading">📚 Further reading (papers)</a>
+  <a href="#refs">References</a>
+</nav>
+
+<!-- ====================== MAIN ====================== -->
+<main>
+<header class="hero">
+  <div class="kicker">Research Brief · Friday Control Plane</div>
+  <h1>Giving Friday a Memory That&nbsp;Recalls Like a&nbsp;Brain</h1>
+  <p class="lede">You proposed a human-inspired memory system: emotionally weighted, indexed, stored as a graph of connected experiences, retrieved by following associative paths instead of scanning a log. This document validates that idea against cognitive science and the 2023–2026 state of the art in agent memory — and turns it into a concrete architecture and build plan for Friday.</p>
+  <div class="meta">
+    <span class="pill">📅 Compiled 2026-05-21</span>
+    <span class="pill">🔬 17 web searches · 15+ systems &amp; papers</span>
+    <span class="pill">🧠 Generative Agents · HippoRAG · Zep · A-MEM · SCM</span>
+    <span class="pill">🌙 LRU cache + dreaming GC</span>
+    <span class="pill">📚 13-paper ordered reading list</span>
+    <span class="pill">🎯 Verdict: validated, with 4 corrections</span>
+  </div>
+</header>
+
+<!-- ============ VERDICT ============ -->
+<section id="verdict">
+<h2 class="sec"><span class="num">★</span>The short answer</h2>
+<div class="section-rule"></div>
+
+<div class="verdict">
+  <div class="score">YES<small>direction is right</small></div>
+  <p>Your instinct is not just possible — it's <strong>where the entire field has independently converged</strong>. The two most cited agent-memory systems of the last two years (Stanford's <em>Generative Agents</em> and <em>HippoRAG</em>) describe almost exactly what you sketched: importance/emotion weighting, associative graphs, and spreading-activation retrieval modeled on the hippocampus. You arrived at it from first principles. That's a strong signal.</p>
+</div>
+
+<div class="tldr">
+<p><b>What's validated:</b> short-vs-long-term split, emotional/importance weighting, indexing memories by concept, a graph of linked experiences, neuron-like associative recall, learning a lesson once and recalling it forever — and your newest idea: <b>short-term memory as a cache that "dreams" to garbage-collect itself</b> while idle, promoting only what's worth keeping. A 2026 paper (SCM) implements exactly this. All of it has direct research backing and shipping implementations.</p>
+<p><b>What needs correcting (4 things):</b> ① <b>Dijkstra is the wrong algorithm</b> — recall is not a shortest-path problem; use <em>spreading activation</em> / Personalized PageRank. ② <b>Pure graph isn't enough</b> — the winning systems are <em>hybrid</em> (vectors + graph + time + symbolic index), because "dentist" must match "tooth pain" even with no explicit edge. ③ <b>Don't node-ify every footstep</b> — over-granular graphs become hairballs; store atomic-but-meaningful events. ④ <b>Don't use pure LRU for eviction</b> — it drops important-but-old lessons; weight eviction by importance + frequency too, the way modern caches (ARC, W-TinyLFU) do (§10).</p>
+<p><b>Is it better than today's daily-log audit?</b> Decisively, for the one thing you care about — <b>recall</b>. The current system is write-optimized and read-hostile. This is read-optimized.</p>
+</div>
+</section>
+
+<!-- ============ 1. AUDIT ============ -->
+<section id="audit">
+<h2 class="sec"><span class="num">1</span>Auditing the memory system Friday has today</h2>
+<div class="section-rule"></div>
+<p class="lead">Before improving it, let's be precise about what exists and exactly where it hurts. Friday's memory lives at <code>~/.claude/.../memory/</code> and has four parts:</p>
+
+<div class="grid2">
+  <div class="card">
+    <h4>📌 <code>MEMORY.md</code> — the hand-written index</h4>
+    <p>A flat bullet list, one line per fact, loaded into context every session. Today it has <strong>3 entries</strong>. It is curated by hand, has no ranking, and every line is paid for in tokens on <em>every</em> turn whether relevant or not.</p>
+  </div>
+  <div class="card">
+    <h4>🗂️ <code>feedback_*.md</code> / <code>friday-therapy/</code> — semantic memory</h4>
+    <p>One fact per file with frontmatter (<code>name</code>, <code>description</code>, <code>type</code>) plus <em>Why</em> / <em>How to apply</em>. This is genuinely good — atomic, explained, the closest thing to true long-term lessons.</p>
+  </div>
+  <div class="card">
+    <h4>📅 <code>daily/*.md</code> — the episodic log</h4>
+    <p>Time-stamped journal entries ("13:33 — Thread … Venkatesh asked for dashboard setup …"). <strong>7 files, 35 lines total.</strong> This is the "log what happens every day" layer — and it's exactly where your recall problem lives.</p>
+  </div>
+  <div class="card">
+    <h4>🔗 Linking via <code>[[name]]</code></h4>
+    <p>The format already supports wiki-style links between memories. <strong>This is the seed of your graph</strong> — it just isn't traversed, ranked, or used at retrieval time. Right now it's decoration.</p>
+  </div>
+</div>
+
+<h3>Where it breaks — the recall gap</h3>
+<p>The system is <strong>append-optimized and recall-hostile</strong>. Writing is trivial; finding is not. Concretely:</p>
+<ul>
+  <li><strong>Retrieval is "load everything in <code>MEMORY.md</code>" or "grep the dailies."</strong> There is no relevance ranking. A query like <em>"have we set up a member + admin dashboard for someone before, and what went wrong?"</em> requires reading every daily file. At 35 lines that's fine. At 3,500 it's impossible — and the daily log only ever grows.</li>
+  <li><strong>The dailies are a write-only graveyard.</strong> They're never read back because there's no index over them. Your dentist analogy is exact: you wrote down the visit, but you can't recall it without knowing the date — and you never know the date.</li>
+  <li><strong>No salience.</strong> A throwaway "asked him to confirm phone number" sits at the same weight as a hard-won lesson that cost an hour of rework. Nothing decays, nothing gets promoted.</li>
+  <li><strong>No associative jump.</strong> "Venkatesh" → "dashboard setup" → "the last admin-access bug" is a chain a human makes instantly. The current store has no edges to walk.</li>
+  <li><strong>The index is manual and bounded.</strong> <code>MEMORY.md</code> is maintained by Claude writing a bullet by hand. It doesn't scale and it competes for context budget on every turn.</li>
+</ul>
+
+<div class="callout info">
+  <span class="tag">The reframe</span>
+  <p>"Memory audit" today means <em>a human/agent re-reading the logs</em>. What you actually want is a system that <strong>surfaces the right past memory at the right moment, unprompted</strong> — the way the smell of a drill comes back the instant you sit in the chair. That is a <em>retrieval</em> problem, not a <em>logging</em> problem. The fix is to keep writing what you write, and add a retrieval brain on top.</p>
+</div>
+</section>
+
+<!-- ============ 2. IDEA DECODED ============ -->
+<section id="idea">
+<h2 class="sec"><span class="num">2</span>Your idea, decoded into engineering terms</h2>
+<div class="section-rule"></div>
+<p class="lead">Every analogy you used maps cleanly onto an established concept. Here's the translation table — and notice that none of it is exotic; it's all named, studied, and shipping.</p>
+
+<table>
+<thead><tr><th>What you said</th><th>The technical name</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>"Smell of the drill stays with me; the stranger's face doesn't"</td><td><strong>Emotional / salience-weighted encoding</strong> — high-arousal events get prioritized for storage</td><td><span class="chk">✓ real (amygdala studies)</span></td></tr>
+<tr><td>"Going to the dentist once = short-term; my brain decides to keep it = long-term"</td><td><strong>Memory consolidation</strong> — hippocampus (fast, episodic) → neocortex (slow, semantic), the Complementary Learning Systems model</td><td><span class="chk">✓ canonical neuroscience</span></td></tr>
+<tr><td>"Index every memory like a glossary; concepts, emotions, locations, mistakes"</td><td><strong>Inverted index + entity extraction</strong> — exactly how A-MEM builds keyword/tag attributes per note</td><td><span class="chk">✓ A-MEM, 2025</span></td></tr>
+<tr><td>"Store memories as a graph; some links one-way, some two-way"</td><td><strong>Directed/undirected associative knowledge graph</strong></td><td><span class="chk">✓ Zep, HippoRAG, Mem0</span></td></tr>
+<tr><td>"Use Dijkstra / best pathfinding to search the memory"</td><td><strong>Graph traversal for retrieval</strong> — but the <em>right</em> traversal is spreading activation / Personalized PageRank, not shortest path</td><td><span class="mid">~ right idea, wrong algo</span></td></tr>
+<tr><td>"Synapses forming between indexes; 'dentist' activates related memories"</td><td><strong>Spreading activation</strong> over an associative network — the core of ACT-R and HippoRAG</td><td><span class="chk">✓ ACT-R, 1983→today</span></td></tr>
+<tr><td>"Recall an old mistake and not repeat it; hot-pan learning"</td><td><strong>Reflection / lesson extraction</strong> + reinforcement — turn episodic events into semantic rules</td><td><span class="chk">✓ Generative Agents</span></td></tr>
+<tr><td>"Short-term memory is an LRU cache"</td><td><strong>Bounded working-memory cache with eviction</strong> — but salience-weighted (recency + frequency + importance), like ARC / W-TinyLFU, not pure LRU</td><td><span class="mid">~ right instinct, refine the policy</span></td></tr>
+<tr><td>"Dreaming garbage-collects the day's memory; keep some for long-term"</td><td><strong>Sleep-stage consolidation + algorithmic forgetting</strong> — replay, promote salient items, evict the rest</td><td><span class="chk">✓ SCM, 2026</span></td></tr>
+</tbody>
+</table>
+
+<div class="callout good">
+  <span class="tag">Why this matters</span>
+  <p>You didn't invent a metaphor that has to be forced into code. You re-derived the actual blueprint that NeurIPS papers and production memory startups are building on. The job below is not "is this a good idea" — it's "assemble the proven pieces correctly and size them to a single Slack bot."</p>
+</div>
+</section>
+
+<!-- ============ 3. SCIENCE ============ -->
+<section id="science">
+<h2 class="sec"><span class="num">3</span>The cognitive science your intuition is built on</h2>
+<div class="section-rule"></div>
+<p class="lead">Four findings from memory neuroscience justify the design. Each one becomes a concrete mechanism later.</p>
+
+<h3>① Emotion and surprise act as a "save this" flag</h3>
+<p>The amygdala, firing during emotionally or surprisingly intense events, biases the hippocampus to encode them more strongly — which is why "unexpected, isolated events, particularly with high emotionality, are better recalled."<span class="footnote-num">7</span> Your drill memory is an amygdala flag. <strong>Engineering translation:</strong> compute an <em>importance/surprise</em> score at write time and use it as a retention and ranking weight. (For an engineering agent, frame "emotion" as <em>consequence/cost/surprise</em>: a deploy that broke prod is "emotional" in exactly this sense.)</p>
+
+<h3>② Forgetting is a power-law decay — and it's a feature</h3>
+<p>Ebbinghaus showed memory strength decays as a power function of time; ACT-R formalizes this as a per-trace decay so that <strong>recency</strong> (recent = strong) and <strong>frequency</strong> (often-used = strong) jointly set an item's activation.<span class="footnote-num">5</span> Forgetting isn't a bug — it's how the brain keeps the relevant set small. <strong>Translation:</strong> decay scores over time; let unused, low-importance memories fade so retrieval stays sharp and cheap.</p>
+
+<h3>③ Two systems: fast episodic store, slow semantic store</h3>
+<p>Complementary Learning Systems theory: the hippocampus rapidly captures specific experiences; during offline periods (sleep) those traces are "replayed" and consolidated into neocortex as generalized knowledge, with replay probability biased by recency and frequency.<span class="footnote-num">6</span> <strong>Translation:</strong> a fast short-term buffer + a periodic consolidation job that promotes and generalizes the salient stuff into long-term semantic memory. This <em>is</em> your short-term/long-term split.</p>
+
+<h3>④ Retrieval is spreading activation, not search</h3>
+<p>In an associative network, a cue (e.g. "dentist") injects activation that <strong>radiates outward and decays with distance</strong>, with stronger links carrying more activation; the cascade lights up related items "multiple associations away" — feelings, lessons, warnings.<span class="footnote-num">8</span> This is precisely your "synapses forming" picture, and it is fundamentally different from finding a shortest path. More on that in §5.</p>
+</section>
+
+<!-- ============ 4. PRIOR ART ============ -->
+<section id="prior">
+<h2 class="sec"><span class="num">4</span>What's already been built — and what to steal from each</h2>
+<div class="section-rule"></div>
+<p class="lead">Seven systems define the space. Each solved part of your problem. The right design borrows the best idea from each rather than adopting any one wholesale.</p>
+
+<div class="card">
+<h3>🏛️ Generative Agents (Stanford, 2023) — the scoring formula</h3>
+<p>Smallville's agents store every experience as a natural-language line in a <em>memory stream</em>, then retrieve with a weighted score combining <strong>recency</strong> (exponential decay), <strong>importance</strong> (an LLM rates each memory 1–10), and <strong>relevance</strong> (embedding similarity to the current situation). Periodic <em>reflections</em> synthesize raw memories into higher-level insights that feed back in.<span class="footnote-num">2</span></p>
+<p><b>Steal:</b> the three-factor retrieval score and the reflection step. This is your importance/emotion weighting, made into one line of math.</p>
+</div>
+
+<div class="card">
+<h3>🧠 HippoRAG (OSU, NeurIPS 2024) — your graph + pathfinding, validated</h3>
+<p>Explicitly built on the <em>hippocampal indexing theory</em>. The LLM is the "neocortex" (understanding), a knowledge graph is the associative index, and <strong>Personalized PageRank</strong> plays the role of the hippocampus — injecting activation at the query's entity nodes and letting it spread across the graph to rank what's relevant. Result: +20% on multi-hop QA, and 10–20× cheaper / 6–13× faster than iterative retrieval.<span class="footnote-num">3</span></p>
+<p><b>Steal:</b> this is the literal implementation of "store as a graph and use pathfinding to recall." The correct "pathfinding" is Personalized PageRank = spreading activation. Use it.</p>
+</div>
+
+<div class="card">
+<h3>⏳ Zep / Graphiti (2024–25) — time as a first-class citizen</h3>
+<p>A <em>temporal</em> knowledge graph: every node and edge carries <code>valid_at</code> / <code>invalid_at</code> timestamps, so when a fact changes the old one is marked invalid rather than overwritten. This lets it answer "what did we believe last Tuesday?" and cleanly supersede stale facts. On the LongMemEval benchmark Zep scored <strong>63.8%</strong> vs Mem0's 49.0% — a 15-point gap driven by exactly this temporal modeling.<span class="footnote-num">1</span></p>
+<p><b>Steal:</b> bi-temporal edges and explicit <em>supersedes/contradicts</em> relationships. This is how you handle "his phone number was wrong, then corrected" without lying later.</p>
+</div>
+
+<div class="card">
+<h3>🗃️ A-MEM (2025) — Zettelkasten self-organizing notes</h3>
+<p>Each new memory becomes an atomic "note" with LLM-generated context, keywords, and tags. The system finds relevant existing notes and <strong>links</strong> them, and crucially lets <strong>memory evolve</strong>: a new note can update the descriptions/tags of older notes — the network refines itself over time. Ablations show both linking and evolution are load-bearing.<span class="footnote-num">4</span></p>
+<p><b>Steal:</b> auto-generated indexes per note, automatic link formation (your "synapses"), and the evolution step — exactly your "the brain decides to connect this to that."</p>
+</div>
+
+<div class="card">
+<h3>💾 MemGPT / Letta (2023→) — the memory hierarchy</h3>
+<p>Treats the context window like RAM and external stores like disk, with explicit "paging." Three tiers: <strong>core/working</strong> memory (in context), <strong>recall/episodic</strong> (searchable conversation history), and <strong>archival/semantic</strong> (vector + KG cold storage). The agent uses tool calls to move data between tiers.<span class="footnote-num">9</span></p>
+<p><b>Steal:</b> the explicit short-term ↔ long-term tiering and the idea that the agent decides what to promote/page. This is your short-term vs long-term split, operationalized.</p>
+</div>
+
+<div class="card">
+<h3>🔀 Mem0 (2025) — the pragmatic hybrid baseline</h3>
+<p>Dual store: a vector DB for fuzzy semantic search plus a graph for entity relationships, with an LLM "extract → update" pipeline. Easy to self-host, broad integrations. Loses to Zep on temporal queries but is the simplest production-grade starting point and proves the <strong>vector+graph hybrid</strong> is the mainstream answer.<span class="footnote-num">1</span></p>
+<p><b>Steal:</b> the extract-on-write pipeline and the confirmation that you want <em>both</em> vectors and a graph, not one or the other.</p>
+</div>
+
+<div class="callout info">
+  <span class="tag">Pattern across all seven</span>
+  <p>Nobody picks graph <em>or</em> vectors <em>or</em> a log. The winners are <strong>hybrids</strong>: an episodic log for ground truth, embeddings for fuzzy entry, a graph for associative multi-hop, time for ordering and supersession, and an LLM for extraction and reflection. Your design should be a hybrid too.</p>
+</div>
+</section>
+
+<!-- ============ 5. CORRECTIONS ============ -->
+<section id="corrections">
+<h2 class="sec"><span class="num">5</span>Three course corrections before you build</h2>
+<div class="section-rule"></div>
+
+<div class="callout fix">
+  <span class="tag">Correction 1 — Dijkstra is the wrong tool</span>
+  <p><strong>Recall is not a shortest-path problem.</strong> Dijkstra finds the single cheapest route between two known nodes. But recall has no fixed destination — you have a cue ("dentist") and you want <em>everything it lights up</em>, ranked by how strongly. That's a one-to-many, decay-with-distance, strength-weighted cascade.</p>
+  <p>The correct algorithm is <strong>spreading activation</strong> (and its graph-ranking cousin <strong>Personalized PageRank</strong>, which is what HippoRAG uses). Inject "energy" at the cue node(s); it flows along edges proportional to edge strength, decaying each hop; the final activation level of every node is its recall score. Unlike Dijkstra: it's multi-source, it rewards <em>many weak paths</em> converging on a node, and it naturally produces a ranked set rather than one path.<span class="footnote-num">8</span></p>
+</div>
+
+<div class="callout fix">
+  <span class="tag">Correction 2 — pure graph loses fuzzy matching</span>
+  <p>A graph only connects what you explicitly linked. But "tooth pain," "root canal," and "that drilling sound" should all reach "dentist" even if you never drew those edges. Symbolic/graph indexes give <strong>precision and explainability</strong>; vector embeddings give <strong>fuzzy semantic reach</strong>. You need both: <strong>embeddings to find the entry nodes, the graph to expand from them.</strong> This is the hybrid every top system landed on — and it's why "vectorize it" and "use a graph" are not competing answers; they're two stages of one pipeline.</p>
+</div>
+
+<div class="callout fix">
+  <span class="tag">Correction 3 — don't node-ify every footstep</span>
+  <p>Your example listed "walking to the dentist / sitting in clinic / hearing the drill / coming home" as four memories. As a <em>mental</em> model, perfect. As <em>storage</em>, that granularity makes a hairball: millions of trivial nodes, edges that mean nothing, retrieval drowned in noise. A-MEM's lesson: store <strong>atomic but meaningful</strong> units — one note per <em>episode</em> ("dentist visit, 2026-05-20, painful root canal, dreaded it, glad it's done"), with structured attributes inside. Let granular detail live <em>in</em> the note, not as separate nodes.</p>
+</div>
+
+<div class="callout good">
+  <span class="tag">What to keep exactly as you imagined it</span>
+  <p>One-way vs two-way edges (causal links are directed: <em>cavity → root canal</em>; "related-to" links are undirected) — keep this, it's correct and matters. Indexes per memory — keep. Synapses strengthening with co-activation — keep, that's Hebbian reinforcement and it's a real, cheap mechanism. Short-term vs long-term — keep, with a consolidation job between them. Learn-a-lesson-once — keep, that's reflection.</p>
+</div>
+</section>
+
+<!-- ============ 6. ARCHITECTURE ============ -->
+<section id="architecture">
+<h2 class="sec"><span class="num">6</span>The proposed architecture for Friday</h2>
+<div class="section-rule"></div>
+<p class="lead">Four memory tiers, a hybrid index, and a brain that writes, retrieves, and consolidates. Importantly, it's a <strong>non-destructive overlay</strong>: you keep writing markdown exactly as today; the new machinery indexes it.</p>
+
+<figure>
+<svg viewBox="0 0 920 470" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#5b4ef0"/></marker>
+    <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6d5ef5"/><stop offset="1" stop-color="#4338ca"/></linearGradient>
+  </defs>
+  <!-- write path -->
+  <rect x="20" y="20" width="180" height="58" rx="12" fill="#fff" stroke="#e7e7ef"/>
+  <text x="110" y="44" text-anchor="middle" font-size="13" font-weight="700" fill="#13131a">Slack thread / event</text>
+  <text x="110" y="62" text-anchor="middle" font-size="11" fill="#71717f">a turn happens</text>
+
+  <rect x="20" y="110" width="180" height="70" rx="12" fill="url(#g1)"/>
+  <text x="110" y="138" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">WRITE pipeline</text>
+  <text x="110" y="156" text-anchor="middle" font-size="10.5" fill="#dcd9ff">extract entities · score</text>
+  <text x="110" y="170" text-anchor="middle" font-size="10.5" fill="#dcd9ff">importance · link</text>
+  <line x1="110" y1="78" x2="110" y2="108" stroke="#5b4ef0" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- tiers -->
+  <rect x="250" y="20" width="290" height="420" rx="16" fill="#f4f4fb" stroke="#e7e7ef"/>
+  <text x="395" y="44" text-anchor="middle" font-size="12" font-weight="800" fill="#4338ca" letter-spacing="1">MEMORY TIERS</text>
+
+  <rect x="270" y="58" width="250" height="60" rx="10" fill="#fff" stroke="#c7c9fb"/>
+  <text x="285" y="80" font-size="12.5" font-weight="700" fill="#13131a">① Working (current thread)</text>
+  <text x="285" y="100" font-size="11" fill="#71717f">in-context · ephemeral · the live turn</text>
+
+  <rect x="270" y="128" width="250" height="64" rx="10" fill="#fff" stroke="#c7c9fb"/>
+  <text x="285" y="150" font-size="12.5" font-weight="700" fill="#13131a">② Episodic (daily/*.md + index)</text>
+  <text x="285" y="170" font-size="11" fill="#71717f">time-stamped events · what happened,</text>
+  <text x="285" y="184" font-size="11" fill="#71717f">when, who, outcome</text>
+
+  <rect x="270" y="202" width="250" height="64" rx="10" fill="#fff" stroke="#c7c9fb"/>
+  <text x="285" y="224" font-size="12.5" font-weight="700" fill="#13131a">③ Semantic (feedback / lessons)</text>
+  <text x="285" y="244" font-size="11" fill="#71717f">generalized rules · "always verify</text>
+  <text x="285" y="258" font-size="11" fill="#71717f">Friday's claims" · the hot-pan rules</text>
+
+  <rect x="270" y="276" width="250" height="60" rx="10" fill="#fff" stroke="#c7c9fb"/>
+  <text x="285" y="298" font-size="12.5" font-weight="700" fill="#13131a">④ Procedural (how-to)</text>
+  <text x="285" y="318" font-size="11" fill="#71717f">repeatable playbooks &amp; workflows</text>
+
+  <rect x="270" y="350" width="250" height="74" rx="10" fill="#eef0fe" stroke="#c7c9fb"/>
+  <text x="285" y="372" font-size="12.5" font-weight="700" fill="#4338ca">🔗 Associative graph + indexes</text>
+  <text x="285" y="392" font-size="11" fill="#5b4ef0">edges (temporal/causal/entity/similar)</text>
+  <text x="285" y="406" font-size="11" fill="#5b4ef0">spans all tiers · embeddings · FTS</text>
+
+  <!-- read path -->
+  <rect x="590" y="20" width="180" height="58" rx="12" fill="#fff" stroke="#e7e7ef"/>
+  <text x="680" y="44" text-anchor="middle" font-size="13" font-weight="700" fill="#13131a">New situation</text>
+  <text x="680" y="62" text-anchor="middle" font-size="11" fill="#71717f">"dashboard for X"</text>
+
+  <rect x="590" y="110" width="180" height="86" rx="12" fill="url(#g1)"/>
+  <text x="680" y="135" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">RECALL pipeline</text>
+  <text x="680" y="154" text-anchor="middle" font-size="10.5" fill="#dcd9ff">embed + extract → seed</text>
+  <text x="680" y="168" text-anchor="middle" font-size="10.5" fill="#dcd9ff">spread activation → rank</text>
+  <text x="680" y="182" text-anchor="middle" font-size="10.5" fill="#dcd9ff">top-k into context</text>
+  <line x1="680" y1="78" x2="680" y2="108" stroke="#5b4ef0" stroke-width="2" marker-end="url(#arr)"/>
+
+  <rect x="590" y="228" width="180" height="58" rx="12" fill="#e7f6f3" stroke="#9fd9d0"/>
+  <text x="680" y="252" text-anchor="middle" font-size="12.5" font-weight="700" fill="#0d9488">Friday acts — informed</text>
+  <text x="680" y="270" text-anchor="middle" font-size="10.5" fill="#0d9488">"last time, phone was short a digit"</text>
+  <line x1="680" y1="196" x2="680" y2="226" stroke="#5b4ef0" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- consolidation -->
+  <rect x="590" y="330" width="180" height="94" rx="12" fill="#fef3e2" stroke="#f3d39b"/>
+  <text x="680" y="354" text-anchor="middle" font-size="12.5" font-weight="700" fill="#b45309">🌙 Nightly consolidation</text>
+  <text x="680" y="373" text-anchor="middle" font-size="10.5" fill="#b45309">replay · promote salient</text>
+  <text x="680" y="387" text-anchor="middle" font-size="10.5" fill="#b45309">extract lessons · decay</text>
+  <text x="680" y="401" text-anchor="middle" font-size="10.5" fill="#b45309">prune · evolve links</text>
+
+  <!-- arrows write->tiers, tiers->read -->
+  <line x1="200" y1="145" x2="268" y2="160" stroke="#5b4ef0" stroke-width="2" marker-end="url(#arr)"/>
+  <line x1="522" y1="160" x2="588" y2="145" stroke="#5b4ef0" stroke-width="2" marker-end="url(#arr)"/>
+  <line x1="522" y1="387" x2="588" y2="380" stroke="#b45309" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#arr)"/>
+</svg>
+<figcaption>Write once → index everywhere → recall by spreading activation → consolidate while idle. The four tiers map to the episodic/semantic/procedural memory you already keep in markdown.</figcaption>
+</figure>
+
+<h3>The four tiers, concretely for Friday</h3>
+<table>
+<thead><tr><th>Tier</th><th>What it holds</th><th>Today's equivalent</th><th>Lifetime</th></tr></thead>
+<tbody>
+<tr><td><strong>Working</strong></td><td>The current Slack turn's context</td><td>The <code>claude -p</code> prompt</td><td>One turn</td></tr>
+<tr><td><strong>Episodic (short-term)</strong></td><td>Time-stamped events: who asked what, what happened, outcome</td><td><code>daily/*.md</code></td><td><b>Bounded cache</b> — dreaming GCs it (§10): promote or evict</td></tr>
+<tr><td><strong>Semantic</strong></td><td>Generalized lessons &amp; facts, with why/how</td><td><code>feedback_*.md</code></td><td>Long-lived; reinforced on reuse</td></tr>
+<tr><td><strong>Procedural</strong></td><td>Repeatable playbooks ("how to create a member + grant admin")</td><td>(implicit / docs)</td><td>Long-lived</td></tr>
+</tbody>
+</table>
+<div class="callout info">
+  <span class="tag">This taxonomy isn't ad-hoc</span>
+  <p>The four tiers — <em>working</em> + long-term (<em>episodic / semantic / procedural</em>) — are the <strong>CoALA</strong> taxonomy (Cognitive Architectures for Language Agents, Sumers, Yao, Narasimhan &amp; Griffiths, 2023), the standard framework that retrofits Soar/ACT-R cognitive architecture onto LLM agents and is used to compare ReAct, Reflexion, Voyager, and the rest.<span class="footnote-num">12</span> If you read one orienting paper first, read this one.</p>
+</div>
+</section>
+
+<!-- ============ 7. SCORING ============ -->
+<section id="scoring">
+<h2 class="sec"><span class="num">7</span>The recall scoring model — the heart of it</h2>
+<div class="section-rule"></div>
+<p class="lead">Every candidate memory gets one number. This single formula is where "emotional weight, importance, frequency, recency, and context" all live. It's the Generative-Agents score, extended with frequency and spreading activation.</p>
+
+<div class="formula">
+score(m) =
+<span class="w">w₁</span>·<span class="v">recency</span>
+<span class="op">+</span> <span class="w">w₂</span>·<span class="v">importance</span>
+<span class="op">+</span> <span class="w">w₃</span>·<span class="v">relevance</span>
+<span class="op">+</span> <span class="w">w₄</span>·<span class="v">activation</span>
+<span class="op">+</span> <span class="w">w₅</span>·<span class="v">frequency</span>
+</div>
+
+<table>
+<thead><tr><th>Term</th><th>How it's computed</th><th>Your analogy</th></tr></thead>
+<tbody>
+<tr><td><b>recency</b></td><td>Exponential / power-law decay on time since last <em>access</em> (not just creation). <code>exp(-λ·Δt)</code></td><td>Old visits fade unless re-touched</td></tr>
+<tr><td><b>importance</b></td><td>LLM rates 1–10 at write time (consequence / surprise / cost). Or compute it automatically as <em>Bayesian surprise</em> — the negative log-likelihood of the event under the model — the signal EM-LLM uses to segment memories.<span class="footnote-num">13</span> Stored, not recomputed.</td><td>The drill (10) vs the stranger's face (1)</td></tr>
+<tr><td><b>relevance</b></td><td>Cosine similarity between the query embedding and the memory embedding</td><td>"This situation feels like that one"</td></tr>
+<tr><td><b>activation</b></td><td>Spreading-activation / Personalized-PageRank score from the seed nodes through the graph</td><td>"Dentist" lighting up "pain," "lesson"</td></tr>
+<tr><td><b>frequency</b></td><td>How often this memory has been retrieved/used (log-scaled)</td><td>Things you recall often stay sharp</td></tr>
+</tbody>
+</table>
+
+<div class="callout info">
+  <span class="tag">Tuning note</span>
+  <p>Start with all weights = 1 and normalize each term to [0,1] (Generative Agents did exactly this). Then tune on real Friday queries. <strong>The audit win:</strong> because the score is a transparent sum of five named terms, you can always answer "<em>why did you surface this memory?</em>" — "high importance (8), recently used, strong causal link to the current entity." That explainability is something a pure vector search cannot give you.</p>
+</div>
+</section>
+
+<!-- ============ 8. SCHEMA ============ -->
+<section id="schema">
+<h2 class="sec"><span class="num">8</span>Data model &amp; schema</h2>
+<div class="section-rule"></div>
+<p class="lead">Memories are nodes; relationships are typed, weighted, optionally directed, optionally time-bounded edges. Below is a SQLite-flavored schema (rationale for SQLite in §11) that overlays your existing markdown without replacing it.</p>
+
+<pre><code><span class="c-com">-- Each markdown memory becomes a row. The .md file stays the source of truth.</span>
+<span class="c-key">CREATE TABLE</span> memory (
+  id            <span class="c-key">TEXT PRIMARY KEY</span>,        <span class="c-com">-- slug, matches the .md filename</span>
+  tier          <span class="c-key">TEXT</span>,   <span class="c-com">-- 'episodic' | 'semantic' | 'procedural'</span>
+  body          <span class="c-key">TEXT</span>,   <span class="c-com">-- the human-readable memory text</span>
+  source_path   <span class="c-key">TEXT</span>,   <span class="c-com">-- e.g. daily/2026-05-18.md or feedback_*.md</span>
+  importance    <span class="c-key">REAL</span>,   <span class="c-com">-- 0..1, LLM-rated consequence/surprise at write time</span>
+  created_at    <span class="c-key">INTEGER</span>,
+  last_used_at  <span class="c-key">INTEGER</span>, <span class="c-com">-- drives recency</span>
+  use_count     <span class="c-key">INTEGER DEFAULT</span> <span class="c-num">0</span>,    <span class="c-com">-- drives frequency</span>
+  valid_at      <span class="c-key">INTEGER</span>, <span class="c-com">-- bi-temporal (Zep-style): when the fact became true</span>
+  invalid_at    <span class="c-key">INTEGER</span>  <span class="c-com">-- NULL = still true; set when superseded</span>
+);
+
+<span class="c-com">-- Entities mentioned across memories = the index ("glossary").</span>
+<span class="c-key">CREATE TABLE</span> entity ( id <span class="c-key">TEXT PRIMARY KEY</span>, name <span class="c-key">TEXT</span>, kind <span class="c-key">TEXT</span> );  <span class="c-com">-- person/repo/feature/concept</span>
+<span class="c-key">CREATE TABLE</span> mention ( memory_id <span class="c-key">TEXT</span>, entity_id <span class="c-key">TEXT</span> ); <span class="c-com">-- inverted index: entity → memories</span>
+
+<span class="c-com">-- The graph. Directed when the relation is asymmetric; weight = synapse strength.</span>
+<span class="c-key">CREATE TABLE</span> edge (
+  src       <span class="c-key">TEXT</span>,
+  dst       <span class="c-key">TEXT</span>,
+  type      <span class="c-key">TEXT</span>,   <span class="c-com">-- 'temporal_next' | 'caused' | 'about' | 'similar' | 'supersedes' | 'lesson_from'</span>
+  directed  <span class="c-key">INTEGER</span>,<span class="c-com">-- 1 = one-way (causal), 0 = two-way (associative)</span>
+  weight    <span class="c-key">REAL</span>,   <span class="c-com">-- strengthens via Hebbian reinforcement on co-activation</span>
+  <span class="c-key">PRIMARY KEY</span> (src, dst, type)
+);
+
+<span class="c-com">-- Fuzzy entry points. sqlite-vec stores the vectors; FTS5 gives keyword search.</span>
+<span class="c-key">CREATE VIRTUAL TABLE</span> mem_vec <span class="c-key">USING</span> vec0(memory_id <span class="c-key">TEXT</span>, embedding <span class="c-key">FLOAT</span>[<span class="c-num">1024</span>]);
+<span class="c-key">CREATE VIRTUAL TABLE</span> mem_fts <span class="c-key">USING</span> fts5(memory_id, body);</code></pre>
+
+<h3>Edge types — your "one-way and two-way links," typed</h3>
+<div class="grid2">
+<div class="card">
+<h4>Directed (one-way) — asymmetric meaning</h4>
+<ul>
+<li><code>caused</code> / <code>led_to</code> — cavity → root canal</li>
+<li><code>supersedes</code> — corrected phone # → old phone #</li>
+<li><code>lesson_from</code> — the rule → the episode that taught it</li>
+<li><code>temporal_next</code> — event A precedes event B</li>
+</ul>
+</div>
+<div class="card">
+<h4>Undirected (two-way) — symmetric association</h4>
+<ul>
+<li><code>similar</code> — semantically close memories</li>
+<li><code>about</code> (shared entity) — both mention "Venkatesh"</li>
+<li><code>co_occurred</code> — happened in the same thread/session</li>
+<li><code>same_topic</code> — both about "admin dashboard"</li>
+</ul>
+</div>
+</div>
+
+<figure>
+<svg viewBox="0 0 860 300" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,sans-serif">
+  <defs><marker id="a2" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#94a3b8"/></marker></defs>
+  <!-- nodes -->
+  <g>
+    <circle cx="120" cy="150" r="46" fill="#eef0fe" stroke="#5b4ef0" stroke-width="2"/>
+    <text x="120" y="146" text-anchor="middle" font-size="12" font-weight="700" fill="#4338ca">dentist</text>
+    <text x="120" y="162" text-anchor="middle" font-size="9.5" fill="#71717f">imp .6</text>
+  </g>
+  <g>
+    <circle cx="340" cy="70" r="44" fill="#fdeaf0" stroke="#be123c" stroke-width="2"/>
+    <text x="340" y="66" text-anchor="middle" font-size="11.5" font-weight="700" fill="#be123c">root canal</text>
+    <text x="340" y="82" text-anchor="middle" font-size="9.5" fill="#71717f">imp .9 😖</text>
+  </g>
+  <g>
+    <circle cx="340" cy="235" r="44" fill="#e7f6f3" stroke="#0d9488" stroke-width="2"/>
+    <text x="340" y="231" text-anchor="middle" font-size="11.5" font-weight="700" fill="#0d9488">drill sound</text>
+    <text x="340" y="247" text-anchor="middle" font-size="9.5" fill="#71717f">imp .8</text>
+  </g>
+  <g>
+    <circle cx="600" cy="70" r="50" fill="#fef3e2" stroke="#b45309" stroke-width="2"/>
+    <text x="600" y="60" text-anchor="middle" font-size="11" font-weight="700" fill="#b45309">LESSON:</text>
+    <text x="600" y="76" text-anchor="middle" font-size="10" fill="#b45309">book early,</text>
+    <text x="600" y="89" text-anchor="middle" font-size="10" fill="#b45309">don't dread</text>
+  </g>
+  <g>
+    <circle cx="600" cy="235" r="44" fill="#f4f4fb" stroke="#94a3b8" stroke-width="2"/>
+    <text x="600" y="231" text-anchor="middle" font-size="11.5" font-weight="700" fill="#41414f">tooth pain</text>
+    <text x="600" y="247" text-anchor="middle" font-size="9.5" fill="#71717f">imp .7</text>
+  </g>
+  <g>
+    <circle cx="780" cy="150" r="40" fill="#fff" stroke="#c7c9fb" stroke-width="2"/>
+    <text x="780" y="154" text-anchor="middle" font-size="11" font-weight="700" fill="#5b4ef0">went home</text>
+  </g>
+  <!-- edges -->
+  <line x1="160" y1="120" x2="300" y2="82" stroke="#be123c" stroke-width="2.5" marker-end="url(#a2)"/>
+  <text x="218" y="92" font-size="10" fill="#be123c" font-weight="600">caused →</text>
+  <line x1="158" y1="178" x2="300" y2="222" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="3 3"/>
+  <text x="205" y="216" font-size="10" fill="#71717f">similar</text>
+  <line x1="384" y1="70" x2="546" y2="70" stroke="#b45309" stroke-width="2.5" marker-end="url(#a2)"/>
+  <text x="430" y="60" font-size="10" fill="#b45309" font-weight="600">lesson_from →</text>
+  <line x1="384" y1="235" x2="552" y2="235" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="3 3"/>
+  <text x="445" y="227" font-size="10" fill="#71717f">co-occurred</text>
+  <line x1="378" y1="100" x2="378" y2="200" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="3 3"/>
+  <line x1="636" y1="100" x2="752" y2="135" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a2)"/>
+</svg>
+<figcaption>A cue at "dentist" injects activation (thick = strong/important edges). It cascades to "root canal" → the lesson, even though you queried only "dentist." Solid arrows are directed/causal; dashed are undirected associations. This is recall, not shortest-path.</figcaption>
+</figure>
+</section>
+
+<!-- ============ 9. RETRIEVAL ============ -->
+<section id="retrieval">
+<h2 class="sec"><span class="num">9</span>Retrieval flow — how a query becomes a memory</h2>
+<div class="section-rule"></div>
+<p class="lead">Five stages. Stages 1–2 are the "fuzzy entry" (vectors + index); stages 3–4 are the "associative spread" (graph); stage 5 is the budget gate.</p>
+
+<ol class="steps">
+<li><b>Seed by similarity + index.</b> Embed the incoming situation and run vector search (sqlite-vec) for the top-N similar memories; in parallel, extract entities ("Venkatesh," "admin dashboard") and look them up in the inverted index. Union → <em>seed set</em>. <span style="color:var(--muted)">This solves the fuzzy "dentist ≈ tooth pain" problem.</span></li>
+<li><b>Inject activation at seeds.</b> Each seed gets initial activation proportional to its similarity × importance. These are the cue nodes.</li>
+<li><b>Spread.</b> Run spreading activation / Personalized PageRank for a few hops: activation flows along edges ∝ edge weight, decaying per hop. Convergent paths (a node reached from several seeds) accumulate — that's the "many weak signals add up" effect Dijkstra can't give you.<span class="footnote-num">8</span></li>
+<li><b>Score &amp; rank.</b> Combine the §7 formula: <code>w₁·recency + w₂·importance + w₃·relevance + w₄·activation + w₅·frequency</code>. Apply the temporal filter — drop memories whose <code>invalid_at</code> is set (superseded facts) unless the query is explicitly historical.</li>
+<li><b>Budget gate.</b> Return only the top-k (e.g. 5–8) that fit a token budget. Over-retrieval poisons context as badly as no memory — keep it tight. Bump <code>last_used_at</code>/<code>use_count</code> and Hebbian-strengthen the edges among co-retrieved memories.</li>
+</ol>
+
+<div class="callout good">
+  <span class="tag">Worked example (real Friday data)</span>
+  <p>Situation: <em>"Venkatesh wants an admin dashboard set up."</em> → Seeds: the <code>2026-05-18</code> episodic note (entity "Venkatesh," topic "admin dashboard") + the semantic lesson <code>verify-fridays-claims</code> (similar topic: setup outcomes). → Spread reaches the <code>dm-on-blocking-decisions</code> feedback via a "blocked-on-judgment-call" link (the phone number was short a digit — a blocking call). → Friday recalls, unprompted: <em>"last time this stalled on an unverified phone number; confirm the full number and DM Anmol if it blocks."</em> That's the dentist-chair moment.</p>
+</div>
+</section>
+
+<!-- ============ 10. DREAMING / CACHE GC ============ -->
+<section id="consolidation">
+<h2 class="sec"><span class="num">10</span>Dreaming — short-term memory as a cache that gets garbage-collected</h2>
+<div class="section-rule"></div>
+<p class="lead">Your LRU-cache instinct is the missing piece that makes the short/long-term split actually <em>work</em>, and it's well-founded. The day's memories live in a bounded short-term cache; while Friday is idle it <strong>"dreams"</strong> — a sleep cycle that replays the cache, promotes what's worth keeping into long-term, and garbage-collects the rest. A 2026 paper, <em>Sleep-Consolidated Memory (SCM)</em>, implements precisely this: a limited-capacity working memory, importance tagging, offline NREM/REM sleep stages, and intentional value-based forgetting.<span class="footnote-num">10</span></p>
+
+<h3>Short-term memory is a bounded cache</h3>
+<p>The day's episodic memories shouldn't grow forever — they sit in a fixed-capacity buffer (capped by item count or token budget). When it fills, something must be evicted. That is a cache-eviction problem, and your LRU framing is the right starting instinct: recency-based forgetting is real and biologically grounded (Ebbinghaus's curve<span class="footnote-num">5</span>). But the <em>policy</em> needs one upgrade.</p>
+
+<div class="callout fix">
+  <span class="tag">Correction 4 — don't use pure LRU</span>
+  <p>Pure LRU evicts strictly by recency, so a hard-won lesson learned at 9am gets thrown out the moment newer trivial chatter arrives — exactly the failure you're trying to avoid (the drill you can't forget would be evicted by the stranger you just passed). Production caches abandoned pure LRU long ago: <strong>LFU</strong> adds frequency, <strong>ARC</strong> adapts between recency and frequency, and <strong>W-TinyLFU</strong> (the policy behind Caffeine, the state-of-the-art JVM cache) combines both for the highest hit rates.<span class="footnote-num">11</span> Use a <strong>salience-weighted eviction</strong>: when the cache is full, evict the item with the <em>lowest §7 value score</em> (recency + importance + frequency). That's ARC/W-TinyLFU thinking — and it happens to be exactly what ACT-R activation already computes. The cache keeps what's recent, frequent, <em>or</em> important.</p>
+</div>
+
+<table>
+<thead><tr><th>Policy</th><th>Evicts by</th><th>Failure mode for memory</th><th>Verdict</th></tr></thead>
+<tbody>
+<tr><td>LRU (your instinct)</td><td>Recency only</td><td>Drops important-but-old lessons</td><td><span class="mid">~ right shape, too naive</span></td></tr>
+<tr><td>LFU</td><td>Frequency only</td><td>New important events look "rare," get dropped</td><td><span class="mid">~ opposite blind spot</span></td></tr>
+<tr><td>ARC</td><td>Adapts recency ↔ frequency</td><td>No notion of importance / surprise</td><td><span class="chk">✓ solid base</span></td></tr>
+<tr><td><b>Salience-weighted (recommended)</b></td><td>Lowest §7 score = recency + frequency + importance</td><td>—</td><td><span class="chk">✓✓ keeps the drill, drops the stranger</span></td></tr>
+</tbody>
+</table>
+
+<h3>"Dreaming" — the sleep cycle that GCs the cache</h3>
+<p>Garbage collection doesn't run on every write (too expensive — it's LLM work). It runs while Friday is idle, like sleep. SCM splits this into stages that map cleanly onto our pipeline:<span class="footnote-num">10</span></p>
+
+<figure>
+<svg viewBox="0 0 900 330" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,sans-serif">
+  <defs>
+    <marker id="ad" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#5b4ef0"/></marker>
+    <marker id="ag" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#0d9488"/></marker>
+    <marker id="aw" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#94a3b8"/></marker>
+    <linearGradient id="gd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6d5ef5"/><stop offset="1" stop-color="#4338ca"/></linearGradient>
+  </defs>
+
+  <!-- short-term cache -->
+  <rect x="20" y="60" width="210" height="210" rx="14" fill="#fff" stroke="#c7c9fb" stroke-width="1.5"/>
+  <text x="125" y="84" text-anchor="middle" font-size="12.5" font-weight="800" fill="#4338ca">SHORT-TERM CACHE</text>
+  <text x="125" y="100" text-anchor="middle" font-size="10" fill="#71717f">bounded · salience-weighted</text>
+  <!-- items with value bars -->
+  <g font-size="10" fill="#41414f">
+    <rect x="36" y="112" width="178" height="22" rx="5" fill="#fdeaf0"/><text x="44" y="127">root canal 😖</text><rect x="150" y="117" width="56" height="12" rx="3" fill="#be123c"/>
+    <rect x="36" y="138" width="178" height="22" rx="5" fill="#e7f6f3"/><text x="44" y="153">drill sound</text><rect x="150" y="143" width="48" height="12" rx="3" fill="#0d9488"/>
+    <rect x="36" y="164" width="178" height="22" rx="5" fill="#f4f4fb"/><text x="44" y="179">phone digit fix</text><rect x="150" y="169" width="40" height="12" rx="3" fill="#5b4ef0"/>
+    <rect x="36" y="190" width="178" height="22" rx="5" fill="#f8f8fc"/><text x="44" y="205">small talk</text><rect x="150" y="195" width="14" height="12" rx="3" fill="#cbd5e1"/>
+    <rect x="36" y="216" width="178" height="22" rx="5" fill="#f8f8fc"/><text x="44" y="231">passing chatter</text><rect x="150" y="221" width="10" height="12" rx="3" fill="#cbd5e1"/>
+  </g>
+  <text x="125" y="256" text-anchor="middle" font-size="9.5" fill="#b45309">▲ full → must evict the lowest-value rows</text>
+
+  <line x1="232" y1="165" x2="288" y2="165" stroke="#5b4ef0" stroke-width="2" marker-end="url(#ad)"/>
+  <text x="260" y="156" text-anchor="middle" font-size="9.5" fill="#71717f">idle / night</text>
+
+  <!-- dream cycle -->
+  <rect x="292" y="40" width="250" height="250" rx="16" fill="url(#gd)"/>
+  <text x="417" y="68" text-anchor="middle" font-size="14" font-weight="800" fill="#fff">🌙 DREAM</text>
+  <rect x="312" y="84" width="210" height="56" rx="9" fill="rgba(255,255,255,.14)" stroke="rgba(255,255,255,.3)"/>
+  <text x="324" y="106" font-size="11.5" font-weight="700" fill="#fff">NREM · replay &amp; score</text>
+  <text x="324" y="124" font-size="9.5" fill="#dcd9ff">re-rank the day by §7 value</text>
+  <rect x="312" y="148" width="210" height="56" rx="9" fill="rgba(255,255,255,.14)" stroke="rgba(255,255,255,.3)"/>
+  <text x="324" y="170" font-size="11.5" font-weight="700" fill="#fff">REM · reflect &amp; re-link</text>
+  <text x="324" y="188" font-size="9.5" fill="#dcd9ff">extract lessons · evolve edges</text>
+  <rect x="312" y="212" width="210" height="56" rx="9" fill="rgba(255,255,255,.14)" stroke="rgba(255,255,255,.3)"/>
+  <text x="324" y="234" font-size="11.5" font-weight="700" fill="#fff">DECIDE · promote or evict</text>
+  <text x="324" y="252" font-size="9.5" fill="#dcd9ff">apply the retention rule ↓</text>
+
+  <!-- outputs -->
+  <line x1="544" y1="112" x2="624" y2="100" stroke="#0d9488" stroke-width="2.5" marker-end="url(#ag)"/>
+  <rect x="628" y="70" width="250" height="74" rx="12" fill="#e7f6f3" stroke="#9fd9d0"/>
+  <text x="753" y="94" text-anchor="middle" font-size="12.5" font-weight="800" fill="#0d9488">LONG-TERM (semantic)</text>
+  <text x="753" y="113" text-anchor="middle" font-size="10" fill="#0d9488">promoted: high score, reinforced,</text>
+  <text x="753" y="127" text-anchor="middle" font-size="10" fill="#0d9488">or generalized into a rule</text>
+
+  <line x1="544" y1="240" x2="624" y2="222" stroke="#94a3b8" stroke-width="2.5" marker-end="url(#aw)"/>
+  <rect x="628" y="190" width="250" height="74" rx="12" fill="#f4f4fb" stroke="#cbd5e1"/>
+  <text x="753" y="214" text-anchor="middle" font-size="12.5" font-weight="800" fill="#64748b">ARCHIVE (cold) — forgotten</text>
+  <text x="753" y="233" text-anchor="middle" font-size="10" fill="#71717f">evicted from hot set, not deleted;</text>
+  <text x="753" y="247" text-anchor="middle" font-size="10" fill="#71717f">md + git stay · re-admit on a hit</text>
+</svg>
+<figcaption>Short-term cache fills during the day → at idle, Friday "dreams": replays and re-scores the day, reflects/re-links, then promotes the salient few to long-term and garbage-collects the rest to cold archive. GC = evict from the hot working set, not destroy.</figcaption>
+</figure>
+
+<div class="grid2">
+<div class="card">
+<h4>🌙 NREM — replay &amp; promote</h4>
+<p>Re-score the day's cached episodes by the §7 value. High importance × frequency get "replayed" and promoted toward semantic memory (CLS consolidation<span class="footnote-num">6</span>). A one-off "asked for phone number" fades; a pattern seen 3× becomes a rule.</p>
+</div>
+<div class="card">
+<h4>💭 REM — reflect &amp; extract lessons</h4>
+<p>Ask the LLM: "what general lessons do today's events imply?" Write them as <code>feedback_*.md</code> with a <code>lesson_from</code> edge back to the episodes. This is the hot-pan mechanism — and the core idea of <em>Reflexion</em>: verbally reflect on failure, store the reflection, do better next time.<span class="footnote-num">2</span><span class="footnote-num">15</span></p>
+</div>
+<div class="card">
+<h4>🗑️ Forget — evict &amp; archive</h4>
+<p>Items below the retention bar are evicted from the active cache (salience-weighted, not pure LRU) and moved to cold archive — never hard-deleted. Forgetting keeps the hot graph small, fast, and relevant: a feature, per Ebbinghaus/ACT-R and SCM. <em>MemoryBank</em> implements exactly this — Ebbinghaus decay on memory strength, reinforced on each recall.<span class="footnote-num">5</span><span class="footnote-num">10</span><span class="footnote-num">14</span></p>
+</div>
+<div class="card">
+<h4>🔗 Strengthen — evolve links</h4>
+<p>Re-run seed-and-link over the day's additions (A-MEM evolution<span class="footnote-num">4</span>): form new edges, strengthen co-activated ones (Hebbian: "neurons that fire together wire together"), and mark contradictions with <code>supersedes</code> + a fresh <code>invalid_at</code>.</p>
+</div>
+</div>
+
+<h3>The retention rule — how an item earns long-term storage</h3>
+<p>This answers your "based on the research, how do we retain them for long term." During a dream, a short-term item is <strong>promoted</strong> to long-term (semantic) memory if <em>any</em> of these hold:</p>
+<ul>
+<li><strong>Value ≥ promotion threshold</strong> — high importance × recency × frequency clears the bar.</li>
+<li><strong>Reinforced ≥ k times</strong> that day — it kept coming up, so it kept mattering (frequency / Hebbian reinforcement).</li>
+<li><strong>High importance / surprise</strong> — the amygdala flag: a deploy broke prod, a user was upset, a hard correction landed.<span class="footnote-num">7</span></li>
+<li><strong>Generalized into a rule</strong> — a reflection turned it into a reusable lesson (a <code>lesson_from</code> edge was created).</li>
+</ul>
+<p>Everything else is <strong>evicted from the active cache but archived, not deleted</strong> — the markdown and git history remain. "Garbage collection" here means "remove from the hot working set," like paging cold data to disk. If an archived memory later proves relevant, a vector/index hit can <em>re-admit</em> it — exactly a cache miss that pulls from disk and warms back up.</p>
+
+<div class="callout info">
+  <span class="tag">Why dream nightly, not on every write</span>
+  <p>Reflection, re-linking, and re-scoring are LLM calls — too costly to run per Slack turn. Batching them into an idle-time "dream" mirrors biological sleep consolidation <em>and</em> keeps per-turn latency and spend low. Daytime writes stay cheap (extract entities + embed + append to the cache); the expensive "thinking about it" — and the garbage collection — happens offline. Friday already has the cron/hook machinery to schedule this.</p>
+</div>
+</section>
+
+<!-- ============ 11. STORAGE ============ -->
+<section id="storage">
+<h2 class="sec"><span class="num">11</span>Storage choices — sized for a single Slack bot</h2>
+<div class="section-rule"></div>
+<p class="lead">You do <em>not</em> need Neo4j or a vector cloud service. Friday is one node with thousands (not billions) of memories. Match the tool to that scale.</p>
+
+<table>
+<thead><tr><th>Option</th><th>Vectors</th><th>Graph</th><th>Full-text</th><th>Ops cost</th><th>Fit for Friday</th></tr></thead>
+<tbody>
+<tr><td><b>SQLite + sqlite-vec + FTS5</b></td><td><span class="chk">✓</span></td><td><span class="mid">~ (edge table + recursive CTE)</span></td><td><span class="chk">✓</span></td><td><span class="chk">zero (a file)</span></td><td><b>Recommended.</b> Embedded, matches the file-based ethos, trivially backed up alongside the repo.</td></tr>
+<tr><td>Postgres + pgvector + Apache AGE</td><td><span class="chk">✓</span></td><td><span class="chk">✓ (Cypher)</span></td><td><span class="chk">✓</span></td><td><span class="mid">a server</span></td><td>Good if Friday later goes multi-node / Redis-backed per CLAUDE.md rule 11.</td></tr>
+<tr><td>Kùzu / Neo4j (graph-native)</td><td><span class="mid">~</span></td><td><span class="chk">✓✓</span></td><td><span class="mid">~</span></td><td><span class="no">heavy</span></td><td>Overkill at this scale; revisit only if the graph dominates.</td></tr>
+<tr><td>Mem0 / Zep (managed lib)</td><td><span class="chk">✓</span></td><td><span class="chk">✓</span></td><td><span class="chk">✓</span></td><td><span class="mid">dependency</span></td><td>Fastest to a baseline; less control, another service, weaker fit with the markdown source-of-truth.</td></tr>
+</tbody>
+</table>
+
+<div class="callout good">
+  <span class="tag">Recommendation</span>
+  <p>Build on <strong>SQLite + sqlite-vec + FTS5</strong> as a derived index over the existing markdown. The <code>.md</code> files stay the human-readable source of truth (and your git history / audit trail); the SQLite DB is a rebuildable cache you can blow away and regenerate from the files. This honors CLAUDE.md's "pure functions over framework ceremony" and "design for swappability" rules — the store sits behind a <code>MemoryStore</code> interface, so you can swap to Postgres later without touching retrieval logic. Graph traversal at a few thousand nodes is a recursive CTE or an in-memory PageRank in milliseconds; you don't need a graph database.</p>
+</div>
+</section>
+
+<!-- ============ 12. MVP ============ -->
+<section id="mvp">
+<h2 class="sec"><span class="num">12</span>MVP roadmap — ship value at every phase</h2>
+<div class="section-rule"></div>
+<p class="lead">Each phase is independently useful and non-destructive. You could stop after Phase 2 and already have solved the recall problem.</p>
+
+<div class="phase">
+  <div class="when">Phase 0 · ~½ day · foundation</div>
+  <h4>Structure what you already write</h4>
+  <p>Add minimal frontmatter to <em>episodic</em> notes too (entities, importance 1–10, type). Keep writing markdown by hand exactly as today. No retrieval changes yet — just make the data machine-readable. <b>Win:</b> nothing breaks; future phases have clean inputs.</p>
+</div>
+<div class="phase">
+  <div class="when">Phase 1 · ~2 days · the index</div>
+  <h4>SQLite overlay: FTS + embeddings, rebuilt from files</h4>
+  <p>A script walks <code>memory/**/*.md</code>, populates <code>memory</code>, <code>mem_fts</code>, <code>mem_vec</code>. A <code>recall(query, k)</code> function does vector + keyword search and returns top-k. Wire it into Friday's prompt assembly. <b>Win:</b> the daily-log graveyard becomes searchable — the core recall problem is <em>solved at a basic level</em> here.</p>
+</div>
+<div class="phase">
+  <div class="when">Phase 2 · ~3 days · the graph + scoring</div>
+  <h4>Entities, edges, and the 5-term score</h4>
+  <p>Extract entities on write; build <code>entity</code>/<code>mention</code>/<code>edge</code> tables. Implement the §7 scoring formula and §9 spreading activation (a bounded BFS with decay, or NetworkX PageRank in-process). <b>Win:</b> associative recall — "Venkatesh" surfaces the related blocking-decision lesson. This is the dentist-chair behavior.</p>
+</div>
+<div class="phase">
+  <div class="when">Phase 3 · ~2 days · dreaming &amp; cache GC</div>
+  <h4>Bounded short-term cache + nightly "dream"</h4>
+  <p>Cap the episodic buffer; evict by lowest §7 score (salience-weighted, not pure LRU). Cron "dream" job: replay &amp; re-score the day, extract lessons into <code>feedback_*.md</code>, apply the retention rule, promote the salient few to long-term, archive the rest. <b>Win:</b> the system learns and forgets on its own — short→long-term promotion is automatic instead of hand-curated, and memory stays bounded.</p>
+</div>
+<div class="phase">
+  <div class="when">Phase 4 · ongoing · refinement</div>
+  <h4>Hebbian reinforcement, eval, tuning</h4>
+  <p>Strengthen co-retrieved edges; build a small recall@k eval set from real threads (LongMemEval-style<span class="footnote-num">1</span>); tune the five weights; add a "why retrieved" trace for the audit view. <b>Win:</b> measurable, improving, explainable recall.</p>
+</div>
+
+<div class="callout warn">
+  <span class="tag">Scope discipline (per your own CLAUDE.md)</span>
+  <p>Resist building Phase 2–4 first. Phase 1 alone — searchable embeddings over the markdown you already write — captures most of the value for a fraction of the effort. The graph and consolidation are multipliers, not prerequisites. Build the index, prove recall improves on real queries, <em>then</em> add the brain.</p>
+</div>
+</section>
+
+<!-- ============ 13. RISKS ============ -->
+<section id="risks">
+<h2 class="sec"><span class="num">13</span>Risks, edge cases &amp; how to handle them</h2>
+<div class="section-rule"></div>
+
+<table>
+<thead><tr><th>Risk</th><th>Why it bites</th><th>Mitigation</th></tr></thead>
+<tbody>
+<tr><td><b>Contradiction / stale facts</b></td><td>"Phone is 9 digits" then "phone corrected." Naive recall surfaces the wrong one.</td><td>Bi-temporal edges (Zep): <code>supersedes</code> + <code>invalid_at</code>. Filter invalid facts at retrieval unless query is historical.<span class="footnote-num">1</span></td></tr>
+<tr><td><b>Context poisoning / false memory</b></td><td>A wrong memory, once stored, gets recalled and reinforced — a confidently-held mistake.</td><td>Provenance on every memory (source_path); confidence scores; let the consolidation step flag low-confidence or unverified items (ties to your "verify Friday's claims" rule).</td></tr>
+<tr><td><b>Over-retrieval</b></td><td>Stuffing 30 memories into context degrades the answer as much as zero.</td><td>Hard top-k + token budget gate (§9.5). Fewer, higher-scored memories beat many.</td></tr>
+<tr><td><b>Graph hairball</b></td><td>Too many nodes/edges → slow traversal, noisy activation.</td><td>Atomic-but-meaningful nodes (Correction 3); cap edges per node; decay/prune in consolidation.</td></tr>
+<tr><td><b>Premature forgetting</b></td><td>Dreaming evicts something that turns out important later.</td><td>Archive, never hard-delete (re-admit on a later hit); keep the promotion threshold conservative; high-importance items are exempt from eviction (Correction 4 / §10).</td></tr>
+<tr><td><b>LLM extraction cost</b></td><td>Entity/importance/reflection are model calls; per-turn they add latency &amp; spend.</td><td>Cheap path on write (embed + regex/NER for entities); expensive reflection batched nightly.</td></tr>
+<tr><td><b>Embedding drift</b></td><td>Changing the embedding model invalidates stored vectors.</td><td>Store model id with each vector; rebuild index from markdown (it's derived, not authoritative) when the model changes.</td></tr>
+<tr><td><b>Importance is subjective</b></td><td>The LLM's 1–10 rating is noisy and can drift.</td><td>Calibrate against outcomes (did this memory ever get usefully recalled?); let frequency-of-use correct mis-rated importance over time.</td></tr>
+<tr><td><b>Privacy / leakage</b></td><td>Memories carry PII (phone numbers, emails) and personal context.</td><td>Keep the store local to Friday's host; never ship raw memory to external services; redact PII in any shareable export.</td></tr>
+</tbody>
+</table>
+</section>
+
+<!-- ============ 14. MEASURING ============ -->
+<section id="audit-recall">
+<h2 class="sec"><span class="num">14</span>Is it actually better? Measuring recall &amp; the audit angle</h2>
+<div class="section-rule"></div>
+<p class="lead">"Whether this is more efficient than the current memory audit" deserves a real answer, not a vibe. Here's how to prove it — and what "audit" should mean going forward.</p>
+
+<div class="grid2">
+<div class="card">
+<h4>Efficiency vs today</h4>
+<ul>
+<li><b>Recall:</b> today = O(read every daily file) and degrades to "impossible" as logs grow. Proposed = O(vector top-N + bounded graph spread), constant-ish regardless of total size.</li>
+<li><b>Token cost per turn:</b> today loads all of <code>MEMORY.md</code> unconditionally; proposed loads only the top-k relevant — <em>cheaper</em> as memory grows, not more expensive.</li>
+<li><b>The trade:</b> you pay a one-time indexing cost on write + a nightly consolidation cost. For recall quality that's a clear win past a few dozen memories.</li>
+</ul>
+</div>
+<div class="card">
+<h4>How to measure it</h4>
+<ul>
+<li>Build a <b>recall@k</b> eval: 20–30 real questions from past threads with the memory that <em>should</em> surface. Measure how often it's in the top-k. Re-run as you tune weights.</li>
+<li>Borrow query types from <b>LongMemEval</b><span class="footnote-num">1</span>: single-hop, multi-hop, temporal, knowledge-update. Friday's hardest cases are temporal + update (the phone-number correction).</li>
+<li>The closest public benchmark to Friday is <b>LoCoMo</b><span class="footnote-num">16</span> — 300-turn, up-to-35-session dialogues built on persona + event graphs, scored on QA, summarization, and temporal/multi-hop reasoning. Build a small LoCoMo-style set from real Slack threads to track recall over releases.</li>
+<li>Track <b>"useful recall rate"</b>: of memories surfaced, how many did Friday actually use? Low → over-retrieving; tune the budget.</li>
+</ul>
+</div>
+</div>
+
+<div class="callout info">
+  <span class="tag">Redefining "memory audit"</span>
+  <p>Today an audit means a human re-reads logs to reconstruct what happened. With this system, audit becomes <strong>self-service and explainable</strong>: every retrieval carries a <em>why</em> trace (which seeds, which edges, which score terms dominated) and every memory carries provenance (source file, created/valid timestamps, confidence). You can ask "what does Friday know about Venkatesh and why does it think the phone number matters?" and get a sourced, ranked, timestamped answer instead of a grep. That's the real upgrade — not just faster recall, but <em>auditable</em> recall.</p>
+</div>
+</section>
+
+<hr class="div">
+
+<!-- ============ ANSWERS GRID ============ -->
+<section>
+<h2 class="sec"><span class="num">✓</span>Your 10 questions, answered in one place</h2>
+<div class="section-rule"></div>
+<table>
+<thead><tr><th>#</th><th>You asked</th><th>Answer</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>Is this possible?</td><td><b>Yes</b> — it's the dominant paradigm in agent memory research (§4).</td></tr>
+<tr><td>2</td><td>Best architecture?</td><td>4 tiers (working/episodic/semantic/procedural) + hybrid index + spreading-activation recall + nightly consolidation (§6).</td></tr>
+<tr><td>3</td><td>Vectors, graphs, symbolic, or hybrid?</td><td><b>Hybrid.</b> Vectors for fuzzy entry, graph for association, symbolic index for exact lookup, time for ordering (§5–6).</td></tr>
+<tr><td>4</td><td>Short vs long term?</td><td>Short-term = a bounded, salience-weighted cache; nightly "dreaming" promotes salient/repeated items to long-term &amp; GCs the rest (§10).</td></tr>
+<tr><td>5</td><td>Emotion / importance / frequency / recency / context?</td><td>All five are terms in one transparent recall score (§7).</td></tr>
+<tr><td>6</td><td>How do agents query it?</td><td>Embed+extract → seed → spread activation → score → top-k into context (§9).</td></tr>
+<tr><td>7</td><td>Improves audit / recall / decisions?</td><td>Recall becomes constant-cost &amp; explainable; decisions get unprompted "we've seen this before" warnings (§14).</td></tr>
+<tr><td>8</td><td>Schema &amp; flow?</td><td>SQLite tables: memory / entity / mention / edge / vectors / FTS (§8); flow in §9.</td></tr>
+<tr><td>9</td><td>Risks &amp; scaling?</td><td>Contradiction, poisoning, over-retrieval, hairball, cost, drift — each mitigated (§13).</td></tr>
+<tr><td>10</td><td>How to build an MVP?</td><td>Phase 1 (SQLite index over your markdown) solves recall in ~2 days; graph &amp; consolidation are multipliers (§12).</td></tr>
+</tbody>
+</table>
+</section>
+
+<!-- ============ READING LIST ============ -->
+<section id="reading">
+<h2 class="sec"><span class="num">📚</span>Further reading — the papers to actually read, in order</h2>
+<div class="section-rule"></div>
+<p class="lead">You asked what we'd missed and what to read. Here's both: five concepts the first draft under-covered (now folded in), then a curated, ordered path through the literature. Read top-down — each tier assumes the one above.</p>
+
+<div class="callout warn">
+  <span class="tag">Five things the first draft under-covered (now added)</span>
+  <p><strong>① Hierarchical summarization</strong> (RAPTOR, GraphRAG) — multi-level summaries so Friday can answer "what are the recurring themes across all my threads?", not just point lookups. The original "reflection" was single-level. <strong>② Surprise as a <em>computable</em> importance signal</strong> (EM-LLM, Titans) — you don't have to ask the LLM to rate 1–10; surprise = how unpredictable the event was (negative log-likelihood), which you can measure. <strong>③ The forgetting curve has a direct LLM precedent</strong> (MemoryBank) — §10's decay isn't speculative. <strong>④ Procedural memory = a skill library of executable code</strong> (Voyager), not just prose notes. <strong>⑤ Use a real benchmark</strong> (LoCoMo) — its persona+event-graph dialogues are the closest public analog to Friday's Slack threads.</p>
+</div>
+
+<h3>① Start here — orient yourself (½ day)</h3>
+<table>
+<thead><tr><th>Paper · year</th><th>Read it for / what to steal</th></tr></thead>
+<tbody>
+<tr><td><a href="https://arxiv.org/abs/2309.02427"><b>CoALA: Cognitive Architectures for Language Agents</b></a> · 2023</td><td>The map of the whole field. Defines the working + episodic/semantic/procedural taxonomy this doc is built on, and shows where every other system fits. The single best first read.</td></tr>
+<tr><td><a href="https://arxiv.org/abs/2304.03442"><b>Generative Agents: Interactive Simulacra of Human Behavior</b></a> · 2023</td><td>The <code>recency × importance × relevance</code> retrieval score (§7) and the reflection step. Read the "Memory and Retrieval" + "Reflection" sections closely — that's your scoring model.</td></tr>
+<tr><td><a href="https://arxiv.org/abs/2405.14831"><b>HippoRAG: Neurobiologically Inspired Long-Term Memory</b></a> · NeurIPS 2024</td><td>Your "store as a graph and use pathfinding" idea, done correctly: knowledge graph + Personalized PageRank as hippocampal recall. This is the proof your instinct works.</td></tr>
+</tbody>
+</table>
+
+<h3>② Core mechanisms — the parts you'll actually build</h3>
+<table>
+<thead><tr><th>Paper · year</th><th>Read it for / what to steal</th></tr></thead>
+<tbody>
+<tr><td><a href="https://arxiv.org/abs/2502.12110"><b>A-MEM: Agentic Memory for LLM Agents</b></a> · 2025</td><td>How to auto-generate a per-note index (keywords/tags/context) and form + <em>evolve</em> links between notes — the concrete recipe for your "synapses."</td></tr>
+<tr><td><a href="https://arxiv.org/abs/2305.10250"><b>MemoryBank: Enhancing LLMs with Long-Term Memory</b></a> · 2023</td><td>The Ebbinghaus forgetting curve applied to LLM memory: decay memory strength over time, reinforce on recall. The blueprint for §10's decay + the dreaming GC.</td></tr>
+<tr><td><a href="https://arxiv.org/abs/2501.13956"><b>Zep: A Temporal Knowledge Graph Architecture for Agent Memory</b></a> · 2025</td><td>Bi-temporal edges (<code>valid_at</code>/<code>invalid_at</code>) and fact supersession — how to handle "his phone number was wrong, then corrected" without lying later. (Engine: <a href="https://github.com/getzep/graphiti">Graphiti</a>.)</td></tr>
+<tr><td><a href="https://arxiv.org/abs/2303.11366"><b>Reflexion: Language Agents with Verbal Reinforcement Learning</b></a> · 2023</td><td>The hot-pan loop, formalized: reflect verbally on a failure, store the reflection in an episodic buffer, act better next time. This is your lesson-extraction step.</td></tr>
+<tr><td><a href="https://arxiv.org/abs/2401.18059"><b>RAPTOR: Recursive Abstractive Processing for Tree-Organized Retrieval</b></a> · 2024</td><td>Recursively cluster + summarize into a tree of increasing abstraction. Run it in the dream step to build topic-level summaries, so Friday can retrieve at the right resolution.</td></tr>
+</tbody>
+</table>
+
+<h3>③ Frontier — where the field is heading (read after you've shipped Phase 1–2)</h3>
+<table>
+<thead><tr><th>Paper · year</th><th>Read it for / what to steal</th></tr></thead>
+<tbody>
+<tr><td><a href="https://arxiv.org/abs/2407.09450"><b>EM-LLM: Human-inspired Episodic Memory for Infinite Context</b></a> · ICLR 2025</td><td>Bayesian-surprise event segmentation + two-stage retrieval (similarity <em>and</em> temporal contiguity). A principled, computable alternative to LLM importance ratings — validates §7 and §9.</td></tr>
+<tr><td><a href="https://arxiv.org/abs/2604.20943"><b>SCM: Sleep-Consolidated Memory with Algorithmic Forgetting</b></a> · 2026</td><td>The research backbone of your dreaming GC: bounded working memory, NREM/REM sleep stages, value-based forgetting. Closest paper to what you proposed.</td></tr>
+<tr><td><a href="https://arxiv.org/abs/2501.00663"><b>Titans: Learning to Memorize at Test Time</b></a> · 2025</td><td>The <em>in-weights</em> alternative — a neural memory module that learns what to memorize using a gradient-based "surprise" metric + adaptive forgetting. Tangential to an external store, but the surprise/forgetting framing is the same idea at a different layer.</td></tr>
+<tr><td><a href="https://arxiv.org/abs/2404.16130"><b>GraphRAG: From Local to Global (Query-Focused Summarization)</b></a> · 2024</td><td>Community detection over the knowledge graph + pre-generated community summaries, answered map-reduce. This is how you answer global "what are the themes?" questions your graph alone can't.</td></tr>
+<tr><td><a href="https://arxiv.org/abs/2305.16291"><b>Voyager: An Open-Ended Embodied Agent with LLMs</b></a> · 2023</td><td>Procedural memory done right: a skill library of <em>executable code</em>, retrieved by embedding over descriptions. The model for Friday's procedural tier (playbooks as runnable steps).</td></tr>
+</tbody>
+</table>
+
+<h3>④ Orient &amp; measure — surveys and benchmarks</h3>
+<table>
+<thead><tr><th>Resource · year</th><th>Read it for</th></tr></thead>
+<tbody>
+<tr><td><a href="https://arxiv.org/abs/2603.07670"><b>Memory for Autonomous LLM Agents: Mechanisms, Evaluation &amp; Emerging Frontiers</b></a> · 2026</td><td>The best one-stop survey. Read it to see the whole landscape and the open problems (continual consolidation, learned forgetting, causally-grounded retrieval).</td></tr>
+<tr><td><a href="https://arxiv.org/abs/2404.13501"><b>A Survey on the Memory Mechanism of LLM-based Agents</b></a> · 2024</td><td>Earlier but thorough taxonomy of memory designs &amp; operations (write/read/reflect). Good companion; has a <a href="https://github.com/nuster1128/LLM_Agent_Memory_Survey">curated paper repo</a>.</td></tr>
+<tr><td><a href="https://arxiv.org/abs/2402.17753"><b>LoCoMo: Evaluating Very Long-Term Conversational Memory</b></a> · 2024</td><td>The benchmark to measure against — and the closest public analog to Friday's use case. Build a LoCoMo-style eval from real threads.</td></tr>
+</tbody>
+</table>
+
+<div class="callout good">
+  <span class="tag">If you only read three</span>
+  <p><strong>CoALA</strong> (the framework), <strong>Generative Agents</strong> (the scoring you'll implement in Phase 2), and <strong>MemoryBank</strong> (the forgetting/dreaming mechanism for Phase 3). Those three cover ~80% of what you need to build the system in this doc; the rest is depth for when you hit a specific wall.</p>
+</div>
+</section>
+
+<!-- ============ REFS ============ -->
+<section id="refs">
+<h2 class="sec"><span class="num">§</span>References</h2>
+<div class="section-rule"></div>
+<ol class="ref-list">
+<li><span class="footnote-num">1</span> <b>Mem0 vs Zep/Graphiti — agent memory architectures &amp; LongMemEval (2025–26).</b> Temporal knowledge graphs, bi-temporal edges, 63.8% vs 49.0% benchmark gap.<br>
+<a href="https://vectorize.io/articles/mem0-vs-zep">vectorize.io/articles/mem0-vs-zep</a> · <a href="https://mem0.ai/blog/state-of-ai-agent-memory-2026">mem0.ai/blog/state-of-ai-agent-memory-2026</a> · <a href="https://arxiv.org/html/2504.19413v1">arxiv.org/html/2504.19413v1 (Mem0 paper)</a> · <a href="https://atlan.com/know/best-ai-agent-memory-frameworks-2026/">atlan.com — best memory frameworks 2026</a></li>
+
+<li><span class="footnote-num">2</span> <b>Park et al., "Generative Agents: Interactive Simulacra of Human Behavior" (2023).</b> Memory stream, recency×importance×relevance retrieval, reflection.<br>
+<a href="https://arxiv.org/abs/2304.03442">arxiv.org/abs/2304.03442</a> · <a href="https://ar5iv.labs.arxiv.org/html/2304.03442">ar5iv full text</a></li>
+
+<li><span class="footnote-num">3</span> <b>Gutiérrez et al., "HippoRAG: Neurobiologically Inspired Long-Term Memory for LLMs" (NeurIPS 2024).</b> KG + Personalized PageRank as hippocampal indexing.<br>
+<a href="https://arxiv.org/abs/2405.14831">arxiv.org/abs/2405.14831</a> · <a href="https://github.com/osu-nlp-group/hipporag">github.com/osu-nlp-group/hipporag</a></li>
+
+<li><span class="footnote-num">4</span> <b>Xu et al., "A-MEM: Agentic Memory for LLM Agents" (2025).</b> Zettelkasten notes, dynamic linking, memory evolution.<br>
+<a href="https://arxiv.org/abs/2502.12110">arxiv.org/abs/2502.12110</a> · <a href="https://github.com/agiresearch/a-mem">github.com/agiresearch/a-mem</a></li>
+
+<li><span class="footnote-num">5</span> <b>ACT-R declarative memory &amp; the Ebbinghaus forgetting curve.</b> Power-law decay, recency &amp; frequency as activation.<br>
+<a href="https://link.springer.com/article/10.1007/s42113-023-00189-y">Springer — Computational framework for ACT-R declarative memory</a> · <a href="http://act-r.psy.cmu.edu/wordpress/wp-content/uploads/2012/12/409s15516709cog0000_14.pdf">Pavlik &amp; Anderson — practice &amp; forgetting</a></li>
+
+<li><span class="footnote-num">6</span> <b>Complementary Learning Systems — hippocampus/neocortex consolidation &amp; replay.</b><br>
+<a href="https://www.frontiersin.org/journals/systems-neuroscience/articles/10.3389/fnsys.2022.972235/full">Frontiers — bi-directional CLS interactions for consolidation</a> · <a href="https://pubmed.ncbi.nlm.nih.gov/36313529/">PubMed 36313529</a></li>
+
+<li><span class="footnote-num">7</span> <b>Emotion, amygdala &amp; salience-weighted memory encoding.</b> High-arousal/surprising events better recalled.<br>
+<a href="https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2017.01454/full">Frontiers — influences of emotion on learning &amp; memory</a> · <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC11243592/">PMC — amygdala/hippocampus enhance emotional encoding</a> · <a href="https://en.wikipedia.org/wiki/Emotion_and_memory">Emotion and memory (overview)</a></li>
+
+<li><span class="footnote-num">8</span> <b>Spreading activation (Collins &amp; Loftus 1975; ACT-R) — why recall ≠ shortest path.</b> Decay with distance, strength-weighted, multi-source cascade.<br>
+<a href="https://en.wikipedia.org/wiki/Spreading_activation">Spreading activation (Wikipedia)</a> · <a href="https://www.cognitivepsychology.com/Spreading_Activation">Cognitive Psychology Reference</a></li>
+
+<li><span class="footnote-num">9</span> <b>MemGPT / Letta — memory hierarchy &amp; virtual-context paging.</b> Working/recall/archival tiers.<br>
+<a href="https://www.leoniemonigatti.com/papers/memgpt.html">MemGPT: LLMs as Operating Systems</a> · <a href="https://groundy.com/articles/how-ai-agents-remember-memory-architectures-that/">How AI agents remember — architectures</a></li>
+
+<li><span class="footnote-num">10</span> <b>Sleep-consolidated memory &amp; algorithmic forgetting for LLM agents (2026).</b> Bounded working memory, importance tagging, NREM/REM "dreaming" consolidation, intentional value-based forgetting.<br>
+<a href="https://arxiv.org/html/2604.20943v1">SCM: Sleep-Consolidated Memory with Algorithmic Forgetting</a> · <a href="https://arxiv.org/pdf/2603.14517">Learning to Forget: Sleep-Inspired Memory Consolidation</a> · <a href="https://www.preprints.org/manuscript/202601.0618">Survey: evolution of LLM agent memory mechanisms</a></li>
+
+<li><span class="footnote-num">11</span> <b>Cache eviction policies — LRU vs LFU vs ARC vs W-TinyLFU.</b> Why recency-only is suboptimal; recency+frequency hybrids win.<br>
+<a href="https://arxiv.org/pdf/1512.00727">TinyLFU: A Highly Efficient Cache Admission Policy</a> · <a href="https://github.com/ben-manes/caffeine/wiki/Efficiency">Caffeine (W-TinyLFU) efficiency</a> · <a href="https://redis.io/blog/lfu-vs-lru-how-to-choose-the-right-cache-eviction-policy/">Redis — LFU vs LRU</a></li>
+
+<li><span class="footnote-num">12</span> <b>Sumers, Yao, Narasimhan &amp; Griffiths, "Cognitive Architectures for Language Agents (CoALA)" (2023).</b> The working + episodic/semantic/procedural memory taxonomy used throughout this doc.<br>
+<a href="https://arxiv.org/abs/2309.02427">arxiv.org/abs/2309.02427</a></li>
+
+<li><span class="footnote-num">13</span> <b>Fountas et al., "Human-inspired Episodic Memory for Infinite Context LLMs (EM-LLM)" (ICLR 2025).</b> Bayesian-surprise event segmentation; similarity + temporal-contiguity retrieval.<br>
+<a href="https://arxiv.org/abs/2407.09450">arxiv.org/abs/2407.09450</a></li>
+
+<li><span class="footnote-num">14</span> <b>Zhong et al., "MemoryBank: Enhancing LLMs with Long-Term Memory" (2023).</b> Ebbinghaus-curve memory decay + reinforcement on recall (SiliconFriend).<br>
+<a href="https://arxiv.org/abs/2305.10250">arxiv.org/abs/2305.10250</a></li>
+
+<li><span class="footnote-num">15</span> <b>Shinn et al., "Reflexion: Language Agents with Verbal Reinforcement Learning" (NeurIPS 2023).</b> Verbal self-reflection stored in episodic memory to improve later trials.<br>
+<a href="https://arxiv.org/abs/2303.11366">arxiv.org/abs/2303.11366</a></li>
+
+<li><span class="footnote-num">16</span> <b>Maharana et al., "Evaluating Very Long-Term Conversational Memory of LLM Agents (LoCoMo)" (2024).</b> Persona + event-graph multi-session dialogue benchmark.<br>
+<a href="https://arxiv.org/abs/2402.17753">arxiv.org/abs/2402.17753</a></li>
+</ol>
+</section>
+
+<p style="text-align:center;color:var(--muted);font-size:13px;margin-top:60px;border-top:1px solid var(--line);padding-top:24px">
+Research brief for the Friday control plane · compiled 2026-05-21 · 17 web searches across 15+ systems/papers and the cognitive-science literature.<br>Build it as a non-destructive SQLite overlay on the markdown you already write. Start with Phase 1; the dreaming cache GC lands in Phase 3. Reading list in §📚.
+</p>
+
+</main>
+</div>
+<script>
+(function(){
+  var bar = document.getElementById('progress');
+  var links = [].slice.call(document.querySelectorAll('nav.toc a'));
+  var secs = links.map(function(a){
+    var href = a.getAttribute('href');
+    return (href && href.charAt(0) === '#') ? document.querySelector(href) : null;
+  });
+  function onScroll(){
+    var h = document.documentElement;
+    var st = h.scrollTop || document.body.scrollTop;
+    var sh = h.scrollHeight - h.clientHeight;
+    if (bar) bar.style.width = (sh > 0 ? (st / sh * 100) : 0) + '%';
+    var idx = -1;
+    for (var i = 0; i < secs.length; i++){
+      if (secs[i] && secs[i].getBoundingClientRect().top <= 140) idx = i;
+    }
+    for (var j = 0; j < links.length; j++){
+      links[j].classList.toggle('active', j === idx);
+    }
+  }
+  document.addEventListener('scroll', onScroll, {passive:true});
+  window.addEventListener('resize', onScroll);
+  onScroll();
+})();
+</script>
+</body>
+</html>
