@@ -30,7 +30,8 @@ import {
   recordSpawn as dashRecordSpawn,
 } from "./http/dashboard-state.ts";
 import { log } from "./logger.ts";
-import { reindexFriday, engramRecallEnabled } from "./memory/engram-bridge.ts";
+import { reindexIncremental, engramRecallEnabled } from "./memory/engram-bridge.ts";
+import { engramCaptureEnabled } from "./memory/auto-capture.ts";
 
 const config = loadConfig();
 const app = createSlackApp(config);
@@ -162,11 +163,13 @@ registerHomeTab(app, store);
 
 setupGracefulShutdown(sessionManager, store);
 
-// Associative memory (engram): when enabled, refresh the index from memory/ on
-// boot and every 6h so per-turn recall stays current. Off unless ENGRAM_RECALL=1.
-if (engramRecallEnabled()) {
-  reindexFriday().then((ok) => log.info("engram", `boot reindex ${ok ? "ok" : "skipped"}`));
-  setInterval(() => { reindexFriday(); }, 6 * 60 * 60 * 1000);
+// Associative memory (engram): when recall or capture is on, keep the index
+// current from memory/ on boot + every 6h. Incremental — only new/changed
+// content is (re)embedded, so it's cheap even with a paid embedder. A full
+// rebuild (e.g. after switching embedders) is a manual `index --fresh`.
+if (engramRecallEnabled() || engramCaptureEnabled()) {
+  reindexIncremental().then((ok) => log.info("engram", `boot reindex ${ok ? "ok" : "skipped"}`));
+  setInterval(() => { reindexIncremental(); }, 6 * 60 * 60 * 1000);
 }
 
 // Periodic health checks
