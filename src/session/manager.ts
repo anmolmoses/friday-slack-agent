@@ -30,6 +30,7 @@ import {
 } from "./spiral.ts";
 import { log } from "../logger.ts";
 import { recallContext, engramRecallEnabled } from "../memory/engram-bridge.ts";
+import { captureExchange, engramCaptureEnabled } from "../memory/auto-capture.ts";
 
 type SpawnClaudeFn = typeof defaultSpawnClaude;
 
@@ -43,6 +44,8 @@ export class SessionManager {
   // draining, instead of surfacing a spurious "Error: …" in the thread.
   private killedThreads = new Set<string>();
   private spawnClaude: SpawnClaudeFn;
+  // Raw user message per thread (pre-preamble), stashed for auto-capture on completion.
+  private lastUserMsg = new Map<string, { text: string; user: string | null }>();
 
   slackApp?: App;
   botUserId?: string;
@@ -521,6 +524,10 @@ export class SessionManager {
     routingHint: RoutingHint | null = null,
     requestingUser: string | null = null,
   ): Promise<void> {
+    // Stash the RAW user message (before preamble) for auto-capture on completion.
+    if (engramCaptureEnabled()) {
+      this.lastUserMsg.set(session.threadId, { text: prompt, user: requestingUser });
+    }
     try {
       // Inject identity + thread context so Claude knows who it is and what was said
       if (this.slackApp && latestTs) {
@@ -736,6 +743,20 @@ export class SessionManager {
         }
       }
       this.onResponse?.(session, result.response);
+
+      // Auto-capture this exchange into memory/ so it becomes recallable later.
+      if (engramCaptureEnabled()) {
+        const last = this.lastUserMsg.get(session.threadId);
+        if (last) {
+          captureExchange({
+            channel: session.channel,
+            threadId: session.threadId,
+            user: last.user,
+            userText: last.text,
+            reply: result.response,
+          });
+        }
+      }
     } else if (!result.error) {
       // Silent failure: the spawn exited cleanly (no error) but produced no
       // response text. This happens when Claude hits --max-turns mid-tool-use,

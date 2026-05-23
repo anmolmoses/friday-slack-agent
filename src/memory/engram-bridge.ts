@@ -72,19 +72,32 @@ export async function recallContext(query: string, k = 5, timeoutMs = 8_000): Pr
 
 /** Rebuild the engram index from Friday's memory/ dir. Fire-and-forget on boot. */
 export async function reindexFriday(timeoutMs = 120_000): Promise<boolean> {
+  return runIndex(["--fresh"], timeoutMs, "index refreshed");
+}
+
+/**
+ * Incremental reindex — only embeds new/changed content (skips unchanged
+ * chunks). Cheap enough to run after each auto-captured exchange so it's
+ * recallable within seconds, even with a paid embedder.
+ */
+export async function reindexIncremental(timeoutMs = 60_000): Promise<boolean> {
+  return runIndex(["--incremental"], timeoutMs, "incremental index");
+}
+
+async function runIndex(extraArgs: string[], timeoutMs: number, label: string): Promise<boolean> {
   if (!existsSync(ENGRAM_CLI) || !existsSync(MEMORY_DIR)) return false;
   try {
     mkdirSync(path.dirname(DB), { recursive: true });
-    const proc = Bun.spawn(["node", ENGRAM_CLI, "index", MEMORY_DIR, "--db", DB, "--fresh"], {
+    const proc = Bun.spawn(["node", ENGRAM_CLI, "index", MEMORY_DIR, "--db", DB, ...extraArgs], {
       cwd: ENGRAM_DIR, stdout: "pipe", stderr: "pipe",
     });
     const timer = setTimeout(() => { try { proc.kill(); } catch { /* gone */ } }, timeoutMs);
     const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
     clearTimeout(timer);
-    if (code === 0) { log.info("engram", `index refreshed: ${out.trim().split("\n")[0]}`); return true; }
+    if (code === 0) { log.info("engram", `${label}: ${out.trim().split("\n")[0]}`); return true; }
     return false;
   } catch (err) {
-    log.warn("engram", `reindex failed: ${err}`);
+    log.warn("engram", `${label} failed: ${err}`);
     return false;
   }
 }
