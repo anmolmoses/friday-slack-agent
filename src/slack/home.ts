@@ -6,6 +6,141 @@ export function registerHomeTab(app: App, store: SessionStore): void {
   app.event("app_home_opened", async ({ event }) => {
     await publishHomeTab(app, event.user, store);
   });
+
+  // Click a thread in the home tab → open a modal listing its replies, one
+  // per block, oldest→newest. The button carries {channel, threadId} so we
+  // can fetch the real Slack thread via conversations.replies.
+  app.action("view_thread", async ({ ack, body, client }) => {
+    await ack();
+    const action = (body as { actions?: Array<{ value?: string }> }).actions?.[0];
+    const triggerId = (body as { trigger_id?: string }).trigger_id;
+    if (!action?.value || !triggerId) return;
+
+    let parsed: { channel: string; threadId: string };
+    try {
+      parsed = JSON.parse(action.value);
+    } catch {
+      return;
+    }
+
+    // Open a loading modal immediately so we spend the short-lived trigger_id
+    // before the conversations.replies round-trip, then swap in real content.
+    try {
+      const opened = await client.views.open({
+        trigger_id: triggerId,
+        view: {
+          type: "modal",
+          title: { type: "plain_text", text: "Thread replies" },
+          close: { type: "plain_text", text: "Close" },
+          blocks: [
+            { type: "section", text: { type: "mrkdwn", text: ":hourglass_flowing_sand: Loading replies…" } },
+          ],
+        },
+      });
+      const viewId = opened.view?.id;
+      if (!viewId) return;
+
+      const blocks = await buildThreadModalBlocks(app, parsed.channel, parsed.threadId);
+      await client.views.update({
+        view_id: viewId,
+        view: {
+          type: "modal",
+          title: { type: "plain_text", text: "Thread replies" },
+          close: { type: "plain_text", text: "Close" },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          blocks: blocks as any,
+        },
+      });
+    } catch (err) {
+      console.error("[home] Failed to open thread modal:", err);
+    }
+  });
+}
+
+// Slack limits: 100 blocks per view, ~3000 chars per section. We render one
+// section per message, so cap how many messages we show and how long each is.
+const MODAL_MAX_MESSAGES = 60;
+const MODAL_MAX_CHARS = 2800;
+
+async function buildThreadModalBlocks(
+  app: App,
+  channel: string,
+  threadTs: string,
+): Promise<Array<Record<string, unknown>>> {
+  const blocks: Array<Record<string, unknown>> = [];
+
+  let messages: Array<Record<string, unknown>> = [];
+  try {
+    const result = await app.client.conversations.replies({
+      channel,
+      ts: threadTs,
+      inclusive: true,
+      limit: 100,
+    });
+    messages = (result.messages ?? []) as Array<Record<string, unknown>>;
+  } catch (err) {
+    return [
+      {
+        type: "section",
+        text: { type: "mrkdwn", text: `:warning: Couldn't load this thread.\n\`${String(err)}\`` },
+      },
+    ];
+  }
+
+  if (messages.length === 0) {
+    return [{ type: "section", text: { type: "mrkdwn", text: "_No messages in this thread._" } }];
+  }
+
+  const total = messages.length;
+  const truncated = total > MODAL_MAX_MESSAGES;
+  // Keep the most recent N (still oldest→newest within that window).
+  const shown = truncated ? messages.slice(total - MODAL_MAX_MESSAGES) : messages;
+
+  if (truncated) {
+    blocks.push({
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `:scroll: Showing last ${MODAL_MAX_MESSAGES} of ${total} messages`,
+        },
+      ],
+    });
+    blocks.push({ type: "divider" });
+  }
+
+  for (const m of shown) {
+    const isBot = !!m.bot_id;
+    const who = isBot ? "Friday" : `<@${m.user ?? "unknown"}>`;
+    const tsNum = Number(m.ts);
+    const time = Number.isFinite(tsNum) ? fmtClock(tsNum * 1000) : "";
+    const raw = String(m.text ?? "").trim();
+    const len = raw.length;
+    const body =
+      len === 0
+        ? "_(no text — file or attachment)_"
+        : len > MODAL_MAX_CHARS
+          ? raw.slice(0, MODAL_MAX_CHARS - 1) + "…"
+          : raw;
+
+    blocks.push({
+      type: "context",
+      elements: [{ type: "mrkdwn", text: `*${who}* · ${time} · ${len} chars` }],
+    });
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: body } });
+    blocks.push({ type: "divider" });
+  }
+
+  // Drop the trailing divider.
+  if (blocks[blocks.length - 1]?.type === "divider") blocks.pop();
+
+  return blocks;
+}
+
+function fmtClock(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 export async function publishHomeTab(
@@ -152,6 +287,12 @@ function sessionBlock(session: ThreadSession): Record<string, unknown> {
   return {
     type: "section",
     text: { type: "mrkdwn", text },
+    accessory: {
+      type: "button",
+      text: { type: "plain_text", text: "View replies", emoji: true },
+      action_id: "view_thread",
+      value: JSON.stringify({ channel: session.channel, threadId: session.threadId }),
+    },
   };
 }
 
