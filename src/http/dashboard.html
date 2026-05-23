@@ -472,6 +472,59 @@
   ::-webkit-scrollbar-track { background: var(--bg-1); }
   ::-webkit-scrollbar-thumb { background: var(--bg-4); border-radius: 4px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--bg-5); }
+  /* ─── Memory tab (engram neuron graph) ──────────────────────────────────── */
+  #panel-memory.active { display: flex; }
+  #panel-memory { flex-direction: column; height: calc(100vh - 130px); }
+  .mem-wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: 10px; }
+  .mem-toolbar { display: flex; flex-direction: column; gap: 8px; }
+  .mem-recall { display: flex; gap: 8px; }
+  .mem-recall input {
+    flex: 1; background: var(--bg-2); border: 1px solid var(--line-strong); color: var(--fg);
+    font: 14px var(--sans); padding: 9px 13px; border-radius: var(--radius); outline: none;
+  }
+  .mem-recall input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(122,162,247,0.15); }
+  .mem-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--fg-3); }
+  .mem-stat { color: var(--fg-3); font: 11px var(--mono); }
+  .mem-rule { flex: 1; height: 1px; background: var(--line); min-width: 12px; }
+  .etype { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; opacity: 0.45; transition: opacity .15s; }
+  .etype.on { opacity: 1; color: var(--fg-2); }
+  .etype .dot { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 6px currentColor; }
+  .etype[data-etype="similar"] .dot { background: var(--accent); color: var(--accent); }
+  .etype[data-etype="temporal_next"] .dot { background: var(--cyan); color: var(--cyan); }
+  .etype[data-etype="about"] .dot { background: var(--accent-2); color: var(--accent-2); }
+  .etype[data-etype="lesson_from"] .dot { background: var(--green); color: var(--green); }
+  .etype[data-etype="caused"] .dot { background: var(--red); color: var(--red); }
+  .etype[data-etype="supersedes"] .dot { background: var(--yellow); color: var(--yellow); }
+  .mem-stage { position: relative; flex: 1; min-height: 0; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: radial-gradient(ellipse at 50% 40%, #0d1018 0%, #070910 100%); }
+  #memCanvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  #memCanvas.dragging { cursor: grabbing; }
+  .mem-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--fg-4); font: 13px var(--mono); pointer-events: none; }
+  .mem-empty[hidden] { display: none; }
+  .mem-hint { position: absolute; bottom: 10px; left: 12px; color: var(--fg-5); font: 10px var(--mono); pointer-events: none; letter-spacing: .04em; }
+  .mem-node-card {
+    position: absolute; top: 12px; right: 12px; width: 300px; max-height: calc(100% - 24px); overflow-y: auto;
+    background: rgba(17,21,28,0.94); border: 1px solid var(--line-strong); border-radius: var(--radius);
+    padding: 12px 14px; box-shadow: var(--shadow); backdrop-filter: blur(6px); font-size: 12px; color: var(--fg-2);
+  }
+  .mem-node-card h4 { margin: 0 0 6px; font: 600 11px var(--mono); color: var(--accent); letter-spacing: .05em; text-transform: uppercase; }
+  .mem-node-card .meta { color: var(--fg-4); font: 10px var(--mono); margin-bottom: 8px; }
+  .mem-node-card .body { line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+  .mem-node-card .nbrs { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+  .mem-node-card .nbr { display: flex; gap: 6px; align-items: baseline; padding: 2px 0; font: 11px var(--mono); cursor: pointer; }
+  .mem-node-card .nbr:hover { color: var(--accent); }
+  .mem-node-card .nbr .et { font-size: 9px; padding: 0 4px; border-radius: 3px; background: var(--bg-4); }
+  .mem-results {
+    position: absolute; top: 12px; left: 12px; width: 320px; max-height: calc(100% - 40px); overflow-y: auto;
+    background: rgba(17,21,28,0.92); border: 1px solid var(--line-strong); border-radius: var(--radius);
+    padding: 10px 12px; box-shadow: var(--shadow); backdrop-filter: blur(6px);
+  }
+  .mem-results h4 { margin: 0 0 8px; font: 600 11px var(--mono); color: var(--green); letter-spacing: .05em; text-transform: uppercase; }
+  .mem-res { padding: 6px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .mem-res:last-child { border-bottom: none; }
+  .mem-res .score { font: 10px var(--mono); color: var(--accent); }
+  .mem-res .txt { font-size: 12px; color: var(--fg-2); line-height: 1.4; margin-top: 2px; }
+  .mem-res .why { font: 10px var(--mono); color: var(--fg-4); margin-top: 3px; }
+  .mem-res:hover .txt { color: var(--fg); }
 </style>
 </head>
 <body>
@@ -502,6 +555,7 @@
     <button class="tab" data-tab="threads">🧵 Threads <span class="badge" id="tabThreadCount">0</span></button>
     <button class="tab" data-tab="files">📝 Files</button>
     <button class="tab" data-tab="processes">⚙ Processes <span class="badge" id="tabProcCount">0</span></button>
+    <button class="tab" data-tab="memory">🧠 Memory <span class="badge" id="tabMemCount">0</span></button>
   </div>
 
   <!-- Panels -->
@@ -555,6 +609,38 @@
           <button class="btn tiny" id="refreshProcs">refresh</button>
         </h2>
         <div class="proc-table" id="procTable"></div>
+      </div>
+    </div>
+
+    <!-- MEMORY (engram associative graph) -->
+    <div class="panel" id="panel-memory">
+      <div class="mem-wrap">
+        <div class="mem-toolbar">
+          <form class="mem-recall" id="memRecallForm">
+            <input id="memQuery" type="text" placeholder="recall a memory — watch the neurons fire…" autocomplete="off">
+            <button class="btn primary" type="submit" id="memRecallBtn">recall ⚡</button>
+            <button class="btn" type="button" id="memClearBtn" title="clear activation">reset</button>
+          </form>
+          <div class="mem-controls">
+            <span class="mem-stat" id="memStats">—</span>
+            <span class="mem-rule"></span>
+            <label class="etype" data-etype="similar"><span class="dot"></span>similar</label>
+            <label class="etype" data-etype="temporal_next"><span class="dot"></span>temporal</label>
+            <label class="etype" data-etype="about"><span class="dot"></span>about</label>
+            <label class="etype" data-etype="lesson_from"><span class="dot"></span>lesson</label>
+            <label class="etype" data-etype="caused"><span class="dot"></span>caused</label>
+            <label class="etype" data-etype="supersedes"><span class="dot"></span>supersedes</label>
+            <button class="btn tiny" type="button" id="memReindex" title="rebuild the index from Friday's memory/ dir">reindex</button>
+            <button class="btn tiny" type="button" id="memRefresh">refresh</button>
+          </div>
+        </div>
+        <div class="mem-stage">
+          <canvas id="memCanvas"></canvas>
+          <div class="mem-empty" id="memEmpty">loading the graph…</div>
+          <div class="mem-hint">scroll to zoom · drag to pan · click a neuron</div>
+          <div class="mem-node-card" id="memNodeCard" hidden></div>
+          <div class="mem-results" id="memResults" hidden></div>
+        </div>
       </div>
     </div>
 
@@ -628,6 +714,7 @@ document.querySelectorAll('.tab').forEach(t => {
     $('panel-' + t.dataset.tab).classList.add('active');
     if (t.dataset.tab === 'files') loadFiles(currentDir || 'memory');
     if (t.dataset.tab === 'processes') loadProcesses();
+    if (t.dataset.tab === 'memory') initMemoryTab();
   });
 });
 
@@ -729,6 +816,9 @@ function renderThreadCard(t) {
       <span class="chan">${escapeHtml(t.channelName ? '#' + t.channelName : t.channel)}</span>
       ${t.agentType ? `<span class="agent">agent=${escapeHtml(t.agentType)}</span>` : ''}
       <span class="age">idle ${fmtAge(t.lastActivityAt)}</span>
+      ${t.muted
+        ? `<button class="btn tiny thread-resume" data-tid="${escapeHtml(t.threadId)}" title="unmute — Friday starts listening + replying in this thread again">▶ resume</button>`
+        : `<button class="btn danger tiny thread-stop" data-tid="${escapeHtml(t.threadId)}" title="stop her here now — kills the in-flight run and mutes the thread (no replies until resume)">⏹ stop</button>`}
     </div>
     <div class="tid">${escapeHtml(t.threadId)}</div>
     ${curToolHtml}${thinkingHtml}${lastTextHtml}${metrics}${memHtml}${mcpHtml}${eventsHtml}
@@ -808,6 +898,62 @@ document.addEventListener('click', (e) => {
   const tid = target.dataset.spawnTid;
   if (pid && tid) viewSpawn(tid, pid);
 });
+
+// Delegated click handler: per-thread STOP (kill run + mute) / RESUME (unmute).
+// Cards re-render on every SSE tick, so delegation is the only stable hook.
+document.addEventListener('click', async (e) => {
+  const stopBtn = e.target.closest('.thread-stop');
+  const resumeBtn = e.target.closest('.thread-resume');
+  if (!stopBtn && !resumeBtn) return;
+  const tid = (stopBtn || resumeBtn).dataset.tid;
+  if (!tid) return;
+
+  if (stopBtn) {
+    const ok = await openModal('Stop thread',
+      `Stop <b>${escapeHtml(tid)}</b> now?<br><br>Kills any in-flight run and <b>mutes</b> the thread — Friday won't reply here until you hit <b>resume</b>.`);
+    if (!ok) return;
+    stopBtn.disabled = true;
+    stopBtn.textContent = 'stopping…';
+    try {
+      const r = await fetch('/api/thread/kill', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ threadId: tid }),
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || 'stop failed');
+      patchThreadMuted(tid, true);   // optimistic — next SSE snapshot confirms
+    } catch (err) {
+      alert('stop failed: ' + err.message);
+      stopBtn.disabled = false;
+      stopBtn.textContent = '⏹ stop';
+    }
+  } else {
+    resumeBtn.disabled = true;
+    resumeBtn.textContent = 'resuming…';
+    try {
+      const r = await fetch('/api/thread/mute', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ threadId: tid, muted: false }),
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || 'resume failed');
+      patchThreadMuted(tid, false);
+    } catch (err) {
+      alert('resume failed: ' + err.message);
+      resumeBtn.disabled = false;
+      resumeBtn.textContent = '▶ resume';
+    }
+  }
+});
+
+// Optimistically flip muted in the cached state + re-render, so the button
+// toggles immediately instead of waiting for the next SSE tick.
+function patchThreadMuted(tid, muted) {
+  if (!lastState) return;
+  const t = (lastState.threads || []).find(x => x.threadId === tid);
+  if (t) { t.muted = muted; if (muted) t.status = 'idle'; }
+  render(lastState);
+}
 
 function viewSpawn(threadId, pid) {
   const t = (lastState?.threads || []).find(x => x.threadId === threadId);
@@ -1235,6 +1381,359 @@ setInterval(() => { if (lastState) render(lastState); }, 1000);
 
 // Auto-refresh processes every 5s while that tab is active
 setInterval(() => { if ($('panel-processes').classList.contains('active')) loadProcesses(); }, 5000);
+// ─── Memory tab: engram neuron graph ─────────────────────────────────────────
+const EDGE_COLORS = {
+  similar: '#7aa2f7', temporal_next: '#7dcfff', about: '#bb9af7',
+  lesson_from: '#9ece6a', caused: '#f7768e', supersedes: '#e0af68',
+};
+const TIER_COLORS = {
+  episodic: '#7dcfff', semantic: '#9ece6a', procedural: '#e0af68',
+  working: '#bb9af7', null: '#7aa2f7',
+};
+const Mem = {
+  inited: false, loading: false, nodes: [], edges: [], byId: new Map(),
+  on: { similar: true, temporal_next: true, about: false, lesson_from: true, caused: true, supersedes: true },
+  view: { x: 0, y: 0, scale: 1 }, drag: null, selected: null, hover: null,
+  alpha: 0, raf: null, recall: null, // recall = { seeds:Set, act:Map, pulses:[], t0 }
+};
+
+function initMemoryTab() {
+  if (Mem.inited) { resizeMemCanvas(); return; }
+  Mem.inited = true;
+  const cv = $('memCanvas');
+
+  // Edge-type toggles
+  document.querySelectorAll('#panel-memory .etype').forEach(el => {
+    const et = el.dataset.etype;
+    el.classList.toggle('on', !!Mem.on[et]);
+    el.addEventListener('click', () => { Mem.on[et] = !Mem.on[et]; el.classList.toggle('on', Mem.on[et]); });
+  });
+  $('memRecallForm').addEventListener('submit', (e) => { e.preventDefault(); runMemRecall($('memQuery').value.trim()); });
+  $('memClearBtn').addEventListener('click', clearMemRecall);
+  $('memRefresh').addEventListener('click', () => loadMemGraph());
+  $('memReindex').addEventListener('click', reindexMem);
+
+  // Pan / zoom / select
+  cv.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+    const f = e.deltaY < 0 ? 1.12 : 1 / 1.12, v = Mem.view;
+    const wx = (mx - v.x) / v.scale, wy = (my - v.y) / v.scale;
+    v.scale = Math.max(0.15, Math.min(6, v.scale * f));
+    v.x = mx - wx * v.scale; v.y = my - wy * v.scale;
+  }, { passive: false });
+  cv.addEventListener('mousedown', (e) => {
+    const r = cv.getBoundingClientRect();
+    Mem.drag = { x: e.clientX - r.left, y: e.clientY - r.top, ox: Mem.view.x, oy: Mem.view.y, moved: false };
+    cv.classList.add('dragging');
+  });
+  window.addEventListener('mousemove', (e) => {
+    const cv = $('memCanvas'); if (!cv) return;
+    const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+    if (Mem.drag) {
+      Mem.view.x = Mem.drag.ox + (mx - Mem.drag.x); Mem.view.y = Mem.drag.oy + (my - Mem.drag.y);
+      if (Math.abs(mx - Mem.drag.x) + Math.abs(my - Mem.drag.y) > 4) Mem.drag.moved = true;
+    } else { Mem.hover = pickNode(mx, my); }
+  });
+  window.addEventListener('mouseup', (e) => {
+    const cv = $('memCanvas'); if (!cv) return;
+    cv.classList.remove('dragging');
+    if (Mem.drag && !Mem.drag.moved) {
+      const r = cv.getBoundingClientRect();
+      const n = pickNode(e.clientX - r.left, e.clientY - r.top);
+      if (n) selectMemNode(n); else { Mem.selected = null; $('memNodeCard').hidden = true; }
+    }
+    Mem.drag = null;
+  });
+  window.addEventListener('resize', () => { if ($('panel-memory').classList.contains('active')) resizeMemCanvas(); });
+
+  resizeMemCanvas();
+  loadMemGraph();
+  startMemLoop();
+}
+
+function resizeMemCanvas() {
+  const cv = $('memCanvas'); if (!cv) return;
+  const dpr = window.devicePixelRatio || 1, r = cv.getBoundingClientRect();
+  cv.width = Math.max(1, r.width * dpr); cv.height = Math.max(1, r.height * dpr);
+  Mem._dpr = dpr; Mem._w = r.width; Mem._h = r.height;
+}
+
+async function loadMemGraph() {
+  if (Mem.loading) return;
+  Mem.loading = true; $('memEmpty').hidden = false; $('memEmpty').textContent = 'loading the graph…';
+  try {
+    const res = await fetch('/api/engram/graph'); const data = await res.json();
+    if (data.needsIndex) {
+      $('memEmpty').innerHTML = 'no index yet — click <b>reindex</b> to build it from Friday’s memory/';
+      Mem.loading = false; return;
+    }
+    if (data.error) { $('memEmpty').textContent = 'error: ' + data.error; Mem.loading = false; return; }
+    buildMemGraph(data);
+    $('memEmpty').hidden = true;
+  } catch (err) { $('memEmpty').textContent = 'failed to load: ' + err; }
+  Mem.loading = false;
+}
+
+function buildMemGraph(data) {
+  const W = Mem._w || 800, H = Mem._h || 600;
+  const deg = new Map();
+  for (const e of data.edges) { deg.set(e.src, (deg.get(e.src) || 0) + 1); deg.set(e.dst, (deg.get(e.dst) || 0) + 1); }
+  Mem.byId = new Map();
+  Mem.nodes = data.nodes.map((n, i) => {
+    const a = (i / data.nodes.length) * Math.PI * 2, rad = 30 + Math.random() * Math.min(W, H) * 0.42;
+    const node = {
+      id: n.id, label: n.label, tier: n.tier, importance: n.importance, source: n.source,
+      deg: deg.get(n.id) || 0, x: W / 2 + Math.cos(a) * rad, y: H / 2 + Math.sin(a) * rad, vx: 0, vy: 0,
+    };
+    Mem.byId.set(n.id, node); return node;
+  });
+  Mem.edges = data.edges.filter(e => Mem.byId.has(e.src) && Mem.byId.has(e.dst))
+    .map(e => ({ s: Mem.byId.get(e.src), d: Mem.byId.get(e.dst), type: e.type, w: e.weight }));
+  Mem.recall = null; Mem.selected = null; $('memNodeCard').hidden = true; $('memResults').hidden = true;
+  $('memStats').textContent = `${data.nodes.length} neurons · ${data.edges.length} synapses · ${data.stats?.entities ?? 0} entities`;
+  $('tabMemCount').textContent = data.nodes.length;
+  Mem.alpha = 1; Mem.view = { x: 0, y: 0, scale: 1 }; // re-settle layout
+  fitMemView(Mem.nodes, 0);
+}
+
+// Force-directed layout: a few iterations per frame, cooling, then freeze.
+function stepLayout() {
+  if (Mem.alpha <= 0.02) {
+    if (Mem.alpha !== 0 && !Mem.recall) fitMemView(Mem.nodes, 50); // one-time fit once settled
+    Mem.alpha = 0; return;
+  }
+  const ns = Mem.nodes, n = ns.length, REP = 1400, a = Mem.alpha;
+  // Repulsion (O(n^2) — bounded; only while cooling).
+  for (let i = 0; i < n; i++) {
+    const A = ns[i]; let fx = 0, fy = 0;
+    for (let j = 0; j < n; j++) {
+      if (i === j) continue;
+      const B = ns[j]; let dx = A.x - B.x, dy = A.y - B.y; let d2 = dx * dx + dy * dy;
+      if (d2 < 0.01) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 0.25; }
+      if (d2 > 90000) continue; // ignore far pairs — keeps it fast & local
+      const f = REP / d2; fx += dx * f; fy += dy * f;
+    }
+    A.vx = (A.vx + fx) * 0.5; A.vy = (A.vy + fy) * 0.5;
+  }
+  // Springs along visible edges.
+  for (const e of Mem.edges) {
+    if (!Mem.on[e.type]) continue;
+    const dx = e.d.x - e.s.x, dy = e.d.y - e.s.y, dist = Math.hypot(dx, dy) || 1;
+    const target = 70, k = 0.02 * (0.4 + e.w), f = (dist - target) * k;
+    const ux = dx / dist, uy = dy / dist;
+    e.s.vx += ux * f; e.s.vy += uy * f; e.d.vx -= ux * f; e.d.vy -= uy * f;
+  }
+  // Integrate + gentle gravity to centre.
+  const cx = Mem._w / 2, cy = Mem._h / 2;
+  for (const A of ns) {
+    A.vx += (cx - A.x) * 0.0009; A.vy += (cy - A.y) * 0.0009;
+    A.x += A.vx * a; A.y += A.vy * a; A.vx *= 0.86; A.vy *= 0.86;
+  }
+  Mem.alpha *= 0.985;
+}
+
+function fitMemView(nodes, pad) {
+  if (!nodes.length) return;
+  let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+  for (const n of nodes) { minX = Math.min(minX, n.x); minY = Math.min(minY, n.y); maxX = Math.max(maxX, n.x); maxY = Math.max(maxY, n.y); }
+  const w = Mem._w, h = Mem._h, gw = (maxX - minX) || 1, gh = (maxY - minY) || 1;
+  const m = pad || 60, scale = Math.max(0.15, Math.min(3, Math.min((w - m) / gw, (h - m) / gh)));
+  Mem.view.scale = scale;
+  Mem.view.x = w / 2 - ((minX + maxX) / 2) * scale;
+  Mem.view.y = h / 2 - ((minY + maxY) / 2) * scale;
+}
+
+function pickNode(mx, my) {
+  const v = Mem.view, wx = (mx - v.x) / v.scale, wy = (my - v.y) / v.scale;
+  let best = null, bd = 14 * 14 / (v.scale * v.scale);
+  for (const n of Mem.nodes) {
+    const dx = n.x - wx, dy = n.y - wy, d2 = dx * dx + dy * dy;
+    if (d2 < bd) { bd = d2; best = n; }
+  }
+  return best;
+}
+
+function nodeRadius(n) { return 2.6 + Math.sqrt(n.deg) * 0.7 + n.importance * 2.4; }
+
+function startMemLoop() {
+  if (Mem.raf) return;
+  const draw = () => {
+    Mem.raf = requestAnimationFrame(draw);
+    if (!$('panel-memory').classList.contains('active')) return;
+    stepLayout();
+    renderMem();
+  };
+  Mem.raf = requestAnimationFrame(draw);
+}
+
+function renderMem() {
+  const cv = $('memCanvas'); if (!cv) return;
+  const ctx = cv.getContext('2d'), dpr = Mem._dpr || 1, v = Mem.view;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, Mem._w, Mem._h);
+  ctx.save(); ctx.translate(v.x, v.y); ctx.scale(v.scale, v.scale);
+
+  const rec = Mem.recall, now = performance.now();
+  const lit = (id) => rec && (rec.seeds.has(id) || rec.act.has(id));
+
+  // Edges
+  ctx.lineCap = 'round';
+  for (const e of Mem.edges) {
+    const active = rec && lit(e.s.id) && lit(e.d.id);
+    // Always draw the firing path; only inactive edges respect the type toggle.
+    if (!active && !Mem.on[e.type]) continue;
+    ctx.beginPath(); ctx.moveTo(e.s.x, e.s.y); ctx.lineTo(e.d.x, e.d.y);
+    ctx.strokeStyle = EDGE_COLORS[e.type] || '#5a6478';
+    ctx.globalAlpha = active ? 0.55 : (rec ? 0.04 : 0.13);
+    ctx.lineWidth = active ? 1.4 : 0.6;
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // Activation pulses traveling along traversed edges
+  if (rec) {
+    for (const p of rec.pulses) {
+      const t = (now - rec.t0 - p.delay) / p.dur;
+      if (t < 0 || t > 1) continue;
+      const x = p.from.x + (p.to.x - p.from.x) * t, y = p.from.y + (p.to.y - p.from.y) * t;
+      ctx.beginPath(); ctx.arc(x, y, 3.2, 0, 7);
+      ctx.fillStyle = EDGE_COLORS[p.type] || '#fff'; ctx.shadowBlur = 14; ctx.shadowColor = ctx.fillStyle;
+      ctx.fill(); ctx.shadowBlur = 0;
+    }
+  }
+
+  // Nodes
+  for (const n of Mem.nodes) {
+    const r = nodeRadius(n);
+    const isSeed = rec && rec.seeds.has(n.id);
+    const actLvl = rec ? (rec.act.get(n.id) || 0) : 0;
+    const rel = rec && actLvl > 0 ? Math.min(1, actLvl / rec.maxAct) : 0; // strongest = 1
+    const dim = rec && !lit(n.id);
+    const base = TIER_COLORS[n.tier] || TIER_COLORS.null;
+    const fired = isSeed || actLvl > 0;
+
+    if (fired) {
+      const pulse = 0.65 + 0.35 * Math.sin(now / 300 + n.x * 0.05);
+      const glow = isSeed ? 30 : 12 + rel * 26;
+      ctx.shadowBlur = glow * (0.7 + 0.3 * pulse); ctx.shadowColor = isSeed ? '#fff3b0' : base;
+    } else { ctx.shadowBlur = dim ? 0 : 6; ctx.shadowColor = base; }
+
+    // Expanding pulse ring on seeds — the "firing" tell.
+    if (isSeed) {
+      const ringT = ((now - rec.t0) % 1400) / 1400;
+      ctx.globalAlpha = (1 - ringT) * 0.5; ctx.beginPath();
+      ctx.arc(n.x, n.y, r * 1.6 + ringT * 26, 0, 7);
+      ctx.strokeStyle = '#fff3b0'; ctx.lineWidth = 1.4; ctx.stroke(); ctx.globalAlpha = 1;
+    }
+
+    const drawR = r * (isSeed ? 1.7 : 1.15 + rel * 0.7);
+    const grd = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, drawR * 2);
+    grd.addColorStop(0, isSeed ? '#fff3b0' : base);
+    grd.addColorStop(0.5, base);
+    grd.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalAlpha = dim ? 0.16 : 1;
+    ctx.beginPath(); ctx.arc(n.x, n.y, drawR, 0, 7); ctx.fillStyle = grd; ctx.fill();
+    ctx.shadowBlur = 0;
+
+    if (n === Mem.selected) {
+      ctx.globalAlpha = 1; ctx.beginPath(); ctx.arc(n.x, n.y, r + 4, 0, 7);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+    } else if (n === Mem.hover) {
+      ctx.globalAlpha = 0.8; ctx.beginPath(); ctx.arc(n.x, n.y, r + 3, 0, 7);
+      ctx.strokeStyle = base; ctx.lineWidth = 1; ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
+
+function selectMemNode(n) {
+  Mem.selected = n;
+  const nbrs = [];
+  for (const e of Mem.edges) {
+    if (e.s === n) nbrs.push({ t: e.type, w: e.w, o: e.d });
+    else if (e.d === n) nbrs.push({ t: e.type, w: e.w, o: e.s });
+  }
+  nbrs.sort((a, b) => b.w - a.w);
+  const card = $('memNodeCard');
+  card.innerHTML = `<h4>${escapeHtml(n.tier || 'memory')} · deg ${n.deg}</h4>
+    <div class="meta">${escapeHtml(n.source || n.id)} · importance ${n.importance.toFixed(2)}</div>
+    <div class="body">${escapeHtml(n.label)}</div>
+    ${nbrs.length ? `<div class="nbrs">${nbrs.slice(0, 12).map(b =>
+      `<div class="nbr" data-id="${escapeHtml(b.o.id)}"><span class="et" style="color:${EDGE_COLORS[b.t] || '#aaa'}">${escapeHtml(b.t)}</span> ${escapeHtml((b.o.label || '').slice(0, 46))}</div>`).join('')}</div>` : ''}`;
+  card.querySelectorAll('.nbr').forEach(el => el.addEventListener('click', () => {
+    const o = Mem.byId.get(el.dataset.id); if (o) { selectMemNode(o); fitMemView([o, ...Mem.edges.filter(e => e.s === o || e.d === o).map(e => e.s === o ? e.d : e.s)], 120); }
+  }));
+  card.hidden = false;
+}
+
+async function runMemRecall(query) {
+  if (!query || !Mem.nodes.length) return;
+  const btn = $('memRecallBtn'); btn.disabled = true; btn.textContent = 'firing…';
+  try {
+    const res = await fetch('/api/engram/recall', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, k: 8 }),
+    });
+    const data = await res.json();
+    if (data.needsIndex || data.error) { $('memStats').textContent = data.error || 'no index'; return; }
+    applyMemRecall(data);
+  } catch (err) { $('memStats').textContent = 'recall failed: ' + err; }
+  btn.disabled = false; btn.textContent = 'recall ⚡';
+}
+
+function applyMemRecall(data) {
+  // The engine can activate hundreds of nodes over the dense `about` graph —
+  // far too many to read. Visualise only the strongest seeds + activations so
+  // the "firing" is legible; the results panel still shows the true top-k.
+  const allSeeds = data.trace.seeds || [], allAct = data.trace.activations || [];
+  const seedTop = [...allSeeds].sort((a, b) => b.score - a.score).slice(0, 12);
+  const seeds = new Set(seedTop.map(s => s.id));
+  const actTop = allAct.filter(a => !seeds.has(a.id)).sort((a, b) => b.activation - a.activation).slice(0, 40);
+  const act = new Map(actTop.map(a => [a.id, a.activation]));
+  const pulses = [];
+  for (const a of actTop) {
+    const to = Mem.byId.get(a.id), from = a.via && Mem.byId.get(a.via.from);
+    if (to && from) pulses.push({ from, to, type: a.via.type, delay: (a.via.hop - 1) * 480, dur: 620 });
+  }
+  const maxAct = actTop.length ? actTop[0].activation : 1;
+  Mem.recall = { seeds, act, pulses, maxAct, t0: performance.now() };
+
+  // Fit view to the active subgraph.
+  const activeNodes = [...seeds, ...act.keys()].map(id => Mem.byId.get(id)).filter(Boolean);
+  if (activeNodes.length) fitMemView(activeNodes, 140);
+
+  // Results panel
+  const rp = $('memResults');
+  rp.innerHTML = `<h4>recalled · ${data.results.length}</h4>` + data.results.map(r =>
+    `<div class="mem-res" data-id="${escapeHtml(r.id)}">
+       <span class="score">${r.score.toFixed(4)}</span>
+       <div class="txt">${escapeHtml((r.content || '').slice(0, 150))}</div>
+       <div class="why">${escapeHtml(r.why || '')}</div>
+     </div>`).join('');
+  rp.querySelectorAll('.mem-res').forEach(el => el.addEventListener('click', () => {
+    const n = Mem.byId.get(el.dataset.id); if (n) selectMemNode(n);
+  }));
+  rp.hidden = false;
+  $('memStats').textContent = `fired ${seeds.size}/${allSeeds.length} seeds → showing ${act.size}/${allAct.length} activated`;
+}
+
+function clearMemRecall() {
+  Mem.recall = null; $('memResults').hidden = true; $('memQuery').value = '';
+  fitMemView(Mem.nodes, 60);
+}
+
+async function reindexMem() {
+  const btn = $('memReindex'); btn.disabled = true; btn.textContent = 'indexing…';
+  $('memEmpty').hidden = false; $('memEmpty').textContent = 'reindexing from memory/ …';
+  try {
+    const res = await fetch('/api/engram/reindex', { method: 'POST' });
+    const data = await res.json();
+    if (data.error) { $('memEmpty').textContent = 'reindex failed: ' + data.error; }
+    else await loadMemGraph();
+  } catch (err) { $('memEmpty').textContent = 'reindex failed: ' + err; }
+  btn.disabled = false; btn.textContent = 'reindex';
+}
 </script>
 </body>
 </html>
