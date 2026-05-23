@@ -12,7 +12,10 @@ export interface Config {
   };
   claude: {
     maxTurns: number;
+    /** Inactivity window (ms): kill only after this much silence (no stream events). */
     timeoutMs: number;
+    /** Absolute ceiling (ms): kill regardless of activity. Catches runaway loops. */
+    maxTimeoutMs: number;
     permissionMode: string;
   };
   repos: RepoConfig[];
@@ -50,7 +53,11 @@ export function loadConfig(): Config {
     },
     claude: {
       maxTurns: Number(optional("CLAUDE_MAX_TURNS", "25")),
-      timeoutMs: Number(optional("CLAUDE_TIMEOUT_MS", "300000")),
+      // Inactivity window: 10 min of silence (gives long single tool calls —
+      // builds, sub-agent dispatch — room to finish). Resets on every event.
+      timeoutMs: Number(optional("CLAUDE_TIMEOUT_MS", "600000")),
+      // Absolute ceiling regardless of activity: 30 min per turn.
+      maxTimeoutMs: Number(optional("CLAUDE_MAX_TIMEOUT_MS", "1800000")),
       permissionMode: optional("CLAUDE_PERMISSION_MODE", "bypassPermissions"),
     },
     repos: JSON.parse(optional("REPOS", "[]")) as RepoConfig[],

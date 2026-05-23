@@ -33,6 +33,7 @@ function makeConfig(overrides: Partial<Config["claude"]> = {}): Config["claude"]
   return {
     maxTurns: 25,
     timeoutMs: 300000,
+    maxTimeoutMs: 1800000,
     permissionMode: "bypassPermissions",
     ...overrides,
   };

@@ -98,7 +98,7 @@ import { InMemorySessionStore } from "./store/memory.ts";
 
 const testConfig: Config = {
   slack: { botToken: "xoxb-test", appToken: "xapp-test", signingSecret: "s" },
-  claude: { maxTurns: 25, timeoutMs: 300000, permissionMode: "bypassPermissions" },
+  claude: { maxTurns: 25, timeoutMs: 300000, maxTimeoutMs: 1800000, permissionMode: "bypassPermissions" },
   http: { port: 3000, enabled: false },
   repos: [
     { name: "friday", path: "/tmp/friday", defaultBase: "main" },
@@ -266,6 +266,80 @@ describe("SessionManager", () => {
       // Command response should fire
       expect(onCmd).toHaveBeenCalledTimes(1);
       expect(onCmd.mock.calls[0][1]).toBe("Session reset.");
+    });
+  });
+
+  describe("killThread", () => {
+    it("kills the run, mutes, clears pending, and keeps the session row", async () => {
+      const onResponse = mock(() => {});
+      const onError = mock(() => {});
+      manager.onResponse = onResponse;
+      manager.onError = onError;
+
+      // Start a run, then buffer a second message while busy.
+      await manager.handleMessage(makeEvent({ text: "Work on this" }));
+      await manager.handleMessage(makeEvent({ text: "and this too" }));
+      await new Promise((r) => setTimeout(r, 5)); // let the spawn settle
+
+      let session = await store.get("thread-1");
+      expect(session?.status).toBe("busy");
+      expect(session?.pendingMessages.length).toBe(1);
+
+      const result = await manager.killThread("thread-1");
+      expect(result).toEqual({ found: true, killedRun: true, muted: true });
+      expect(currentHandle.kill).toHaveBeenCalled();
+
+      // Simulate the terminated process's result landing — must be swallowed
+      // (no error post, no drain, session stays muted/idle).
+      currentHandle._error("terminated by signal");
+      await new Promise((r) => setTimeout(r, 5));
+
+      session = await store.get("thread-1");
+      expect(session).toBeDefined(); // row kept, unlike !reset
+      expect(session?.muted).toBe(true);
+      expect(session?.status).toBe("idle");
+      expect(session?.pendingMessages.length).toBe(0);
+      expect(onError).not.toHaveBeenCalled();
+      expect(onResponse).not.toHaveBeenCalled();
+    });
+
+    it("mutes an idle thread that has no running process", async () => {
+      await manager.handleMessage(makeEvent({ text: "hi" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+
+      const result = await manager.killThread("thread-1");
+      expect(result.killedRun).toBe(false);
+      expect(result.muted).toBe(true);
+      expect((await store.get("thread-1"))?.muted).toBe(true);
+    });
+
+    it("returns found=false for an unknown thread", async () => {
+      expect(await manager.killThread("nope")).toEqual({
+        found: false,
+        killedRun: false,
+        muted: false,
+      });
+    });
+  });
+
+  describe("setMuted", () => {
+    it("toggles muted without killing the process", async () => {
+      await manager.handleMessage(makeEvent({ text: "hi" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+
+      expect(await manager.setMuted("thread-1", true)).toEqual({ found: true, muted: true });
+      expect((await store.get("thread-1"))?.muted).toBe(true);
+
+      expect(await manager.setMuted("thread-1", false)).toEqual({ found: true, muted: false });
+      expect((await store.get("thread-1"))?.muted).toBe(false);
+
+      expect(currentHandle.kill).not.toHaveBeenCalled();
+    });
+
+    it("returns found=false for an unknown thread", async () => {
+      expect(await manager.setMuted("nope", true)).toEqual({ found: false, muted: false });
     });
   });
 
