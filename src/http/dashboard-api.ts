@@ -15,6 +15,8 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { log } from "../logger.ts";
+import type { SessionManager } from "../session/manager.ts";
+import { setThreadMeta } from "./dashboard-state.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../..");
 
@@ -331,6 +333,50 @@ end tell`;
   }
   log.info("dashboard", `opened Terminal attached to ${session}`);
   return Response.json({ ok: true });
+}
+
+// ─── Thread ops (stop / mute) ─────────────────────────────────────────────────
+
+// Stop a thread NOW: kill its in-flight claude run + tmux dispatch session,
+// drop buffered messages, and mute it so Friday ignores the thread until
+// resumed. Keeps the session row (resume sessionId) so Resume continues.
+export async function handleThreadKill(req: Request, manager: SessionManager): Promise<Response> {
+  let body: { threadId?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "invalid JSON body" }, { status: 400 });
+  }
+  if (!body.threadId) return Response.json({ error: "threadId required" }, { status: 400 });
+
+  const result = await manager.killThread(body.threadId, { mute: true });
+  if (!result.found) return Response.json({ error: "thread not found" }, { status: 404 });
+
+  // Reflect into dashboard-state so the next SSE snapshot shows muted/idle
+  // (the session store and dashboard state are separate maps).
+  setThreadMeta(body.threadId, { muted: result.muted, status: "idle", pid: null, pendingCount: 0 });
+  log.info("dashboard", `thread stop ${body.threadId} → killedRun=${result.killedRun} muted=${result.muted}`);
+  return Response.json({ ok: true, ...result });
+}
+
+// Toggle mute without touching a running process (dashboard Resume / mute).
+export async function handleThreadMute(req: Request, manager: SessionManager): Promise<Response> {
+  let body: { threadId?: string; muted?: boolean };
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "invalid JSON body" }, { status: 400 });
+  }
+  if (!body.threadId || typeof body.muted !== "boolean") {
+    return Response.json({ error: "threadId and muted (boolean) required" }, { status: 400 });
+  }
+
+  const result = await manager.setMuted(body.threadId, body.muted);
+  if (!result.found) return Response.json({ error: "thread not found" }, { status: 404 });
+
+  setThreadMeta(body.threadId, { muted: result.muted });
+  log.info("dashboard", `thread mute ${body.threadId} → ${result.muted}`);
+  return Response.json({ ok: true, ...result });
 }
 
 export async function handleKillProcess(req: Request): Promise<Response> {
