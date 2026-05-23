@@ -29,6 +29,7 @@ import {
   updateSpiralScore,
 } from "./spiral.ts";
 import { log } from "../logger.ts";
+import { recallContext, engramRecallEnabled } from "../memory/engram-bridge.ts";
 
 type SpawnClaudeFn = typeof defaultSpawnClaude;
 
@@ -37,6 +38,10 @@ export class SessionManager {
   private config: Config;
   private handles = new Map<string, SpawnHandle>();
   private seenMessages = new Set<string>();
+  // Threads we deliberately killed (dashboard "stop" / CLI). When the killed
+  // run's result lands in onRunComplete we swallow the SIGTERM error and skip
+  // draining, instead of surfacing a spurious "Error: …" in the thread.
+  private killedThreads = new Set<string>();
   private spawnClaude: SpawnClaudeFn;
 
   slackApp?: App;
@@ -148,7 +153,19 @@ export class SessionManager {
     // so the next repo-work request gets a fresh Claude conversation in a
     // fresh Terminal window.
     const safeThread = threadId.replace(/\./g, "-");
-    const tmuxName = `friday-thread-${safeThread}`;
+    await this.killThreadTmux(threadId);
+    try {
+      const { unlinkSync } = await import("node:fs");
+      unlinkSync(`/tmp/friday-dispatch/${safeThread}.sessionid`);
+    } catch {
+      // file might not exist
+    }
+  }
+
+  /** Kill the per-thread tmux dispatch session (the repo-work Terminal). No-op
+   * if tmux isn't installed or the session doesn't exist. */
+  private async killThreadTmux(threadId: string): Promise<void> {
+    const tmuxName = `friday-thread-${threadId.replace(/\./g, "-")}`;
     try {
       await Bun.spawn(["/opt/homebrew/bin/tmux", "kill-session", "-t", tmuxName], {
         stdout: "ignore",
@@ -157,12 +174,66 @@ export class SessionManager {
     } catch {
       // tmux not installed or session not present — both are fine.
     }
-    try {
-      const { unlinkSync } = await import("node:fs");
-      unlinkSync(`/tmp/friday-dispatch/${safeThread}.sessionid`);
-    } catch {
-      // file might not exist
+  }
+
+  /**
+   * Hard-stop a thread on demand (dashboard "stop" button / CLI). Kills any
+   * in-flight claude run, kills the per-thread tmux dispatch session, drops
+   * buffered messages so nothing re-spawns, and (by default) mutes the thread
+   * so Friday ignores future messages until resumed.
+   *
+   * Unlike resetSession this KEEPS the session row and its resume sessionId —
+   * `setMuted(threadId, false)` (Resume) or `!unmute` brings her back where she
+   * left off. Returns what actually happened so the UI can confirm.
+   */
+  async killThread(
+    threadId: string,
+    opts: { mute?: boolean } = {},
+  ): Promise<{ found: boolean; killedRun: boolean; muted: boolean }> {
+    const session = await this.store.get(threadId);
+    if (!session) return { found: false, killedRun: false, muted: false };
+
+    const mute = opts.mute ?? true;
+
+    // Drop the buffer first so the killed run's onRunComplete can't drain it.
+    session.pendingMessages = [];
+
+    let killedRun = false;
+    const handle = this.handles.get(threadId);
+    if (handle) {
+      // Mark before kill so the result handler swallows the SIGTERM error.
+      this.killedThreads.add(threadId);
+      handle.kill();
+      this.handles.delete(threadId);
+      killedRun = true;
     }
+
+    session.status = "idle";
+    session.pid = null;
+    if (mute) session.muted = true;
+    await this.store.set(threadId, session);
+
+    await this.killThreadTmux(threadId);
+
+    log.info(
+      "kill-thread",
+      `thread=${threadId} killedRun=${killedRun} muted=${session.muted ?? false}`,
+    );
+    return { found: true, killedRun, muted: session.muted ?? false };
+  }
+
+  /** Toggle a thread's muted flag (dashboard Resume, or pure mute/unmute).
+   * Does not touch any running process — use killThread to also stop a run. */
+  async setMuted(
+    threadId: string,
+    muted: boolean,
+  ): Promise<{ found: boolean; muted: boolean }> {
+    const session = await this.store.get(threadId);
+    if (!session) return { found: false, muted: false };
+    session.muted = muted;
+    await this.store.set(threadId, session);
+    log.info("kill-thread", `thread=${threadId} muted=${muted}`);
+    return { found: true, muted };
   }
 
   private async handleCommand(
@@ -565,10 +636,23 @@ export class SessionManager {
         if (repo) targetRepoCwd = repo.path;
       }
 
-      const rawHandle = this.spawnClaude(session, prompt, this.config.claude, targetRepoCwd, this.config.slack.botToken, agentDef, requestingUser);
-      const handle = withTimeout(rawHandle, this.config.claude.timeoutMs, () => {
-        console.warn(`[manager] Claude timed out for thread ${session.threadId}`);
-      });
+      // Associative recall (engram) for this message — extra system-prompt
+      // context. Off unless ENGRAM_RECALL=1; always fails soft to no context.
+      let memoryContext: string | undefined;
+      if (engramRecallEnabled()) {
+        try { memoryContext = (await recallContext(prompt)) || undefined; }
+        catch { memoryContext = undefined; }
+      }
+
+      const rawHandle = this.spawnClaude(session, prompt, this.config.claude, targetRepoCwd, this.config.slack.botToken, agentDef, requestingUser, memoryContext);
+      const handle = withTimeout(
+        rawHandle,
+        this.config.claude.timeoutMs,
+        (reason) => {
+          console.warn(`[manager] Claude timed out for thread ${session.threadId}: ${reason}`);
+        },
+        this.config.claude.maxTimeoutMs,
+      );
       this.handles.set(session.threadId, handle);
       session.pid = handle.pid;
       try { this.onSpawn?.(session, rawHandle.spawnInfo); }
@@ -610,6 +694,20 @@ export class SessionManager {
   ): Promise<void> {
     this.handles.delete(session.threadId);
     session.pid = null;
+
+    // Deliberate kill (dashboard "stop" / CLI): swallow the SIGTERM error and
+    // skip draining. killThread already cleared pending + set muted/idle and
+    // persisted, so just keep the session id (for Resume) and settle to idle.
+    if (this.killedThreads.has(session.threadId)) {
+      this.killedThreads.delete(session.threadId);
+      if (result.sessionId) session.sessionId = result.sessionId;
+      session.status = "idle";
+      session.pendingMessages = [];
+      await this.store.set(session.threadId, session);
+      this.writeStatusFile();
+      log.info("kill-thread", `thread=${session.threadId} run terminated`);
+      return;
+    }
 
     if (result.sessionId) {
       session.sessionId = result.sessionId;

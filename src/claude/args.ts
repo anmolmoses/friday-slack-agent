@@ -101,6 +101,7 @@ export function buildClaudeArgs(
   prompt: string,
   config: Config["claude"],
   agentDef?: AgentDefinition | null,
+  memoryContext?: string,
 ): string[] {
   const args: string[] = [
     "-p",
@@ -145,6 +146,9 @@ export function buildClaudeArgs(
   // with her short-term + long-term memory already in context (no grep needed).
   const memorySnapshot = buildMemorySnapshot(memoryDir);
   if (memorySnapshot) parts.push(memorySnapshot);
+
+  // Associative recall for this message (engram), if enabled. Empty when off.
+  if (memoryContext) parts.push(memoryContext);
 
   if (parts.length > 0) {
     mkdirSync(PROMPT_TMP_DIR, { recursive: true });

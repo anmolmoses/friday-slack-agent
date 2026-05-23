@@ -14,8 +14,9 @@ export function spawnClaude(
   botToken?: string,
   agentDef?: AgentDefinition | null,
   requestingUser?: string | null,
+  memoryContext?: string,
 ): SpawnHandle {
-  const args = buildClaudeArgs(session, prompt, config, agentDef);
+  const args = buildClaudeArgs(session, prompt, config, agentDef, memoryContext);
   const cwd = session.worktreePath ?? targetRepoCwd ?? process.cwd();
   const argv = ["claude", ...args];
 

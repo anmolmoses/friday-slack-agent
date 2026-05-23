@@ -9,9 +9,10 @@ logs/
 .claude/worktrees/
 .claude/scheduled_tasks.lock
 
-# Personal/local MD content — each developer brings their own
-memory/
-!memory/.gitkeep
+# Personal/local MD content — each developer brings their own.
+# Anchored to repo root so it does NOT also ignore the src/memory/ source module.
+/memory/
+!/memory/.gitkeep
 openclaw/IDENTITY.md
 openclaw/SOUL.md
 openclaw/AGENTS.md

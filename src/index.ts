@@ -30,6 +30,7 @@ import {
   recordSpawn as dashRecordSpawn,
 } from "./http/dashboard-state.ts";
 import { log } from "./logger.ts";
+import { reindexFriday, engramRecallEnabled } from "./memory/engram-bridge.ts";
 
 const config = loadConfig();
 const app = createSlackApp(config);
@@ -161,6 +162,13 @@ registerHomeTab(app, store);
 
 setupGracefulShutdown(sessionManager, store);
 
+// Associative memory (engram): when enabled, refresh the index from memory/ on
+// boot and every 6h so per-turn recall stays current. Off unless ENGRAM_RECALL=1.
+if (engramRecallEnabled()) {
+  reindexFriday().then((ok) => log.info("engram", `boot reindex ${ok ? "ok" : "skipped"}`));
+  setInterval(() => { reindexFriday(); }, 6 * 60 * 60 * 1000);
+}
+
 // Periodic health checks
 setInterval(() => {
   checkOrphanedSessions(store).then((orphaned) => {
@@ -259,7 +267,7 @@ bootWatchdog.unref();
   //   /events   → SSE stream of dashboard updates
   if (config.http.enabled) {
     const { startHttpServer } = await import("./http/server.ts");
-    startHttpServer({ store, config });
+    startHttpServer({ store, config, sessionManager });
   }
 
   monitorSocketHealth(app);
