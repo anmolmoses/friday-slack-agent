@@ -4,6 +4,11 @@ import type {
   SpawnResult,
   StreamEvent,
 } from "../claude/types.ts";
+
+// Pin engram live-recall OFF for these tests: bun auto-loads .env (where it may
+// be ENGRAM_RECALL=1 in dev), and an inline recall shell-out before spawnClaude
+// would break the mocked-spawn timing assertions. Tests exercise the default path.
+process.env.ENGRAM_RECALL = "0";
 import type { SlackMessageEvent } from "../slack/events.ts";
 import type { Config } from "../config.ts";
 
