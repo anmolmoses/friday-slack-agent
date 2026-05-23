@@ -26,3 +26,6 @@ friday-personal/
 # Misc runtime
 .playwright-mcp/
 learnings.md
+
+# engram dashboard derived cache
+.engram/

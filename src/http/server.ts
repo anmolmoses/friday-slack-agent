@@ -6,6 +6,7 @@ import { handleHealth } from "./routes/health.ts";
 import { handleSessions, handleSessionDetail } from "./routes/sessions.ts";
 import { handleLogs } from "./routes/logs.ts";
 import { handleMemoryList, handleMemoryRead } from "./routes/memory.ts";
+import { handleEngramGraph, handleEngramRecall, handleEngramReindex } from "./routes/engram.ts";
 import { handleChatSend, handleChatStream } from "./routes/chat.ts";
 import { ChatManager } from "./chat-manager.ts";
 import { getSnapshot, subscribe, type DashboardEvent } from "./dashboard-state.ts";
@@ -17,7 +18,10 @@ import {
   handleProcessDetails,
   handleAttachTerminal,
   handleKillProcess,
+  handleThreadKill,
+  handleThreadMute,
 } from "./dashboard-api.ts";
+import type { SessionManager } from "../session/manager.ts";
 import { clearPersonaCache, getPersonaState } from "../claude/args.ts";
 import { log } from "../logger.ts";
 
@@ -35,8 +39,9 @@ function cors(res: Response): Response {
 export function startHttpServer(deps: {
   store: SessionStore;
   config: Config;
+  sessionManager: SessionManager;
 }): void {
-  const { store, config } = deps;
+  const { store, config, sessionManager } = deps;
   const chatManager = new ChatManager(config);
 
   const server = Bun.serve({
@@ -97,6 +102,12 @@ export function startHttpServer(deps: {
         } else if (url.pathname.startsWith("/api/memory/")) {
           const filePath = decodeURIComponent(url.pathname.slice("/api/memory/".length));
           res = await handleMemoryRead(filePath);
+        } else if (url.pathname === "/api/engram/graph" && req.method === "GET") {
+          res = await handleEngramGraph();
+        } else if (url.pathname === "/api/engram/recall" && req.method === "POST") {
+          res = await handleEngramRecall(req);
+        } else if (url.pathname === "/api/engram/reindex" && req.method === "POST") {
+          res = await handleEngramReindex();
         } else if (url.pathname === "/api/chat" && req.method === "POST") {
           const body = await req.json();
           res = await handleChatSend(chatManager, body);
@@ -127,6 +138,10 @@ export function startHttpServer(deps: {
           res = Response.json({ ok: true, ...getPersonaState() });
         } else if (url.pathname === "/api/kill" && req.method === "POST") {
           res = await handleKillProcess(req);
+        } else if (url.pathname === "/api/thread/kill" && req.method === "POST") {
+          res = await handleThreadKill(req, sessionManager);
+        } else if (url.pathname === "/api/thread/mute" && req.method === "POST") {
+          res = await handleThreadMute(req, sessionManager);
         } else if (url.pathname === "/events") {
           const stream = new ReadableStream({
             start(controller) {
