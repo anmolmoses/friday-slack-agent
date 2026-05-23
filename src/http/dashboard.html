@@ -630,6 +630,8 @@
             <label class="etype" data-etype="lesson_from"><span class="dot"></span>lesson</label>
             <label class="etype" data-etype="caused"><span class="dot"></span>caused</label>
             <label class="etype" data-etype="supersedes"><span class="dot"></span>supersedes</label>
+            <label class="etype on" id="memArchToggle" title="show cold-archived (consolidated-out) memories"><span class="dot" style="background:#4a5260;color:#4a5260"></span>archived</label>
+            <button class="btn tiny" type="button" id="memDream" title="run a consolidation pass — cold-archive low-salience memories">💤 dream</button>
             <button class="btn tiny" type="button" id="memReindex" title="rebuild the index from Friday's memory/ dir">reindex</button>
             <button class="btn tiny" type="button" id="memRefresh">refresh</button>
           </div>
@@ -1394,7 +1396,7 @@ const Mem = {
   inited: false, loading: false, nodes: [], edges: [], byId: new Map(),
   on: { similar: true, temporal_next: true, about: false, lesson_from: true, caused: true, supersedes: true },
   view: { x: 0, y: 0, scale: 1 }, drag: null, selected: null, hover: null,
-  alpha: 0, raf: null, recall: null, // recall = { seeds:Set, act:Map, pulses:[], t0 }
+  alpha: 0, raf: null, recall: null, hideArchived: false, // recall = { seeds:Set, act:Map, pulses:[], t0 }
 };
 
 function initMemoryTab() {
@@ -1412,6 +1414,11 @@ function initMemoryTab() {
   $('memClearBtn').addEventListener('click', clearMemRecall);
   $('memRefresh').addEventListener('click', () => loadMemGraph());
   $('memReindex').addEventListener('click', reindexMem);
+  $('memDream').addEventListener('click', dreamMem);
+  $('memArchToggle').addEventListener('click', () => {
+    Mem.hideArchived = !Mem.hideArchived;
+    $('memArchToggle').classList.toggle('on', !Mem.hideArchived);
+  });
 
   // Pan / zoom / select
   cv.addEventListener('wheel', (e) => {
@@ -1484,6 +1491,7 @@ function buildMemGraph(data) {
     const a = (i / data.nodes.length) * Math.PI * 2, rad = 30 + Math.random() * Math.min(W, H) * 0.42;
     const node = {
       id: n.id, label: n.label, tier: n.tier, importance: n.importance, source: n.source,
+      archived: !!n.archived, salience: n.salience || 0,
       deg: deg.get(n.id) || 0, x: W / 2 + Math.cos(a) * rad, y: H / 2 + Math.sin(a) * rad, vx: 0, vy: 0,
     };
     Mem.byId.set(n.id, node); return node;
@@ -1491,7 +1499,8 @@ function buildMemGraph(data) {
   Mem.edges = data.edges.filter(e => Mem.byId.has(e.src) && Mem.byId.has(e.dst))
     .map(e => ({ s: Mem.byId.get(e.src), d: Mem.byId.get(e.dst), type: e.type, w: e.weight }));
   Mem.recall = null; Mem.selected = null; $('memNodeCard').hidden = true; $('memResults').hidden = true;
-  $('memStats').textContent = `${data.nodes.length} neurons · ${data.edges.length} synapses · ${data.stats?.entities ?? 0} entities`;
+  const archN = Mem.nodes.filter(n => n.archived).length;
+  $('memStats').textContent = `${data.nodes.length} neurons · ${data.edges.length} synapses · ${data.stats?.entities ?? 0} entities${archN ? ` · ${archN} archived` : ''}`;
   $('tabMemCount').textContent = data.nodes.length;
   Mem.alpha = 1; Mem.view = { x: 0, y: 0, scale: 1 }; // re-settle layout
   fitMemView(Mem.nodes, 0);
@@ -1554,7 +1563,7 @@ function pickNode(mx, my) {
   return best;
 }
 
-function nodeRadius(n) { return 2.6 + Math.sqrt(n.deg) * 0.7 + n.importance * 2.4; }
+function nodeRadius(n) { return 2.6 + Math.sqrt(n.deg) * 0.6 + n.importance * 2 + (n.salience || 0) * 1.1; }
 
 function startMemLoop() {
   if (Mem.raf) return;
@@ -1580,6 +1589,7 @@ function renderMem() {
   // Edges
   ctx.lineCap = 'round';
   for (const e of Mem.edges) {
+    if (Mem.hideArchived && (e.s.archived || e.d.archived)) continue;
     const active = rec && lit(e.s.id) && lit(e.d.id);
     // Always draw the firing path; only inactive edges respect the type toggle.
     if (!active && !Mem.on[e.type]) continue;
@@ -1605,13 +1615,15 @@ function renderMem() {
 
   // Nodes
   for (const n of Mem.nodes) {
+    if (Mem.hideArchived && n.archived) continue;
     const r = nodeRadius(n);
     const isSeed = rec && rec.seeds.has(n.id);
     const actLvl = rec ? (rec.act.get(n.id) || 0) : 0;
     const rel = rec && actLvl > 0 ? Math.min(1, actLvl / rec.maxAct) : 0; // strongest = 1
     const dim = rec && !lit(n.id);
-    const base = TIER_COLORS[n.tier] || TIER_COLORS.null;
     const fired = isSeed || actLvl > 0;
+    // Cold-archived neurons render grey + faded — visibly "forgotten".
+    const base = (n.archived && !fired) ? '#4a5260' : (TIER_COLORS[n.tier] || TIER_COLORS.null);
 
     if (fired) {
       const pulse = 0.65 + 0.35 * Math.sin(now / 300 + n.x * 0.05);
@@ -1632,7 +1644,7 @@ function renderMem() {
     grd.addColorStop(0, isSeed ? '#fff3b0' : base);
     grd.addColorStop(0.5, base);
     grd.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.globalAlpha = dim ? 0.16 : 1;
+    ctx.globalAlpha = dim ? 0.16 : (n.archived && !fired ? 0.3 : 1);
     ctx.beginPath(); ctx.arc(n.x, n.y, drawR, 0, 7); ctx.fillStyle = grd; ctx.fill();
     ctx.shadowBlur = 0;
 
@@ -1721,6 +1733,23 @@ function applyMemRecall(data) {
 function clearMemRecall() {
   Mem.recall = null; $('memResults').hidden = true; $('memQuery').value = '';
   fitMemView(Mem.nodes, 60);
+}
+
+async function dreamMem() {
+  if (!Mem.nodes.length) return;
+  const btn = $('memDream'); btn.disabled = true; btn.textContent = '💤 dreaming…';
+  try {
+    // Archive the lowest-salience ~25% so the consolidation is visible.
+    const capacity = Math.max(1, Math.floor(Mem.nodes.filter(n => !n.archived).length * 0.75));
+    const res = await fetch('/api/engram/dream', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ capacity }),
+    });
+    const data = await res.json();
+    if (data.error) { $('memStats').textContent = 'dream failed: ' + data.error; }
+    else { Mem.recall = null; $('memResults').hidden = true; await loadMemGraph();
+      $('memStats').textContent += ` · just archived ${data.archived ?? 0}`; }
+  } catch (err) { $('memStats').textContent = 'dream failed: ' + err; }
+  btn.disabled = false; btn.textContent = '💤 dream';
 }
 
 async function reindexMem() {

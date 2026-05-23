@@ -100,6 +100,22 @@ export async function handleEngramRecall(req: Request): Promise<Response> {
   return new Response(r.stdout, { headers: { "content-type": "application/json" } });
 }
 
+// POST /api/engram/dream — run a consolidation pass (cold-archive low-salience).
+export async function handleEngramDream(req: Request): Promise<Response> {
+  const pre = preflight(true);
+  if (pre) return pre;
+  let body: { capacity?: number } = {};
+  try { body = await req.json(); } catch { /* capacity optional */ }
+  const args = ["dream", "--db", DASHBOARD_DB, "--json"];
+  if (body.capacity && Number.isFinite(body.capacity)) args.push("--capacity", String(Math.max(1, Math.floor(body.capacity))));
+  const r = await runEngram(args);
+  if (!r.ok) {
+    log.warn("engram", `dream failed: ${r.stderr.trim()}`);
+    return Response.json({ error: "dream failed", detail: r.stderr.trim() }, { status: 500 });
+  }
+  return new Response(r.stdout, { headers: { "content-type": "application/json" } });
+}
+
 // POST /api/engram/reindex — rebuild the dashboard DB from Friday's memory/ dir.
 export async function handleEngramReindex(): Promise<Response> {
   const pre = preflight(false);

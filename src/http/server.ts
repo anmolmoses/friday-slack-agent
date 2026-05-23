@@ -6,7 +6,7 @@ import { handleHealth } from "./routes/health.ts";
 import { handleSessions, handleSessionDetail } from "./routes/sessions.ts";
 import { handleLogs } from "./routes/logs.ts";
 import { handleMemoryList, handleMemoryRead } from "./routes/memory.ts";
-import { handleEngramGraph, handleEngramRecall, handleEngramReindex } from "./routes/engram.ts";
+import { handleEngramGraph, handleEngramRecall, handleEngramReindex, handleEngramDream } from "./routes/engram.ts";
 import { handleChatSend, handleChatStream } from "./routes/chat.ts";
 import { ChatManager } from "./chat-manager.ts";
 import { getSnapshot, subscribe, type DashboardEvent } from "./dashboard-state.ts";
@@ -108,6 +108,8 @@ export function startHttpServer(deps: {
           res = await handleEngramRecall(req);
         } else if (url.pathname === "/api/engram/reindex" && req.method === "POST") {
           res = await handleEngramReindex();
+        } else if (url.pathname === "/api/engram/dream" && req.method === "POST") {
+          res = await handleEngramDream(req);
         } else if (url.pathname === "/api/chat" && req.method === "POST") {
           const body = await req.json();
           res = await handleChatSend(chatManager, body);
