@@ -89,7 +89,9 @@ export async function handleEngramRecall(req: Request): Promise<Response> {
   const query = (body.query ?? "").trim();
   if (!query) return Response.json({ error: "query required" }, { status: 400 });
 
-  const args = ["recall", query, "--db", DASHBOARD_DB, "--trace", "--json"];
+  // --reinforce: each dashboard recall Hebbian-strengthens the co-retrieved
+  // edges, so repeating a query visibly thickens its synapses over time.
+  const args = ["recall", query, "--db", DASHBOARD_DB, "--trace", "--json", "--reinforce"];
   if (body.k && Number.isFinite(body.k)) args.push("-k", String(Math.min(50, Math.max(1, body.k))));
 
   const r = await runEngram(args);

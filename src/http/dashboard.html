@@ -1595,8 +1595,10 @@ function renderMem() {
     if (!active && !Mem.on[e.type]) continue;
     ctx.beginPath(); ctx.moveTo(e.s.x, e.s.y); ctx.lineTo(e.d.x, e.d.y);
     ctx.strokeStyle = EDGE_COLORS[e.type] || '#5a6478';
-    ctx.globalAlpha = active ? 0.55 : (rec ? 0.04 : 0.13);
-    ctx.lineWidth = active ? 1.4 : 0.6;
+    // Stronger synapses (higher weight, e.g. Hebbian-reinforced) draw thicker/brighter.
+    const w = e.w || 0.5;
+    ctx.globalAlpha = active ? 0.55 : (rec ? 0.04 : 0.1 + w * 0.14);
+    ctx.lineWidth = active ? 1.2 + w * 1.2 : 0.4 + w * 1.1;
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
