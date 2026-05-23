@@ -1392,6 +1392,16 @@ const TIER_COLORS = {
   episodic: '#7dcfff', semantic: '#9ece6a', procedural: '#e0af68',
   working: '#bb9af7', null: '#7aa2f7',
 };
+// Emotional tone → tint. Positive greens, negative reds, arousal yellows.
+const EMOTION_COLORS = {
+  positive: '#9ece6a', excited: '#9ece6a', proud: '#9ece6a', happy: '#9ece6a', amused: '#73daca', glad: '#9ece6a', grateful: '#9ece6a',
+  negative: '#f7768e', frustrated: '#f7768e', angry: '#f7768e', annoyed: '#ff9e64', anxious: '#e0af68', sad: '#7aa2f7', worried: '#e0af68', stressed: '#ff9e64',
+};
+function emotionColor(emotion, intensity) {
+  if (!emotion || emotion === 'neutral') return null;
+  const c = EMOTION_COLORS[emotion.toLowerCase()];
+  return (c && (intensity || 0) >= 0.25) ? c : null;
+}
 const Mem = {
   inited: false, loading: false, nodes: [], edges: [], byId: new Map(),
   on: { similar: true, temporal_next: true, about: false, lesson_from: true, caused: true, supersedes: true },
@@ -1492,6 +1502,7 @@ function buildMemGraph(data) {
     const node = {
       id: n.id, label: n.label, tier: n.tier, importance: n.importance, source: n.source,
       archived: !!n.archived, salience: n.salience || 0,
+      emotion: n.emotion, emotionIntensity: n.emotionIntensity || 0, topic: n.topic,
       deg: deg.get(n.id) || 0, x: W / 2 + Math.cos(a) * rad, y: H / 2 + Math.sin(a) * rad, vx: 0, vy: 0,
     };
     Mem.byId.set(n.id, node); return node;
@@ -1625,7 +1636,10 @@ function renderMem() {
     const dim = rec && !lit(n.id);
     const fired = isSeed || actLvl > 0;
     // Cold-archived neurons render grey + faded — visibly "forgotten".
-    const base = (n.archived && !fired) ? '#4a5260' : (TIER_COLORS[n.tier] || TIER_COLORS.null);
+    // Otherwise emotion (if tagged + intense enough) tints the neuron, else tier.
+    const base = (n.archived && !fired)
+      ? '#4a5260'
+      : (emotionColor(n.emotion, n.emotionIntensity) || TIER_COLORS[n.tier] || TIER_COLORS.null);
 
     if (fired) {
       const pulse = 0.65 + 0.35 * Math.sin(now / 300 + n.x * 0.05);
@@ -1671,8 +1685,12 @@ function selectMemNode(n) {
   }
   nbrs.sort((a, b) => b.w - a.w);
   const card = $('memNodeCard');
+  const emo = n.emotion && n.emotion !== 'neutral'
+    ? ` · <span style="color:${emotionColor(n.emotion, n.emotionIntensity) || 'var(--fg-3)'}">${escapeHtml(n.emotion)}${n.emotionIntensity ? ` ${Math.round(n.emotionIntensity * 100)}%` : ''}</span>`
+    : '';
+  const topic = n.topic ? ` · ${escapeHtml(n.topic)}` : '';
   card.innerHTML = `<h4>${escapeHtml(n.tier || 'memory')} · deg ${n.deg}</h4>
-    <div class="meta">${escapeHtml(n.source || n.id)} · importance ${n.importance.toFixed(2)}</div>
+    <div class="meta">${escapeHtml(n.source || n.id)} · importance ${n.importance.toFixed(2)}${emo}${topic}</div>
     <div class="body">${escapeHtml(n.label)}</div>
     ${nbrs.length ? `<div class="nbrs">${nbrs.slice(0, 12).map(b =>
       `<div class="nbr" data-id="${escapeHtml(b.o.id)}"><span class="et" style="color:${EDGE_COLORS[b.t] || '#aaa'}">${escapeHtml(b.t)}</span> ${escapeHtml((b.o.label || '').slice(0, 46))}</div>`).join('')}</div>` : ''}`;
