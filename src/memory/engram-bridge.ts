@@ -84,6 +84,40 @@ export async function reindexIncremental(timeoutMs = 60_000): Promise<boolean> {
   return runIndex(["--incremental"], timeoutMs, "incremental index");
 }
 
+export interface MemoryTag {
+  tier: string;
+  importance: number;
+  emotion: string;
+  emotionIntensity: number;
+  topic: string;
+  people: string[];
+  summary: string;
+}
+
+/**
+ * Tag a batch of memory texts via the engram CLI (LLM). Returns one tag set per
+ * input (order preserved), or null on failure — callers fall back to basic tags.
+ */
+export async function tagExchanges(texts: string[], timeoutMs = 90_000): Promise<MemoryTag[] | null> {
+  if (!existsSync(ENGRAM_CLI) || texts.length === 0) return null;
+  try {
+    const proc = Bun.spawn(["node", ENGRAM_CLI, "tag"], {
+      cwd: ENGRAM_DIR, stdin: "pipe", stdout: "pipe", stderr: "pipe",
+    });
+    proc.stdin.write(JSON.stringify(texts));
+    proc.stdin.end();
+    const timer = setTimeout(() => { try { proc.kill(); } catch { /* gone */ } }, timeoutMs);
+    const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+    clearTimeout(timer);
+    if (code !== 0) return null;
+    const tags = JSON.parse(out.trim()) as MemoryTag[];
+    return Array.isArray(tags) && tags.length === texts.length ? tags : null;
+  } catch (err) {
+    log.warn("engram", `tagExchanges failed: ${err}`);
+    return null;
+  }
+}
+
 async function runIndex(extraArgs: string[], timeoutMs: number, label: string): Promise<boolean> {
   if (!existsSync(ENGRAM_CLI) || !existsSync(MEMORY_DIR)) return false;
   try {

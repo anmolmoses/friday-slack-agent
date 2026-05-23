@@ -1,87 +1,147 @@
 /**
- * Auto-capture — the "remember what was said" half of Friday's memory.
+ * Auto-capture — the "remember what was said" half of Friday's memory, with
+ * structured + emotional tagging.
  *
- * Recall (engram-bridge.ts) only surfaces what's been WRITTEN to memory/. By
- * default that's whatever Friday chooses to jot in her daily notes — so a lot
- * of what you tell her is never persisted and can never be recalled later.
+ * After each turn, the exchange is written as its OWN markdown file under
+ * memory/conversations/<date>/ with frontmatter tags, so engram indexes it as a
+ * first-class, typed memory (not an untagged blob). Capture is instant with
+ * basic tags; a debounced (5s) batch then asks the LLM to ENRICH the new files
+ * — tier (episodic/semantic/procedural → the short/long-term split), importance,
+ * emotion + intensity, topic, people — rewrites their frontmatter, and runs an
+ * incremental reindex so they're recallable within seconds.
  *
- * This closes that gap: after each turn, the user's message + Friday's reply are
- * appended to memory/conversations/<date>.md — a durable, append-only transcript
- * that engram indexes like any other memory. A debounced *incremental* reindex
- * (only the new lines get embedded) makes the exchange recallable within seconds,
- * cheaply, even with a paid embedder.
- *
- * OFF BY DEFAULT. Enable with ENGRAM_CAPTURE=1.
+ * Everything fails soft: if tagging fails, the basic-tagged memory still
+ * persists and indexes. OFF BY DEFAULT — ENGRAM_CAPTURE=1.
  */
 
 import path from "node:path";
-import { existsSync, mkdirSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { log } from "../logger.ts";
-import { reindexIncremental } from "./engram-bridge.ts";
+import { reindexIncremental, tagExchanges } from "./engram-bridge.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../..");
-const CONV_DIR = path.join(REPO_ROOT, "memory", "conversations");
-
-// Skip trivial one-liners ("ok", "lol", reactions) — they're noise, not memory.
+const CONV_ROOT = path.join(REPO_ROOT, "memory", "conversations");
 const MIN_CAPTURE_CHARS = 12;
 
 export function engramCaptureEnabled(): boolean {
   return process.env.ENGRAM_CAPTURE === "1";
 }
 
-let reindexTimer: ReturnType<typeof setTimeout> | null = null;
-
-/** Debounced incremental reindex so a burst of messages triggers one reindex. */
-function scheduleReindex(): void {
-  if (reindexTimer) clearTimeout(reindexTimer);
-  reindexTimer = setTimeout(() => {
-    reindexTimer = null;
-    reindexIncremental().then((ok) => {
-      if (ok) log.info("engram", "captured exchange(s) indexed (incremental)");
-    });
-  }, 15_000);
+interface Pending {
+  file: string;
+  body: string;
+  base: { date: string; author: string | null; channel: string; thread: string };
 }
+const pending: Pending[] = [];
+let enrichTimer: ReturnType<typeof setTimeout> | null = null;
 
-function todayFile(): string {
+function dayDir(): string {
   const d = new Date();
-  const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  return path.join(CONV_DIR, `${day}.md`);
+  return path.join(CONV_ROOT, `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
 }
 
 function clip(s: string, n: number): string {
-  const t = s.replace(/\r/g, "").trim();
+  const t = (s ?? "").replace(/\r/g, "").trim();
   return t.length <= n ? t : t.slice(0, n - 1) + "…";
 }
 
+function yamlStr(s: string): string {
+  return JSON.stringify(s ?? ""); // double-quoted, escapes — valid for the frontmatter parser
+}
+
+/** Build a memory file: frontmatter (tags) + the exchange body. */
+function renderFile(body: string, fm: {
+  date: string; tier: string; importance: number; emotion: string; emotionIntensity: number;
+  topic: string; people: string; author: string | null; channel: string; thread: string; enriched: boolean; summary?: string;
+}): string {
+  return [
+    "---",
+    `date: ${fm.date}`,
+    `tier: ${fm.tier}`,
+    `importance: ${fm.importance}`,
+    "metadata:",
+    `  type: ${fm.tier}`,
+    `  emotion: ${fm.emotion}`,
+    `  emotion_intensity: ${fm.emotionIntensity}`,
+    `  topic: ${yamlStr(fm.topic)}`,
+    `  people: ${yamlStr(fm.people)}`,
+    `  author: ${yamlStr(fm.author ?? "")}`,
+    `  channel: ${yamlStr(fm.channel)}`,
+    `  thread: ${yamlStr(fm.thread)}`,
+    `  enriched: ${fm.enriched}`,
+    ...(fm.summary ? [`  summary: ${yamlStr(fm.summary)}`] : []),
+    "---",
+    "",
+    body,
+    "",
+  ].join("\n");
+}
+
 /**
- * Persist one exchange to today's conversation log and schedule a reindex.
- * No-op when disabled or when the user message is too trivial to be worth
- * remembering. Fails soft — a capture failure must never affect the turn.
+ * Persist one exchange as a tagged memory file (basic tags now), and schedule a
+ * batched LLM enrichment + incremental reindex. No-op when disabled or trivial.
  */
 export function captureExchange(args: {
-  channel: string;
-  channelName?: string | null;
-  threadId: string;
-  user: string | null;
-  userText: string;
-  reply: string;
+  channel: string; channelName?: string | null; threadId: string;
+  user: string | null; userText: string; reply: string;
 }): void {
   if (!engramCaptureEnabled()) return;
   const userText = (args.userText ?? "").trim();
   if (userText.length < MIN_CAPTURE_CHARS) return;
 
   try {
-    if (!existsSync(CONV_DIR)) mkdirSync(CONV_DIR, { recursive: true });
-    const time = new Date().toTimeString().slice(0, 5);
-    const who = args.user ? `<@${args.user}>` : "user";
-    const where = args.channelName ? `#${args.channelName}` : args.channel;
-    const entry =
-      `\n### ${time} · ${who} in ${where} (thread ${args.threadId})\n` +
-      `**Them:** ${clip(userText, 1500)}\n\n` +
-      `**Friday:** ${clip(args.reply ?? "", 1500)}\n`;
-    appendFileSync(todayFile(), entry, "utf-8");
-    scheduleReindex();
+    const dir = dayDir();
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const now = new Date();
+    const stamp = now.toISOString().replace(/[:.]/g, "-");
+    const file = path.join(dir, `${stamp}-${args.threadId.replace(/\./g, "_")}.md`);
+    const body = `**Them:** ${clip(userText, 1500)}\n\n**Friday:** ${clip(args.reply ?? "", 1500)}`;
+
+    // Basic tags now — episodic, neutral, mid importance. Enrichment refines these.
+    writeFileSync(file, renderFile(body, {
+      date: now.toISOString(), tier: "episodic", importance: 0.5, emotion: "neutral",
+      emotionIntensity: 0, topic: "", people: args.user ?? "", author: args.user,
+      channel: args.channelName ? `#${args.channelName}` : args.channel, thread: args.threadId, enriched: false,
+    }), "utf-8");
+
+    pending.push({ file, body, base: { date: now.toISOString(), author: args.user, channel: args.channelName ? `#${args.channelName}` : args.channel, thread: args.threadId } });
+    scheduleEnrich();
   } catch (err) {
     log.warn("engram", `captureExchange failed: ${err}`);
   }
+}
+
+function scheduleEnrich(): void {
+  if (enrichTimer) clearTimeout(enrichTimer);
+  enrichTimer = setTimeout(() => { enrichTimer = null; void enrichAndReindex(); }, 5_000);
+}
+
+/** Tag the queued exchanges (LLM), rewrite their frontmatter, then reindex. */
+async function enrichAndReindex(): Promise<void> {
+  const batch = pending.splice(0, pending.length);
+  if (batch.length === 0) return;
+
+  try {
+    const tags = await tagExchanges(batch.map((b) => b.body));
+    if (tags) {
+      for (let i = 0; i < batch.length; i++) {
+        const b = batch[i]!, t = tags[i]!;
+        // Merge LLM-extracted people with the author handle.
+        const people = [...new Set([...(t.people ?? []), b.base.author].filter(Boolean) as string[])].join(", ");
+        try {
+          writeFileSync(b.file, renderFile(b.body, {
+            date: b.base.date, tier: t.tier || "episodic", importance: t.importance ?? 0.5,
+            emotion: t.emotion || "neutral", emotionIntensity: t.emotionIntensity ?? 0,
+            topic: t.topic || "", people, author: b.base.author,
+            channel: b.base.channel, thread: b.base.thread, enriched: true, summary: t.summary,
+          }), "utf-8");
+        } catch { /* keep basic file */ }
+      }
+      log.info("engram", `enriched ${batch.length} captured exchange(s)`);
+    }
+  } catch (err) {
+    log.warn("engram", `enrichment failed (keeping basic tags): ${err}`);
+  }
+
+  await reindexIncremental();
 }
