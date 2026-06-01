@@ -6,6 +6,8 @@
  *   bun run src/memory/cli.ts promote [--limit N] [--apply]
  *   bun run src/memory/cli.ts dream [--dry-run] [--light-only] [--narrative]
  *   bun run src/memory/cli.ts index           # rebuild corpus cache (no-op, cache is mtime-based)
+ *   bun run src/memory/cli.ts snapshot <url> [--note "..."] [--no-archive]
+ *   bun run src/memory/cli.ts snapshot --text "..." [--source <url>] [--title T]
  */
 
 import { loadRecallStore, loadPhaseSignalStore, markPromoted } from "./recall.ts";
@@ -13,6 +15,8 @@ import { searchMemory } from "./search.ts";
 import { rankPromotionCandidates, formatCandidates } from "./promote.ts";
 import { runDream } from "./dreaming.ts";
 import { loadCorpus, invalidateCache } from "./corpus.ts";
+import { captureSnapshot } from "./snapshot.ts";
+import { reindexIncremental } from "./engram-bridge.ts";
 
 function parseFlag(args: string[], flag: string, hasValue: boolean): string | boolean | undefined {
   const idx = args.indexOf(flag);
@@ -117,6 +121,40 @@ async function main() {
       break;
     }
 
+    case "snapshot": {
+      const note = parseFlag(args, "--note", true) as string | undefined;
+      const title = parseFlag(args, "--title", true) as string | undefined;
+      const source = parseFlag(args, "--source", true) as string | undefined;
+      const text = parseFlag(args, "--text", true) as string | undefined;
+      const noArchive = parseFlag(args, "--no-archive", false) === true;
+      const url = positional(args).trim() || undefined;
+
+      if (!url && !text) {
+        console.error("usage: memory snapshot <url> [--note T] [--no-archive]");
+        console.error("       memory snapshot --text \"...\" [--source <url>] [--title T]");
+        process.exit(2);
+      }
+
+      try {
+        const r = await captureSnapshot({
+          url, text, source, title, note,
+          archive: noArchive ? false : undefined,
+        });
+        console.log(`Snapshot saved: ${r.title}`);
+        if (r.source) console.log(`  source:   ${r.source}`);
+        console.log(`  archived: ${r.archivedUrl ?? "(none — local copy only)"}`);
+        console.log(`  card:     ${r.cardPath}`);
+        console.log(`  body:     ${r.bodyPath} (${r.bytes} chars, not embedded)`);
+        // Reindex so the tiny card is associatively recallable within seconds.
+        // The full body sits in a dotdir and is never embedded.
+        await reindexIncremental();
+      } catch (err) {
+        console.error(`snapshot failed: ${err instanceof Error ? err.message : err}`);
+        process.exit(1);
+      }
+      break;
+    }
+
     case "help":
     default:
       console.log([
@@ -128,6 +166,8 @@ async function main() {
         "  promote [--limit N] [--apply]  — rank candidates; --apply marks them promoted",
         "  dream [--dry-run] [--light-only] [--narrative] [--lookback D] [--deep-limit N]",
         "  index                          — force rebuild of the snippet cache",
+        "  snapshot <url> [--note T]      — archive a page (wayback + local), recallable card",
+        "  snapshot --text \"...\" [--source url] [--title T]",
       ].join("\n"));
       break;
   }

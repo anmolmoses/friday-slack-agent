@@ -30,3 +30,5 @@ learnings.md
 
 # engram dashboard derived cache
 .engram/
+
+.env*

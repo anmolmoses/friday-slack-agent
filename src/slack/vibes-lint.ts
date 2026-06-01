@@ -38,6 +38,25 @@ export interface VibesLintResult {
 }
 
 /**
+ * Structured data — fenced code blocks or markdown tables — is a work answer,
+ * not banter, so the line cap must NOT clip it: a sliced table or an unclosed
+ * code fence renders broken in Slack. Only the line cap is exempted; the
+ * multi-message-intent flattening still runs (spiraling is spiraling whatever
+ * the formatting). Scar: #fridaytest event-breakdown (2026-05-25) — a
+ * 302-attendee table and a code-fenced event list were both truncated to 3
+ * lines, leaving "Members: 185" and an unclosed ``` as the whole reply.
+ */
+function looksStructured(text: string): boolean {
+  // Fenced code block — a ``` fence on its own / at line start.
+  if (/^\s*```/m.test(text)) return true;
+  // Markdown table separator row: |---|---| or a bare --- column rule.
+  if (/^\s*\|?[ :|-]*-{2,}[ :|-]*\|?\s*$/m.test(text)) return true;
+  // Two or more pipe-delimited rows ("a | b" shaped) — a markdown table.
+  const pipeRows = text.split("\n").filter((l) => /\S\s*\|\s*\S/.test(l)).length;
+  return pipeRows >= 2;
+}
+
+/**
  * Lint and clamp a vibes-channel response. Pure function — no I/O. Returns
  * the (possibly truncated) text plus reasons describing what fired so the
  * caller can log it.
@@ -80,27 +99,30 @@ export function lintVibesResponse(input: string): VibesLintResult {
   }
 
   // 2. Line cap — count non-empty lines after collapsing leading/trailing
-  //    blanks. If >3, keep the first MAX_VIBES_LINES non-empty lines plus
-  //    any code fence they belong to (don't open without closing).
-  const rawLines = text.split("\n");
-  let nonEmptySeen = 0;
-  let firstEmptyTrimmed = -1;
-  for (let i = 0; i < rawLines.length; i++) {
-    const line = rawLines[i] ?? "";
-    if (line.trim() === "") {
-      if (nonEmptySeen === 0) {
-        firstEmptyTrimmed = i;
+  //    blanks. If >3, keep the first MAX_VIBES_LINES non-empty lines.
+  //    Exemption: structured data (tables, code blocks) is a work answer, not
+  //    banter — slicing it renders broken, so it skips the cap entirely.
+  if (!looksStructured(text)) {
+    const rawLines = text.split("\n");
+    let nonEmptySeen = 0;
+    let firstEmptyTrimmed = -1;
+    for (let i = 0; i < rawLines.length; i++) {
+      const line = rawLines[i] ?? "";
+      if (line.trim() === "") {
+        if (nonEmptySeen === 0) {
+          firstEmptyTrimmed = i;
+          continue;
+        }
         continue;
       }
-      continue;
-    }
-    nonEmptySeen++;
-    if (nonEmptySeen > MAX_VIBES_LINES) {
-      const stop = i;
-      text = rawLines.slice(firstEmptyTrimmed + 1, stop).join("\n").replace(/\s+$/g, "");
-      truncated = true;
-      reasons.push(`line-cap(${nonEmptySeen}>${MAX_VIBES_LINES})`);
-      break;
+      nonEmptySeen++;
+      if (nonEmptySeen > MAX_VIBES_LINES) {
+        const stop = i;
+        text = rawLines.slice(firstEmptyTrimmed + 1, stop).join("\n").replace(/\s+$/g, "");
+        truncated = true;
+        reasons.push(`line-cap(${nonEmptySeen}>${MAX_VIBES_LINES})`);
+        break;
+      }
     }
   }
 

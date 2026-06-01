@@ -17,6 +17,8 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 | Question | Read this |
 |---|---|
 | What skills/agents/commands does each target repo have? | [docs/repo-capabilities.md](docs/repo-capabilities.md) |
+| How does Friday work a specific repo (build/bug/PR/release)? | `docs/workflows/<repo>/` — e.g. [gx-client-expo](docs/workflows/gx-client-expo/README.md) |
+| Where do Friday's repo clones live (her workspace)? | [docs/features/friday-workspace.md](docs/features/friday-workspace.md) |
 | System architecture, data flow, module dependencies? | [docs/architecture.md](docs/architecture.md) |
 | How does Slack event handling work? | [docs/features/slack-event-handler.md](docs/features/slack-event-handler.md) |
 | Thread context, persona, images, file upload, browser? | [docs/features/thread-context.md](docs/features/thread-context.md) |
@@ -62,7 +64,7 @@ Slack Bot Server (Node.js / Bun)
 2. **One process per message turn.** Each Slack message spawns a short-lived `claude -p` process. The process exits after responding. No long-lived processes between messages.
 3. **`--resume` for continuity.** Use `--resume <sessionId>` to pick up conversation context. Session IDs are extracted from the first `stream-json` event on stdout.
 4. **Buffer, don't interrupt.** If Claude is mid-execution and new messages arrive, buffer them. Never kill a running process — it risks corrupted session state. Drain the buffer as a combined prompt after the current turn exits.
-5. **Worktrees for target repos only.** Friday's workspace is shared across all threads (learnings accumulate). Worktrees are created in TARGET repos (example-backend, example-frontend) when threads need code isolation. Threads that only read or discuss don't need worktrees.
+5. **Worktrees for target repos only.** Friday's own workspace is shared across all threads (learnings accumulate). Worktrees are created in TARGET repos when threads need code isolation. Those target repos are Friday's *own clones* under `/Users/anmol/Documents/GitHub/friday-workspace/` — never Anmol's personal checkouts (see [docs/features/friday-workspace.md](docs/features/friday-workspace.md)). Threads that only read or discuss don't need worktrees.
 6. **Stream events for status.** Parse `--output-format stream-json` events (tool_use, text, result) and post incremental Slack updates. The final `result` event is the response to post.
 7. **Session state is authoritative.** The session map (thread_id -> session) is the single source of truth for whether a thread is idle/busy, what its session ID is, and what messages are pending.
 8. **Cleanup stale threads.** Worktrees and sessions for inactive threads (24h default) must be cleaned up. Check for uncommitted changes before force-removing a worktree.
@@ -73,7 +75,7 @@ Slack Bot Server (Node.js / Bun)
 13. **Design for swappability.** When adding infrastructure that could have multiple implementations (persistence, message queue, notification), use a provider/factory pattern. Each provider gets its own file, a factory selects the right one.
 14. **Pure functions over framework ceremony.** If a library's core value is bypassed, replace it with the simplest implementation. A 20-line function beats a dependency you're working around.
 15. **Test against real infrastructure, mock at boundaries.** Mock Slack API and Claude CLI at system boundaries. Don't mock internal session management or message routing.
-16. **Vibes channels enforce one message per turn, ≤3 lines.** In `isVibesChannel(channel)` channels (#cafeteria, #fridaytest), the post path lints Friday's reply: anything past 3 non-empty lines or that contains multi-message intent (triple-newlines, fake `[6:45 PM]` timestamps, `(continued)` markers) is truncated. The Prickle thread (2026-04-01, ~20 self-deprecating posts chasing Pranav's bait) is the canonical scar. Spiral detector (`src/session/spiral.ts`) and ragebait protocol layer on top — see `docs/features/thread-context.md`. Work channels (PR review, bug triage, builds) are NOT subject to this lint.
+16. **Vibes channels enforce one message per turn, ≤3 lines.** In `isVibesChannel(channel)` channels (#cafeteria, #fridaytest), the post path lints Friday's reply: anything past 3 non-empty lines or that contains multi-message intent (triple-newlines, fake `[6:45 PM]` timestamps, `(continued)` markers) is truncated. **Exception: structured replies (fenced code blocks or markdown tables) skip the line cap** — they're work answers, not banter, and slicing them renders broken (the multi-message-intent flattening still applies). The Prickle thread (2026-04-01, ~20 self-deprecating posts chasing Pranav's bait) is the canonical spiral scar; the #fridaytest event-breakdown (2026-05-25, a 302-attendee table clipped to "Members: 185") is the structured-data scar that motivated the exemption. Spiral detector (`src/session/spiral.ts`) and ragebait protocol layer on top — see `docs/features/thread-context.md`. Work channels (PR review, bug triage, builds) are NOT subject to this lint.
 
 ## Project Structure
 
@@ -168,6 +170,14 @@ bun run typecheck               # Type checking without emit
 
 # Slack bot management
 bun run cleanup                 # Clean stale worktrees and sessions
+
+# Memory — Wayback-style snapshot of an external source (provenance for things that drift)
+bun run src/memory/cli.ts snapshot <url> [--note "why"]      # fetch + archive.org Save Page Now + store
+bun run src/memory/cli.ts snapshot --text "..." --source <url> --title T   # snapshot literal text (e.g. a Slack msg)
+#   Use when you reference an external artifact whose source may change or vanish — a policy/docs page,
+#   a PR description, a message that could be edited/deleted. It records a verifiable archive.org URL +
+#   a local copy. Do NOT snapshot code (git already is its wayback machine). Stores a tiny recallable
+#   "card" under memory/snapshots/; the full text sits in memory/.snapshots/ (a dotdir, never embedded).
 
 # Upload files/screenshots to the current Slack thread
 bin/slack-upload.sh <file-path> [comment]  # Uses SLACK_BOT_TOKEN, SLACK_CHANNEL, SLACK_THREAD_TS env vars (auto-set)

@@ -34,6 +34,8 @@ Path: `/Users/anmol/Documents/GitHub/gx-client-expo`
 | `token-auditor` | Scan for hardcoded colors, arbitrary pixel values, design token violations. |
 | `ui-reviewer` | Design system audit of changed files. |
 
+**Workflows:** [docs/workflows/gx-client-expo/](workflows/gx-client-expo/README.md) — build / bug / PR / OTA playbooks for this repo.
+
 ### Friday's dispatch hint
 For any expo work, instruct the dispatched process to:
 1. Run the `platform-check` skill before writing code if it's a feature/bug touching platform-sensitive APIs.

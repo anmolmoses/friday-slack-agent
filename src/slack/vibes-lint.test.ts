@@ -72,4 +72,50 @@ describe("lintVibesResponse", () => {
   it("returns input verbatim when empty", () => {
     expect(lintVibesResponse("")).toEqual({ text: "", truncated: false, reasons: [] });
   });
+
+  it("does not cap a fenced code block (the #fridaytest event-breakdown scar)", () => {
+    const input = [
+      "Event-wise breakdown — offline events, May 2026:",
+      "```",
+      "Event            Mem  Non  Total",
+      "Founders Dinner   42   18    60",
+      "Demo Night        31   27    58",
+      "Workshop          19   12    31",
+      "```",
+    ].join("\n");
+    const r = lintVibesResponse(input);
+    expect(r.truncated).toBe(false);
+    expect(r.text).toBe(input);
+    expect(r.text).toContain("Workshop");
+  });
+
+  it("does not cap a pipe-delimited markdown table", () => {
+    const input = [
+      "Breakdown:",
+      "| Event | Mem | Non |",
+      "| --- | --- | --- |",
+      "| Dinner | 42 | 18 |",
+      "| Demo | 31 | 27 |",
+    ].join("\n");
+    const r = lintVibesResponse(input);
+    expect(r.truncated).toBe(false);
+    expect(r.text).toBe(input);
+  });
+
+  it("still flattens multi-message intent even when content is structured", () => {
+    const input = [
+      "here's the data",
+      "```",
+      "a 1",
+      "```",
+      "",
+      "[6:45 PM]",
+      "and one more thought",
+    ].join("\n");
+    const r = lintVibesResponse(input);
+    expect(r.truncated).toBe(true);
+    expect(r.reasons).toContain("fake-timestamp");
+    expect(r.text).not.toContain("6:45");
+    expect(r.text).not.toContain("one more thought");
+  });
 });
