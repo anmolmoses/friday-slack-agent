@@ -83,6 +83,10 @@ export interface ThreadState {
   pendingCount: number;
   muted: boolean;
   sessionId?: string | null;
+  // Worktree isolation for this thread (from the session). diskBytes/dirty are
+  // merged in by the client from the system-level worktree summary.
+  worktreePath?: string | null;
+  worktreeProvisioned?: boolean;
   // Live spawn info
   currentTool?: { name: string; description: string; startedAt: number };
   lastAssistantText?: string;
@@ -113,6 +117,24 @@ export interface ThreadState {
   slackPosts: SlackPostInfo[];
 }
 
+/** One live `slack-*` worktree, as surfaced to the dashboard. */
+export interface WorktreeSummaryItem {
+  repoName: string;
+  threadId: string;
+  branch: string | null;
+  dirty: boolean;
+  diskBytes: number;
+  lastActivity: number;
+}
+
+/** System-wide worktree disk picture, refreshed on the reaper cadence. */
+export interface WorktreeSummary {
+  list: WorktreeSummaryItem[];
+  totalBytes: number;
+  capBytes: number;
+  updatedAt: number;
+}
+
 export interface SystemState {
   bootTime: number;
   socketLastActivityAt: number;
@@ -120,6 +142,7 @@ export interface SystemState {
   schedulers: Record<string, { name: string; lastHeartbeat: number; nextFireMs?: number; channel?: string }>;
   recentEvents: DashboardEvent[];   // cross-thread feed
   recentWarns: { ts: number; tag: string; text: string }[];
+  worktrees?: WorktreeSummary;      // disk-pressure picture (reaper cadence)
 }
 
 // ─── Store ───────────────────────────────────────────────────────────────────
@@ -144,6 +167,13 @@ const subscribers = new Set<Subscriber>();
 function broadcast(event: DashboardEvent) {
   for (const sub of subscribers) {
     try { sub(event); } catch { /* drop */ }
+  }
+}
+
+/** Push a fresh full snapshot to all subscribers without a feed event. */
+function broadcastSnapshot() {
+  for (const sub of subscribers) {
+    try { sub({ kind: "snapshot" }); } catch { /* drop */ }
   }
 }
 
@@ -197,7 +227,7 @@ export function ensureThread(threadId: string, channel: string, channelName?: st
 
 export function setThreadMeta(
   threadId: string,
-  meta: Partial<Pick<ThreadState, "status" | "agentType" | "pid" | "pendingCount" | "muted" | "sessionId" | "channelName">>,
+  meta: Partial<Pick<ThreadState, "status" | "agentType" | "pid" | "pendingCount" | "muted" | "sessionId" | "channelName" | "worktreePath" | "worktreeProvisioned">>,
 ): void {
   const t = threads.get(threadId);
   if (!t) return;
@@ -445,6 +475,17 @@ export function recordSchedulerTick(name: string, channel: string, nextFireMs?: 
 export function recordSocketActivity(state?: string): void {
   system.socketLastActivityAt = Date.now();
   if (state) system.socketState = state;
+}
+
+/**
+ * Refresh the system-wide worktree disk picture (called on the reaper cadence
+ * + boot). Pushes a snapshot so idle dashboards update even with no thread
+ * activity. diskBytes/dirty here are the source of truth the client merges
+ * into per-thread cards by threadId.
+ */
+export function recordWorktrees(summary: WorktreeSummary): void {
+  system.worktrees = summary;
+  broadcastSnapshot();
 }
 
 // ─── Snapshot + subscribe ───────────────────────────────────────────────────

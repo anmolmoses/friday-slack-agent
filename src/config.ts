@@ -2,6 +2,13 @@ export interface RepoConfig {
   name: string;
   path: string;
   defaultBase: string;
+  /**
+   * Provisioning script relative to the repo root, run for "full" worktrees
+   * (build/frontend) to copy env files, migrate MCPs, and install deps. When
+   * omitted, WorktreeManager auto-detects `scripts/setup-worktree.sh`. If no
+   * script is found, full worktrees fall back to a light (raw-git) checkout.
+   */
+  setupScript?: string;
 }
 
 export interface Config {
@@ -22,6 +29,14 @@ export interface Config {
   session: {
     staleTimeoutMs: number;
     cleanupIntervalMs: number;
+  };
+  worktree: {
+    /**
+     * Hard cap on total disk used by all `slack-*` worktrees across every repo.
+     * The reaper evicts least-recently-used CLEAN worktrees until the total is
+     * back under this cap. Dirty (uncommitted) worktrees are never evicted.
+     */
+    diskCapBytes: number;
   };
   http: {
     port: number;
@@ -66,6 +81,10 @@ export function loadConfig(): Config {
       cleanupIntervalMs: Number(
         optional("SESSION_CLEANUP_INTERVAL_MS", "900000")
       ),
+    },
+    worktree: {
+      diskCapBytes:
+        Number(optional("WORKTREE_DISK_CAP_GB", "20")) * 1024 * 1024 * 1024,
     },
     http: {
       port: Number(optional("HTTP_PORT", "3000")),

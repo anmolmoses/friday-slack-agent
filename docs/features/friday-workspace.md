@@ -31,6 +31,7 @@ Each entry under `friday-workspace/` is a full, independent `git clone` of the s
 ## Operational notes
 
 - **Changing `REPOS` requires a bot restart** to take effect (config is read at startup).
-- **Building/running an app** (not just reading/editing code) needs per-repo setup in the clone that a bare `git clone` doesn't bring: `pnpm install`, `.env`/secrets, and for mobile EAS login. Code review and most edits work without it; `ota`/builds do not until the clone is provisioned.
+- **Building/running an app** needs per-repo setup a bare `git clone` doesn't bring (`.env`/secrets, deps, MCPs, mobile EAS login). This is now automated for build/frontend threads: the worktree manager runs the repo's `scripts/setup-worktree.sh` ("full" provisioning) which copies env files, migrates MCPs, and runs `npm install` into the worktree. Light worktrees (review/read threads) skip this — fast, but not runnable until upgraded by a `!build`. A repo without a setup script falls back to light only.
+- **Worktree disk** is bounded by a disk-pressure reaper (default cap `WORKTREE_DISK_CAP_GB=20`) that evicts least-recently-used clean worktrees; see [worktree-manager.md](worktree-manager.md).
 - **Adding a repo later:** `git clone <origin> /Users/anmol/Documents/GitHub/friday-workspace/<name>`, then add an entry to `REPOS` and restart.
 - **`.env` backups** from repointing are saved as `.env.bak.<timestamp>` in the project root.

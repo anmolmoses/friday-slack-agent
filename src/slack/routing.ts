@@ -68,6 +68,29 @@ const BUG_REPORT_BOT_USER = "U0ANDM5M62Z";
 
 const GITHUB_PR_RE = /https?:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/;
 
+// Any github.com/<owner>/<repo> reference — used to infer which configured
+// repo a thread is about (so natural-language "review <PR-url>" gets the same
+// worktree isolation as an explicit !repo).
+const GITHUB_REPO_RE = /github\.com\/[^/\s]+\/([^/\s#?)\]]+)/gi;
+
+/**
+ * Find the first GitHub repo named in `text` that matches one of `knownRepos`
+ * (case-insensitive, `.git` stripped). Returns the canonical configured name,
+ * or null when nothing matches.
+ */
+export function inferRepoFromText(
+  text: string,
+  knownRepos: string[],
+): string | null {
+  if (!text) return null;
+  const byLower = new Map(knownRepos.map((r) => [r.toLowerCase(), r]));
+  for (const m of text.matchAll(GITHUB_REPO_RE)) {
+    const repo = m[1]?.replace(/\.git$/, "").toLowerCase();
+    if (repo && byLower.has(repo)) return byLower.get(repo)!;
+  }
+  return null;
+}
+
 const CATCHUP_PATTERNS: RegExp[] = [
   /\bcatch\s*me\s*up\b/i,
   /\bcatch\s*up\b/i,

@@ -19,6 +19,13 @@ export interface ThreadSession {
   channel: string;
   sessionId: string | null;
   worktreePath: string | null;
+  /**
+   * Whether this thread's worktree has been fully provisioned (env files, MCPs,
+   * `npm install` via setup-worktree.sh). Light worktrees start `false`; a
+   * `!build`/`!frontend` turn upgrades and flips this so we don't re-install
+   * on every subsequent turn. Reset to `false` when the worktree is reaped.
+   */
+  worktreeProvisioned: boolean;
   targetRepo: string | null;
   baseRef: string | null;
   agentType: string | null;
@@ -59,6 +66,7 @@ export function createSession(
     channel,
     sessionId: null,
     worktreePath: null,
+    worktreeProvisioned: false,
     targetRepo: null,
     baseRef: null,
     agentType: null,

@@ -180,6 +180,39 @@
     padding: 4px 0;
   }
   .metrics span b { color: var(--fg); }
+  .metrics .wt-chip { color: var(--green); }
+  .metrics .wt-chip .wt-flag { color: var(--red); font-weight: 700; }
+
+  /* Worktree panel (live tab) */
+  #worktreePanel .empty { color: var(--fg-5); font-size: 12px; padding: 4px 0; }
+  .wt-summary { margin-bottom: 10px; }
+  .wt-bar {
+    height: 6px; border-radius: 3px; background: var(--bg-2);
+    overflow: hidden; margin-bottom: 6px;
+  }
+  .wt-bar-fill { height: 100%; transition: width .3s; }
+  .wt-bar-fill.green { background: var(--green); }
+  .wt-bar-fill.yellow { background: var(--yellow); }
+  .wt-bar-fill.red { background: var(--red); }
+  .wt-summary-text { font-family: var(--mono); font-size: 12px; color: var(--fg-3); }
+  .wt-summary-text b { color: var(--fg); }
+  .wt-dirty-count { color: var(--red); }
+  .wt-list { display: flex; flex-direction: column; gap: 2px; }
+  .wt-row {
+    display: grid;
+    grid-template-columns: 16px minmax(70px,1fr) minmax(120px,2fr) minmax(80px,1fr) 64px;
+    gap: 10px; align-items: center;
+    font-family: var(--mono); font-size: 11.5px; color: var(--fg-3);
+    padding: 3px 6px; border-radius: 4px;
+  }
+  .wt-row:hover { background: var(--bg-1); }
+  .wt-row.dirty { background: var(--red-soft); }
+  .wt-row .wt-state { color: var(--green); text-align: center; }
+  .wt-row.dirty .wt-state { color: var(--red); }
+  .wt-row .wt-repo { color: var(--accent); }
+  .wt-row .wt-branch { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wt-row .wt-chan { color: var(--fg-5); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wt-row .wt-disk { text-align: right; color: var(--fg-2); }
 
   .sub-section {
     border-top: 1px dashed var(--line); padding-top: 8px;
@@ -567,6 +600,10 @@
         <div class="threads-grid" id="liveThreads"></div>
       </div>
       <div class="section">
+        <h2>worktrees<span class="rule"></span></h2>
+        <div id="worktreePanel"></div>
+      </div>
+      <div class="section">
         <h2>system feed<span class="rule"></span></h2>
         <div class="system-feed" id="systemFeed"></div>
       </div>
@@ -700,7 +737,8 @@ function fmtCost(usd) {
 function fmtBytes(b) {
   if (b < 1024) return b + "B";
   if (b < 1024*1024) return (b/1024).toFixed(1) + "K";
-  return (b/1024/1024).toFixed(1) + "M";
+  if (b < 1024*1024*1024) return (b/1024/1024).toFixed(1) + "M";
+  return (b/1024/1024/1024).toFixed(2) + "G";
 }
 function escapeHtml(s) {
   if (s == null) return "";
@@ -734,6 +772,9 @@ $('modalBg').onclick = (e) => { if (e.target.id === 'modalBg') { $('modalBg').cl
 
 // ─── State ─────────────────────────────────────────────────────────────────
 let lastState = null;
+// threadId -> live worktree info (dirty + disk), from the system summary.
+// Rebuilt each render so per-thread cards can show their worktree's disk/dirty.
+let wtByTid = new Map();
 
 function renderTopbar(state) {
   const sys = state.system;
@@ -790,6 +831,14 @@ function renderThreadCard(t) {
   if (t.cacheReadTokens) metricsParts.push(`<span>cache-read <b>${fmtNum(t.cacheReadTokens)}</b></span>`);
   metricsParts.push(`<span>pending <b>${t.pendingCount || 0}</b></span>`);
   if (t.sessionId) metricsParts.push(`<span title="claude session id">sid <b>${t.sessionId.slice(0,8)}</b></span>`);
+  // Worktree chip: light/full badge + (when known) disk + dirty flag.
+  if (t.worktreePath) {
+    const wt = wtByTid.get(t.threadId);
+    const level = t.worktreeProvisioned ? 'full' : 'light';
+    const disk = wt ? ` ${fmtBytes(wt.diskBytes)}` : '';
+    const dirty = wt && wt.dirty ? ' <b class="wt-flag" title="uncommitted changes — held from eviction">dirty</b>' : '';
+    metricsParts.push(`<span class="wt-chip" title="${escapeHtml(t.worktreePath)}">🌳 ${level}${disk}${dirty}</span>`);
+  }
   const metrics = `<div class="metrics">${metricsParts.join('')}</div>`;
 
   let memHtml = '';
@@ -1049,9 +1098,48 @@ refreshPersonaState();
 setInterval(refreshPersonaState, 10_000);
 
 function render(state) {
+  // Rebuild the worktree lookup before rendering any thread cards.
+  wtByTid = new Map(((state.system.worktrees && state.system.worktrees.list) || []).map(w => [w.threadId, w]));
   renderTopbar(state);
+  renderWorktreePanel(state);
   renderLiveTab(state);
   renderThreadsTab(state);
+}
+
+function renderWorktreePanel(state) {
+  const wt = state.system.worktrees;
+  const el = $('worktreePanel');
+  if (!el) return;
+  if (!wt || !wt.list.length) {
+    el.innerHTML = '<div class="empty">no active worktrees</div>';
+    return;
+  }
+  const pct = wt.capBytes ? Math.min(100, Math.round((wt.totalBytes / wt.capBytes) * 100)) : 0;
+  const barCls = pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'green';
+  const dirtyCount = wt.list.filter(w => w.dirty).length;
+  const rows = [...wt.list]
+    .sort((a, b) => b.diskBytes - a.diskBytes)
+    .map(w => {
+      const t = (state.threads || []).find(x => x.threadId === w.threadId);
+      const repoChan = t && t.channelName ? '#' + t.channelName : w.repoName;
+      return `<div class="wt-row${w.dirty ? ' dirty' : ''}">
+        <span class="wt-state" title="${w.dirty ? 'uncommitted changes — never auto-evicted' : 'clean — evictable under disk pressure'}">${w.dirty ? '●' : '○'}</span>
+        <span class="wt-repo">${escapeHtml(w.repoName)}</span>
+        <span class="wt-branch" title="${escapeHtml(w.branch || '')}">${escapeHtml(w.branch || '—')}</span>
+        <span class="wt-chan">${escapeHtml(repoChan)}</span>
+        <span class="wt-disk">${fmtBytes(w.diskBytes)}</span>
+      </div>`;
+    }).join('');
+  el.innerHTML = `
+    <div class="wt-summary">
+      <div class="wt-bar"><div class="wt-bar-fill ${barCls}" style="width:${pct}%"></div></div>
+      <div class="wt-summary-text">
+        <b>${wt.list.length}</b> worktree${wt.list.length === 1 ? '' : 's'} ·
+        <b>${fmtBytes(wt.totalBytes)}</b> / ${fmtBytes(wt.capBytes)} cap (${pct}%)
+        ${dirtyCount ? ` · <span class="wt-dirty-count">${dirtyCount} dirty</span>` : ''}
+      </div>
+    </div>
+    <div class="wt-list">${rows}</div>`;
 }
 
 // ─── Files tab ─────────────────────────────────────────────────────────────

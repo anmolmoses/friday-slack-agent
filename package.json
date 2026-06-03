@@ -6,7 +6,9 @@
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "worktrees": "bun run src/worktree/cli.ts list",
+    "cleanup": "bun run src/worktree/cli.ts reap"
   },
   "dependencies": {
     "@playwright/mcp": "^0.0.70",

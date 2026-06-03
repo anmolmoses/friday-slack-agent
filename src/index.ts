@@ -14,6 +14,7 @@ import { checkOrphanedSessions } from "./lifecycle/health.ts";
 import { cleanupStaleSessions } from "./lifecycle/cleanup.ts";
 import { AgentRouter } from "./agents/router.ts";
 import { WorktreeManager } from "./worktree/manager.ts";
+import { reapWorktrees } from "./worktree/reaper.ts";
 import { monitorSocketHealth } from "./slack/socket-health.ts";
 import { startNightlyDream } from "./memory/scheduler.ts";
 import { startDumpDigest } from "./dumps/scheduler.ts";
@@ -28,9 +29,10 @@ import {
   recordIncomingMessage as dashRecordIncomingMessage,
   recordRouting as dashRecordRouting,
   recordSpawn as dashRecordSpawn,
+  recordWorktrees as dashRecordWorktrees,
 } from "./http/dashboard-state.ts";
 import { log } from "./logger.ts";
-import { reindexIncremental, engramRecallEnabled } from "./memory/engram-bridge.ts";
+import { reindexIncremental, startMemoryWatch, engramRecallEnabled } from "./memory/engram-bridge.ts";
 import { engramCaptureEnabled } from "./memory/auto-capture.ts";
 
 const config = loadConfig();
@@ -93,6 +95,7 @@ sessionManager.onResponse = (session, response) => {
   setThreadMeta(session.threadId, {
     status: session.status, agentType: session.agentType, pid: session.pid,
     pendingCount: session.pendingMessages.length, muted: session.muted, sessionId: session.sessionId,
+    worktreePath: session.worktreePath, worktreeProvisioned: session.worktreeProvisioned,
   });
 };
 
@@ -105,6 +108,7 @@ sessionManager.onEvent = (session, event) => {
   setThreadMeta(session.threadId, {
     status: session.status, agentType: session.agentType, pid: session.pid,
     pendingCount: session.pendingMessages.length, muted: session.muted, sessionId: session.sessionId,
+    worktreePath: session.worktreePath, worktreeProvisioned: session.worktreeProvisioned,
   });
   dashRecordStreamEvent(session.threadId, event);
 
@@ -170,6 +174,9 @@ setupGracefulShutdown(sessionManager, store);
 if (engramRecallEnabled() || engramCaptureEnabled()) {
   reindexIncremental().then((ok) => log.info("engram", `boot reindex ${ok ? "ok" : "skipped"}`));
   setInterval(() => { reindexIncremental(); }, 6 * 60 * 60 * 1000);
+  // Reindex promptly after any hand-written memory (agent or human), so curated
+  // memories don't sit unrecallable until the next tick. Coalesced + fails soft.
+  startMemoryWatch();
 }
 
 // Periodic health checks
@@ -187,7 +194,55 @@ setInterval(() => {
       log.info("cleanup", `Removed ${cleaned.length} stale sessions: ${cleaned.join(", ")}`);
     }
   });
+
+  // Disk-pressure worktree reaper: evict LRU clean worktrees once total disk
+  // crosses the cap. Dirty ones are held and warned. Runs on the same cadence.
+  reapWorktrees(worktreeManager, store, {
+    diskCapBytes: config.worktree.diskCapBytes,
+  })
+    .then((r) => {
+      if (r.evicted.length > 0) {
+        log.info(
+          "reaper",
+          `Evicted ${r.evicted.length} worktree(s): ${r.evicted.map((w) => w.threadId).join(", ")}`,
+        );
+      }
+    })
+    .catch((err) => log.warn("reaper", `Worktree reap failed: ${err.message}`))
+    // Refresh the dashboard's worktree picture after reaping (post-eviction).
+    .finally(() => refreshWorktreeSummary());
 }, config.session.cleanupIntervalMs);
+
+/**
+ * Push the current worktree disk picture (per-worktree dirty + disk, total vs
+ * cap) to the live dashboard. Runs on boot and after each reap. Fails soft —
+ * the dashboard just keeps the last picture if git/du hiccups.
+ */
+async function refreshWorktreeSummary(): Promise<void> {
+  try {
+    const sessions = await store.getAll();
+    const activity = new Map<string, number>();
+    for (const [tid, s] of sessions) activity.set(tid, s.lastActivity);
+    const list = await worktreeManager.listAllWorktrees(activity);
+    dashRecordWorktrees({
+      list: list.map((w) => ({
+        repoName: w.repoName,
+        threadId: w.threadId,
+        branch: w.branch,
+        dirty: w.dirty,
+        diskBytes: w.diskBytes,
+        lastActivity: w.lastActivity,
+      })),
+      totalBytes: list.reduce((sum, w) => sum + w.diskBytes, 0),
+      capBytes: config.worktree.diskCapBytes,
+      updatedAt: Date.now(),
+    });
+  } catch (err) {
+    log.warn("worktree", `dashboard summary refresh failed: ${(err as Error).message}`);
+  }
+}
+// Seed the picture shortly after boot (don't block startup on git/du).
+setTimeout(() => refreshWorktreeSummary(), 5_000).unref();
 
 // Hard boot watchdog. Bolt's Socket Mode handshake can hang indefinitely
 // when Slack's websocket is flaking — and the gentler Promise.race timeout

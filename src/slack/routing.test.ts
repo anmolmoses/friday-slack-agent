@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { evaluateRouting, matchesCatchup, hintPromptFragment } from "./routing.ts";
+import { evaluateRouting, matchesCatchup, hintPromptFragment, inferRepoFromText } from "./routing.ts";
 
 describe("evaluateRouting", () => {
   const PR_REVIEW_CHANNEL = "C0AKQ2BFN9F";
@@ -151,5 +151,37 @@ describe("hintPromptFragment", () => {
   });
   it("returns null for no hint", () => {
     expect(hintPromptFragment(null, "hi")).toBe(null);
+  });
+});
+
+describe("inferRepoFromText", () => {
+  const REPOS = ["gx-backend", "gx-client-next", "gx-admin-client"];
+
+  it("infers the repo from a GitHub PR URL", () => {
+    expect(
+      inferRepoFromText("review https://github.com/GrowthX-Club/gx-client-next/pull/5141", REPOS),
+    ).toBe("gx-client-next");
+  });
+  it("infers from a plain repo URL (no /pull)", () => {
+    expect(
+      inferRepoFromText("see github.com/GrowthX-Club/gx-backend for context", REPOS),
+    ).toBe("gx-backend");
+  });
+  it("strips a trailing .git and matches case-insensitively", () => {
+    expect(
+      inferRepoFromText("clone https://github.com/GrowthX-Club/GX-Backend.git", REPOS),
+    ).toBe("gx-backend");
+  });
+  it("returns null when the repo isn't configured", () => {
+    expect(
+      inferRepoFromText("https://github.com/GrowthX-Club/some-other-repo/pull/1", REPOS),
+    ).toBeNull();
+  });
+  it("returns null when there's no GitHub URL", () => {
+    expect(inferRepoFromText("review again please", REPOS)).toBeNull();
+  });
+  it("matches the first known repo when several URLs appear", () => {
+    const text = "compare github.com/x/unknown-repo and github.com/x/gx-admin-client/pull/9";
+    expect(inferRepoFromText(text, REPOS)).toBe("gx-admin-client");
   });
 });

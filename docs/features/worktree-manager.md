@@ -1,6 +1,50 @@
 # Worktree Manager
 
-## Problem
+## Current model (2026-06): worktree-per-thread + disk-pressure reaper
+
+Every repo-bound thread gets its own worktree, so concurrent threads — multiple
+PR reviews, builds across different projects — never collide on git state. Two
+levels:
+
+- **Light** (default, instant): a raw `git worktree add` checkout on a
+  `slack/<threadId>` branch. Enough for reads, edits, and PR-branch checkouts.
+- **Full** (build/frontend threads): runs the repo's `scripts/setup-worktree.sh`
+  (env files + MCP migration + `npm install`) so the app is runnable. Done once
+  per thread, remembered via `session.worktreeProvisioned`; a `!build` on an
+  existing light worktree upgrades it in place (the script is idempotent).
+
+`WorktreeManager.createWorktree(repo, threadId, baseRef, level)` picks the path;
+`manager.ts` calls it for any thread with a `targetRepo` set. If a repo has no
+setup script, full falls back to light (and logs a warning) rather than failing.
+
+**Purge — disk-pressure LRU (`src/worktree/reaper.ts`).** Worktrees accumulate
+disk (`node_modules` etc.). The reaper runs on the session cleanup interval:
+`git worktree prune` clears crash-orphaned refs, then if total `slack-*` disk
+across all repos exceeds `WORKTREE_DISK_CAP_GB` (default 20), it evicts the
+least-recently-used **clean** worktrees until back under cap. Dirty
+(uncommitted) worktrees are **never** auto-evicted — they're surfaced as
+`keptDirty` and warned. Evicting a still-live session just clears its
+`worktreePath` so the next message rebuilds on demand. It reads `git worktree
+list` ground truth, so it reclaims orphans whose session was already evicted.
+
+**Safety.** All operations are confined to `<repo>/.claude/worktrees/slack-*`
+inside friday's own clones (`friday-workspace/`); `assertInsideWorktreeDir`
+refuses any path outside that, so Anmol's checkouts and clone roots are never
+touched.
+
+**Inspect / reclaim manually:** `bun run worktrees` (list + disk) ·
+`bun run cleanup` (reap) · `bun run src/worktree/cli.ts reap --force` (reclaim
+all clean) · `!worktrees` in any thread.
+
+**Live dashboard (`/live`).** The Live tab has a **worktrees** panel: a
+disk-usage bar (total vs `WORKTREE_DISK_CAP_GB`), per-worktree repo/branch/disk
+rows, and dirty flags. Each thread card also carries a `🌳 light|full <disk>`
+chip (red `dirty` when uncommitted). The picture is refreshed on boot and after
+every reap via `recordWorktrees()` in `dashboard-state.ts` (fed by
+`refreshWorktreeSummary()` in `index.ts`); the summary pushes a fresh SSE
+snapshot so idle dashboards update without thread activity.
+
+## Problem (original design)
 
 When a Slack thread needs to edit code in a target repo (example-backend, example-frontend), it needs its own git worktree so concurrent threads don't collide on file state. The worktree manager creates, tracks, and cleans up worktrees in target repos — not in friday's own workspace.
 

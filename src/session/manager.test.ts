@@ -112,6 +112,7 @@ const testConfig: Config = {
     { name: "frontend", path: "/tmp/frontend", defaultBase: "main" },
   ],
   session: { staleTimeoutMs: 86400000, cleanupIntervalMs: 900000 },
+  worktree: { diskCapBytes: 20 * 1024 * 1024 * 1024 },
 };
 
 let tsCounter = 0;

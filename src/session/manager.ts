@@ -17,7 +17,7 @@ import { buildPromptPreamble, invalidateThreadCache } from "../slack/thread-cont
 import { downloadSlackFiles } from "../slack/files.ts";
 import { generateMcpConfig } from "../claude/mcp-config.ts";
 import { buildStandupPreamble } from "../standup/handler.ts";
-import { isVibesChannel } from "../slack/routing.ts";
+import { isVibesChannel, inferRepoFromText } from "../slack/routing.ts";
 import {
   classifyJab,
   pruneRecentJabs,
@@ -275,6 +275,7 @@ export class SessionManager {
           "`!architect` — Architect agent (continues to Claude)",
           "`!repo <name>` — Set target repository",
           "`!branch <ref>` — Set base branch ref",
+          "`!worktrees` — List active worktrees + disk usage",
           "`!reset` — Reset session",
           "`!status` — Show session status",
           "`!quiet` — Minimal output",
@@ -336,6 +337,38 @@ export class SessionManager {
           await this.store.set(session.threadId, session);
           this.onCommandResponse?.(event, "Unmuted :bell: back online for this thread.");
         }
+        return true;
+      }
+
+      case "worktrees": {
+        if (!this.worktreeManager) {
+          this.onCommandResponse?.(event, "Worktree manager not configured.");
+          return true;
+        }
+        const sessions = await this.store.getAll();
+        const activity = new Map<string, number>();
+        for (const [tid, s] of sessions) activity.set(tid, s.lastActivity);
+        const all = await this.worktreeManager.listAllWorktrees(activity);
+        if (all.length === 0) {
+          this.onCommandResponse?.(event, "No active worktrees.");
+          return true;
+        }
+        const gb = (b: number) => `${(b / (1024 * 1024 * 1024)).toFixed(2)}GB`;
+        const total = all.reduce((sum, w) => sum + w.diskBytes, 0);
+        const cap = this.config.worktree.diskCapBytes;
+        const rows = all
+          .sort((a, b) => b.diskBytes - a.diskBytes)
+          .map(
+            (w) =>
+              `${w.dirty ? ":warning:" : ":white_check_mark:"} \`${w.repoName}\` ${w.branch ?? "?"} — ${gb(w.diskBytes)}${w.dirty ? " (dirty)" : ""}`,
+          );
+        this.onCommandResponse?.(
+          event,
+          [
+            `*Worktrees:* ${all.length} · *Disk:* ${gb(total)} / ${gb(cap)} cap`,
+            ...rows,
+          ].join("\n"),
+        );
         return true;
       }
 
@@ -560,6 +593,25 @@ export class SessionManager {
         if (fragment) prompt = `${fragment}\n\n${prompt}`;
       }
 
+      // Infer the target repo + agent from the message when the thread wasn't
+      // explicitly pinned with !repo / !review. A natural-language
+      // "review <PR-url>" (or an auto-routed PR-review) otherwise leaves
+      // targetRepo null, so the worktree block below never fires and the run
+      // happens in Friday's own cwd with no isolation. We infer from the FULL
+      // prompt (preamble + thread history included) so follow-ups like
+      // "review again" still resolve the repo from the PR link upthread.
+      if (this.worktreeManager && !session.targetRepo) {
+        const inferred = inferRepoFromText(
+          prompt,
+          this.config.repos.map((r) => r.name),
+        );
+        if (inferred) {
+          session.targetRepo = inferred;
+          await this.store.set(session.threadId, session);
+          log.info("manager", `thread=${session.threadId} inferred targetRepo=${inferred} (worktree isolation)`);
+        }
+      }
+
       // Anti-spiral guardrails — only injected in vibes channels where the
       // failure mode lives. Prickle thread (2026-04-01) is the scar.
       if (isVibesChannel(session.channel)) {
@@ -605,22 +657,43 @@ export class SessionManager {
         await this.store.set(session.threadId, session);
       }
 
-      // Create worktree for build/frontend agents if needed
-      if (
-        this.worktreeManager &&
-        session.targetRepo &&
-        !session.worktreePath &&
-        (session.agentType === "build" || session.agentType === "frontend")
-      ) {
+      // Worktree isolation for EVERY repo-bound thread, so concurrent threads
+      // (multiple PR reviews, builds across projects) never collide on git
+      // state. Light checkout by default (instant); build/frontend threads get
+      // a full setup-worktree.sh provision (env + MCPs + npm install) so the
+      // app is runnable, done once and remembered via worktreeProvisioned.
+      if (this.worktreeManager && session.targetRepo) {
+        const needsFull =
+          session.agentType === "build" || session.agentType === "frontend";
         try {
-          session.worktreePath = await this.worktreeManager.createWorktree(
-            session.targetRepo,
-            session.threadId,
-            session.baseRef ?? undefined,
-          );
-          await this.store.set(session.threadId, session);
+          const exists =
+            session.worktreePath != null &&
+            (await this.worktreeManager.worktreeExists(
+              session.targetRepo,
+              session.threadId,
+            ));
+
+          if (!exists) {
+            session.worktreePath = await this.worktreeManager.createWorktree(
+              session.targetRepo,
+              session.threadId,
+              session.baseRef ?? undefined,
+              needsFull ? "full" : "light",
+            );
+            session.worktreeProvisioned = needsFull;
+            await this.store.set(session.threadId, session);
+          } else if (needsFull && !session.worktreeProvisioned) {
+            // Light worktree exists but this is the first build — upgrade it.
+            const upgraded = await this.worktreeManager.upgradeWorktree(
+              session.targetRepo,
+              session.threadId,
+              session.baseRef ?? undefined,
+            );
+            session.worktreeProvisioned = upgraded;
+            await this.store.set(session.threadId, session);
+          }
         } catch (err) {
-          console.error("[manager] Failed to create worktree:", err);
+          console.error("[manager] Failed to create/provision worktree:", err);
           // Continue without worktree — spawner falls back to cwd
         }
       }

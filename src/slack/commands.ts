@@ -7,6 +7,7 @@ const KNOWN_COMMANDS = new Set([
   "status",
   "repo",
   "branch",
+  "worktrees",
   "quiet",
   "verbose",
   "normal",

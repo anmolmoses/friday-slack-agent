@@ -64,6 +64,85 @@ THREAD_SAFE="${SLACK_THREAD_TS//./-}"
 TMUX_SESSION="friday-thread-$THREAD_SAFE"
 SESSION_ID_FILE="$STATE_DIR/$THREAD_SAFE.sessionid"
 
+# ── Worktree isolation ───────────────────────────────────────────────────────
+# Run the dispatched Claude in a per-thread git worktree so concurrent
+# dispatches on the same repo never collide on branch / working-tree state
+# (CLAUDE.md rule #5). Only engages when <cwd> is a clone ROOT inside
+# friday-workspace (Friday's own clones) — never Anmol's personal checkouts,
+# never an already-nested worktree, never a non-repo cwd (e.g. the Friday repo
+# itself for Mongo/CSV tasks). Light + instant: raw `git worktree add`, env
+# files copied, node_modules symlinked from the clone so typecheck/build work
+# without a fresh install. MCPs already come via --mcp-config, so the heavy
+# setup-worktree.sh (npm install + MCP migration) is intentionally skipped
+# here to keep dispatch non-blocking. Opt out with FRIDAY_DISPATCH_NO_WORKTREE=1.
+_link_node_modules() {
+  local s="$1" t="$2"          # absolute src + dst node_modules paths
+  [ -d "$s" ] || return 0
+  [ -e "$t" ] && return 0
+  mkdir -p "$(dirname "$t")" 2>/dev/null || true
+  ln -s "$s" "$t" 2>/dev/null || true
+}
+
+_provision_worktree() {
+  local src="$1" dst="$2"      # clone root, worktree dir
+  # env files (root + apps/*) — quick copies, never fatal.
+  ( shopt -s nullglob
+    [ -f "$src/.envrc" ] && cp "$src/.envrc" "$dst/" 2>/dev/null || true
+    for f in "$src"/.env*; do [ -f "$f" ] && cp "$f" "$dst/" 2>/dev/null || true; done
+    for d in "$src"/apps/*/; do
+      [ -d "$d" ] || continue
+      app="$(basename "$d")"
+      mkdir -p "$dst/apps/$app" 2>/dev/null || true
+      for f in "$d".env* "$d"*.pem; do [ -f "$f" ] && cp "$f" "$dst/apps/$app/" 2>/dev/null || true; done
+    done ) >/dev/null 2>&1 || true
+  # node_modules — symlink from the clone (root + each workspace subdir) so
+  # deps resolve without a per-worktree install.
+  _link_node_modules "$src/node_modules" "$dst/node_modules"
+  for d in "$src"/apps/*/ "$src"/packages/*/; do
+    [ -d "${d}node_modules" ] || continue
+    rel="${d#$src/}"
+    _link_node_modules "${d}node_modules" "$dst/${rel}node_modules"
+  done
+}
+
+# Echoes the cwd the dispatched Claude should actually run in (a worktree when
+# applicable, else the input unchanged). All diagnostics go to stderr so stdout
+# stays clean for capture.
+_resolve_worktree_cwd() {
+  local cwd="$1"
+  [ "${FRIDAY_DISPATCH_NO_WORKTREE:-}" = "1" ] && { printf '%s' "$cwd"; return; }
+  case "$cwd" in */.claude/worktrees/*) printf '%s' "$cwd"; return ;; esac   # already a worktree
+  case "$cwd" in */friday-workspace/*) ;; *) printf '%s' "$cwd"; return ;; esac  # her clones only
+  local top
+  top="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$top" ] && [ "$top" = "$cwd" ] || { printf '%s' "$cwd"; return; }   # must be the clone root
+
+  # Match the session manager's naming EXACTLY (slack-<raw thread ts>, dot and
+  # all) so Friday's own-spawn worktree and this dispatch worktree are the SAME
+  # dir — no duplication, and the reaper/dashboard associate it with the session.
+  local wt="$cwd/.claude/worktrees/slack-$SLACK_THREAD_TS"
+  if [ ! -d "$wt" ]; then
+    local branch="slack/$SLACK_THREAD_TS"
+    # Base ref: origin/main, except gx-client-expo bases off origin/dev.
+    local base="origin/main"
+    case "$(basename "$cwd")" in gx-client-expo) base="origin/dev" ;; esac
+    git -C "$cwd" fetch origin --prune >/dev/null 2>&1 || true
+    # Three-case branch resolution (mirror setup-worktree.sh): reuse a local or
+    # remote slack branch if present, else cut a fresh one off the base.
+    if git -C "$cwd" rev-parse --verify --quiet "$branch" >/dev/null 2>&1; then
+      git -C "$cwd" worktree add "$wt" "$branch" >/dev/null 2>&1 || { printf '%s' "$cwd"; return; }
+    elif git -C "$cwd" rev-parse --verify --quiet "origin/$branch" >/dev/null 2>&1; then
+      git -C "$cwd" worktree add -b "$branch" "$wt" "origin/$branch" >/dev/null 2>&1 || { printf '%s' "$cwd"; return; }
+    else
+      git -C "$cwd" worktree add --no-track -b "$branch" "$wt" "$base" >/dev/null 2>&1 \
+        || git -C "$cwd" worktree add --no-track -b "$branch" "$wt" >/dev/null 2>&1 \
+        || { printf '%s' "$cwd"; return; }
+    fi
+    _provision_worktree "$cwd" "$wt"
+  fi
+  printf '%s' "$wt"
+}
+
 # Per-thread MCP config — Friday's main spawn writes this via
 # generateMcpConfig() in src/claude/mcp-config.ts. Without `--mcp-config`,
 # the dispatched tmux Claude has no access to mongodb / friday-slack /
@@ -183,6 +262,14 @@ ensure_claude_alive() {
 }
 
 if ! "$TMUX_BIN" has-session -t "$TMUX_SESSION" 2>/dev/null; then
+  # Resolve to a per-thread worktree at session birth only (an existing session
+  # keeps whatever cwd it was created with, so live dispatches are undisturbed).
+  ORIG_CWD="$CWD"
+  CWD="$(_resolve_worktree_cwd "$CWD")"
+  if [ "$CWD" != "$ORIG_CWD" ]; then
+    echo "dispatch: isolated worktree -> $CWD (from $ORIG_CWD)" >&2
+  fi
+
   # First-time setup: create session + export env in the shell + open Terminal
   "$TMUX_BIN" new-session -d -s "$TMUX_SESSION" -c "$CWD" -x 220 -y 60
 
