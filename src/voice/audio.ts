@@ -1,8 +1,6 @@
 // Local audio I/O via ffmpeg/ffplay (both already on this Mac; no sox).
 //   capture: avfoundation mic → raw s16le PCM mono @ 24k → onChunk(base64)
 //   playback: feed s16le PCM @ 24k to ffplay's stdin (low-delay flags)
-// Barge-in: when the user starts talking, flush() kills+respawns ffplay so
-// queued audio stops instantly.
 
 import type { Subprocess } from "bun";
 import path from "node:path";
@@ -60,7 +58,7 @@ export class MicCapture {
   private proc: Subprocess<"ignore", "pipe", "pipe"> | null = null;
   private micIndex: string;
   private rate: number;
-  private onChunk: (base64: string) => void;
+  private onChunk: (base64: string, level: number) => void;
   private onLevel?: (level: number) => void;
   private gain: number;
   private stopped = false;
@@ -68,7 +66,7 @@ export class MicCapture {
   constructor(
     micIndex: string,
     rate: number,
-    onChunk: (base64: string) => void,
+    onChunk: (base64: string, level: number) => void,
     onLevel?: (level: number) => void,
     gain = 1,
   ) {
@@ -111,8 +109,9 @@ export class MicCapture {
         if (value && value.byteLength) {
           chunks++; bytes += value.byteLength;
           amplify16(value, this.gain);     // boost the quiet built-in mic so VAD triggers
-          this.onChunk(Buffer.from(value).toString("base64"));
-          this.onLevel?.(rms16(value));
+          const level = rms16(value);
+          this.onLevel?.(level);
+          this.onChunk(Buffer.from(value).toString("base64"), level);
         }
       }
     } catch {
@@ -236,7 +235,7 @@ export class Player {
     }, delayMs);
   }
 
-  /** Stop playback immediately (barge-in / cancel) and drop any queued audio. */
+  /** Stop playback immediately and drop any queued audio. */
   flush(): void {
     if (this.prebufferTimer) { clearTimeout(this.prebufferTimer); this.prebufferTimer = null; }
     if (this.finishTimer) { clearTimeout(this.finishTimer); this.finishTimer = null; }

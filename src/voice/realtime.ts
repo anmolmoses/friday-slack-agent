@@ -110,7 +110,7 @@ export class RealtimeClient {
               prefix_padding_ms: 300,
               silence_duration_ms: this.cfg.vadSilenceMs,
               create_response: true,
-              interrupt_response: true,
+              interrupt_response: false,
             },
           },
           output: { format: fmt, voice: this.cfg.voice },

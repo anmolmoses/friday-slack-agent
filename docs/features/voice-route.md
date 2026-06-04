@@ -7,9 +7,14 @@ exactly as before.
 
 ## What it does
 
-- Low-latency voice conversation (server-side VAD, hands-free, with barge-in).
+- Low-latency voice conversation (server-side VAD, hands-free).
 - Full Mac control via function tools: open apps, run shell, run AppleScript, type text,
-  press key combos.
+  press key combos, screenshot the screen, and move/click/drag the mouse with an orange
+  control glow.
+- Internet/browser tools: search the web, open URLs, extract readable page text, and take
+  Playwright browser screenshots.
+- Memory tools: search local Friday memory, recall associative engram context, and write
+  durable voice memories that trigger incremental engram indexing.
 - Hands heavy engineering work to `dispatch_engineering`, which infers the repo and routes to
   Claude+Slack when configured or local Codex in Terminal when Slack is unavailable.
 - Toggle on/off from a keyboard shortcut (skhd) or the CLI.
@@ -20,9 +25,12 @@ exactly as before.
  mic ──ffmpeg(s16le 24k mono)──▶ daemon ──base64──▶  OpenAI Realtime WS (gpt-realtime-2)
  spkr ◀──native AVAudio player──── daemon ◀──output_audio.delta────┘   │
                                           ▲ function_call           │
-                                          └── tools.ts ──────────────┘
-                                              run_shell / run_applescript / open_app /
-                                              type_text / key_combo / dispatch_engineering
+	                                          └── tools.ts ──────────────┘
+	                                              run_shell / run_applescript / open_app /
+	                                              type_text / key_combo / web_search /
+	                                              browser_* / screen_screenshot / mouse_control /
+	                                              memory_search / engram_recall / remember /
+	                                              dispatch_engineering
  skhd hotkey ─▶ bin/friday-voice toggle ─(SIGUSR2)▶ daemon: flip listening on/off
 ```
 
@@ -38,8 +46,9 @@ daemon costs nothing.
 | `src/voice/control.ts` | pidfile + state.json under `/tmp/friday-voice/` |
 | `src/voice/persona.ts` | short spoken persona (loads `friday-personal/VOICE.md`) |
 | `src/voice/tools.ts` | tool defs + executors (Mac control + smart engineering dispatch) |
-| `src/voice/audio.ts` | ffmpeg mic capture + native PCM playback + barge-in flush |
+| `src/voice/audio.ts` | ffmpeg mic capture + native PCM playback |
 | `src/voice/audio-player.swift` | tiny AVFoundation PCM player used instead of `ffplay` |
+| `src/voice/mouse-control.swift` | native mouse move/click/drag helper with orange control ring |
 | `src/voice/realtime.ts` | OpenAI Realtime WS client (event names centralized in `EVT`) |
 | `src/voice/daemon.ts` | orchestrator + lifecycle + signal handling |
 | `src/voice/cli.ts` | `start` / `toggle` / `stop` / `status` |
@@ -65,13 +74,13 @@ A detached daemon logs to `/tmp/friday-voice/daemon.log`.
 |---|---|---|
 | `OPENAI_API_KEY` | — (required) | already in `.env` |
 | `OPENAI_REALTIME_MODEL` | `gpt-realtime-2` | swap model in one place |
-| `FRIDAY_VOICE` | `cedar` | TTS voice (cedar, marin, alloy, …) |
+| `FRIDAY_VOICE` | `shimmer` | TTS voice. Current Realtime voices include shimmer, coral, sage, marin, cedar, alloy, ash, ballad, echo, and verse. |
 | `FRIDAY_VOICE_VAD` | `server_vad` | or `semantic_vad` |
 | `FRIDAY_VOICE_VAD_THRESHOLD` | `0.05` | speech threshold for server VAD; raise if it false-triggers, lower if it misses you |
 | `FRIDAY_VOICE_VAD_SILENCE_MS` | `700` | trailing silence before Friday answers |
 | `FRIDAY_VOICE_MIC_INDEX` | `0` | avfoundation audio device index |
 | `FRIDAY_VOICE_MIC_GAIN` | `4` | local gain applied before sending PCM to Realtime |
-| `FRIDAY_VOICE_ECHO_SUPPRESSION_MS` | `1200` | keep Friday from interrupting herself while speaker audio is still playing |
+| `FRIDAY_VOICE_ECHO_SUPPRESSION_MS` | `1200` | keep Friday from hearing herself while speaker audio is still playing |
 | `FRIDAY_VOICE_PLAYBACK_PREBUFFER_MS` | `350` | small output prebuffer for smoother speech playback |
 | `FRIDAY_VOICE_WS_IDLE_OFF` | `true` | drop WS when toggled off |
 | `SLACK_VOICE_CHANNEL` | — | channel id for Claude dispatch audit thread; if unset, engineering dispatch falls back to Codex |
@@ -87,6 +96,24 @@ needs:
   appear, grant it in System Settings → Privacy & Security → Microphone.
 - **Accessibility** — `type_text` / `key_combo` drive System Events. Grant the launching app
   (and skhd) in System Settings → Privacy & Security → Accessibility.
+- **Screen Recording** — `screen_screenshot` and current-browser inspection use `screencapture`.
+  Grant the launching app in System Settings → Privacy & Security → Screen Recording.
+
+## Smart Agent Tools
+
+The Realtime model now sees these first-class tools:
+
+- `web_search` for current internet facts.
+- `browser_open_url`, `browser_page_text`, and `browser_screenshot` for browser tasks and page
+  inspection. URL screenshots use `npx playwright screenshot`; no-URL screenshots capture the
+  current Mac screen.
+- `screen_screenshot` before coordinate-based UI actions or when Anmol asks what is visible.
+- `mouse_control` for move/click/double-click/drag. The helper compiles lazily to
+  `/tmp/friday-voice/friday-mouse` and flashes an orange ring while taking control.
+- `memory_search` for Friday's local BM25 memory corpus.
+- `engram_recall` for associative memories from `.engram/dashboard.db`, independent of the
+  live `ENGRAM_RECALL=1` prompt bridge.
+- `remember` appends a durable note under `memory/daily/` and triggers `reindexIncremental()`.
 
 ## Keyboard shortcut (skhd)
 

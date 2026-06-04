@@ -25,7 +25,7 @@ export interface VoiceConfig {
   vadSilenceMs: number;
   /** Mic gain multiplier — the built-in MacBook mic is quiet; x4 helps VAD trigger. */
   micGain: number;
-  /** Drop mic frames briefly after speaker audio so Friday does not interrupt herself. */
+  /** Drop mic frames briefly after speaker audio so Friday does not hear herself. */
   echoSuppressionMs: number;
   /** Buffer this much output audio before starting playback to smooth network jitter. */
   playbackPrebufferMs: number;
@@ -70,7 +70,7 @@ export function loadVoiceConfig(): VoiceConfig {
   return {
     openaiApiKey: apiKey,
     model: process.env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-2",
-    voice: process.env.FRIDAY_VOICE ?? "cedar",
+    voice: process.env.FRIDAY_VOICE ?? "shimmer",
     micIndex: process.env.FRIDAY_VOICE_MIC_INDEX ?? "0",
     sampleRate: 24000,
     vad: (process.env.FRIDAY_VOICE_VAD as VoiceConfig["vad"]) ?? "server_vad",

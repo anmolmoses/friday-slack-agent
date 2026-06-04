@@ -159,6 +159,7 @@ async function main(): Promise<void> {
         `  listening:    ${state.listening}\n` +
         `  ws connected: ${state.wsConnected}\n` +
         `  model:        ${state.model}\n` +
+        `  voice:        ${state.voice ?? "(unknown)"}\n` +
         `  mic peak:     ${(state.micPeakLevel ?? 0).toFixed(3)}\n` +
         `  uptime:       ${Math.round((Date.now() - state.startedAt) / 1000)}s`,
       );

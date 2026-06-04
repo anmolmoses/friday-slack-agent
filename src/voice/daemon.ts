@@ -15,9 +15,16 @@ import type { Subprocess } from "bun";
 const log = (...a: unknown[]) => console.log("[voice:daemon]", ...a);
 
 function engineeringContext(cfg: ReturnType<typeof loadVoiceConfig>): string {
-  const repos = cfg.repos.map((r) => `- ${r.name}: ${r.path}`).join("\n") || "- friday: this repo";
+  const repos =
+    cfg.repos.map((r) => `- ${r.name}: ${r.path}`).join("\n") ||
+    "- friday: this repo";
   return [
     "## Engineering voice routing",
+    "You are a capable Mac agent with explicit tools for local memory, associative engram recall, web search, browser reading/screenshots, current-screen screenshots, mouse control, shell, AppleScript, and engineering dispatch.",
+    "For questions involving Anmol's past preferences, previous project context, remembered decisions, or how he likes work done, use memory_search and/or engram_recall before answering. Use remember when Anmol asks you to remember something or states a stable preference/lesson.",
+    "For current or internet-dependent facts, use web_search first, then browser_page_text on the most relevant URLs before making claims.",
+    "For browser/UI tasks, use browser_open_url as needed, take browser_screenshot or screen_screenshot before coordinate-based actions, then use mouse_control only when you have clear coordinates. The orange ring means you are controlling the pointer.",
+    "For Slack app tasks, control the visible Slack app instead of using Slack API tokens: open_app Slack, use cmd+k to jump to a channel/person such as agent-test, press return, type the message, then press return to send.",
     "For substantial coding/build/debug/review tasks, use dispatch_engineering.",
     "Do not ask Anmol which repo to use unless the request is truly ambiguous and choosing wrong would be destructive.",
     "Infer the repo from GitHub URLs, PR URLs, explicit repo names, or keywords: backend/api -> gx-backend; mobile/app/expo/iOS/Android -> gx-client-expo; web/Next/frontend -> gx-client-next; admin/dashboard -> gx-admin-client; talent/candidate -> gx-talent-client.",
@@ -27,7 +34,9 @@ function engineeringContext(cfg: ReturnType<typeof loadVoiceConfig>): string {
   ].join("\n");
 }
 
-export async function runDaemon(opts: { startListening: boolean }): Promise<void> {
+export async function runDaemon(opts: {
+  startListening: boolean;
+}): Promise<void> {
   const cfg = loadVoiceConfig();
   const persona = await loadVoicePersona();
   const instructions = `${persona}\n\n${engineeringContext(cfg)}`;
@@ -49,24 +58,31 @@ export async function runDaemon(opts: { startListening: boolean }): Promise<void
     onAudioDelta: (pcm) => {
       const now = Date.now();
       const pcmMs = Math.ceil((pcm.byteLength / (cfg.sampleRate * 2)) * 1000);
-      estimatedPlaybackUntil = Math.max(estimatedPlaybackUntil, now + cfg.playbackPrebufferMs) + pcmMs;
+      estimatedPlaybackUntil =
+        Math.max(estimatedPlaybackUntil, now + cfg.playbackPrebufferMs) + pcmMs;
       suppressMicUntil = estimatedPlaybackUntil + cfg.echoSuppressionMs;
       player.write(pcm);
-      if (listening) { hud.set("speaking"); voiceLevel = Math.max(voiceLevel, rms16(pcm)); }
+      if (listening) {
+        hud.set("speaking");
+        voiceLevel = Math.max(voiceLevel, rms16(pcm));
+      }
     },
     onSpeechStarted: () => {
-      if (Date.now() < suppressMicUntil) {
+      const now = Date.now();
+      if (now < suppressMicUntil) {
         log("ignored speech_started during speaker echo guard");
         return;
       }
-      // Barge-in: user started talking — stop Friday mid-sentence.
-      player.flush();
-      client.cancelResponse();
       if (listening) hud.set("hearing");
     },
-    onSpeechStopped: () => { if (listening) hud.set("thinking"); },
+    onSpeechStopped: () => {
+      if (listening) hud.set("thinking");
+    },
     onResponseDone: () => {
-      suppressMicUntil = Math.max(suppressMicUntil, estimatedPlaybackUntil + cfg.echoSuppressionMs);
+      suppressMicUntil = Math.max(
+        suppressMicUntil,
+        estimatedPlaybackUntil + cfg.echoSuppressionMs,
+      );
       estimatedPlaybackUntil = 0;
       player.finishSoon();
       if (listening) hud.set("listening");
@@ -89,9 +105,13 @@ export async function runDaemon(opts: { startListening: boolean }): Promise<void
     cfg.micIndex,
     cfg.sampleRate,
     (b64) => {
-      if (listening && client.connected && Date.now() >= suppressMicUntil) client.appendAudio(b64);
+      if (!listening || !client.connected) return;
+      if (Date.now() >= suppressMicUntil) client.appendAudio(b64);
     },
-    (lvl) => { voiceLevel = Math.max(voiceLevel, lvl); peakLevel = Math.max(peakLevel, lvl); },
+    (lvl) => {
+      voiceLevel = Math.max(voiceLevel, lvl);
+      peakLevel = Math.max(peakLevel, lvl);
+    },
     cfg.micGain,
   );
 
@@ -106,6 +126,7 @@ export async function runDaemon(opts: { startListening: boolean }): Promise<void
       listening,
       wsConnected: client.connected,
       model: cfg.model,
+      voice: cfg.voice,
       micPeakLevel: lastPeakLevel,
       startedAt,
       updatedAt: Date.now(),
@@ -121,11 +142,16 @@ export async function runDaemon(opts: { startListening: boolean }): Promise<void
     cue("on");
     hud.set("listening");
     // Drive the HUD waveform from the live voice level at ~25Hz (with decay).
-    levelTimer = setInterval(() => { hud.pushLevel(voiceLevel); voiceLevel *= 0.55; }, 40);
+    levelTimer = setInterval(() => {
+      hud.pushLevel(voiceLevel);
+      voiceLevel *= 0.55;
+    }, 40);
     // Diagnostic: log peak mic level each second. ~0 => mic is silent (TCC denied).
     peakTimer = setInterval(() => {
       lastPeakLevel = peakLevel;
-      log(`mic peak level (post-gain, 0..1): ${lastPeakLevel.toFixed(3)} ${lastPeakLevel < 0.01 ? "← SILENT (mic permission denied?)" : ""}`);
+      log(
+        `mic peak level (post-gain, 0..1): ${lastPeakLevel.toFixed(3)} ${lastPeakLevel < 0.01 ? "← SILENT (mic permission denied?)" : ""}`,
+      );
       peakLevel = 0;
       syncState();
     }, 1000);
@@ -136,9 +162,17 @@ export async function runDaemon(opts: { startListening: boolean }): Promise<void
   function stopListening(): void {
     if (!listening) return;
     listening = false;
-    if (levelTimer) { clearInterval(levelTimer); levelTimer = null; }
-    if (peakTimer) { clearInterval(peakTimer); peakTimer = null; }
-    voiceLevel = 0; peakLevel = 0; lastPeakLevel = 0;
+    if (levelTimer) {
+      clearInterval(levelTimer);
+      levelTimer = null;
+    }
+    if (peakTimer) {
+      clearInterval(peakTimer);
+      peakTimer = null;
+    }
+    voiceLevel = 0;
+    peakLevel = 0;
+    lastPeakLevel = 0;
     hud.pushLevel(0);
     mic.stop();
     player.flush();
@@ -156,14 +190,20 @@ export async function runDaemon(opts: { startListening: boolean }): Promise<void
 
   writePid(process.pid);
   syncState();
-  log(`up (pid ${process.pid}, model ${cfg.model}, vad ${cfg.vad}, voice ${cfg.voice})`);
+  log(
+    `up (pid ${process.pid}, model ${cfg.model}, vad ${cfg.vad}, voice ${cfg.voice})`,
+  );
 
   process.on("SIGUSR2", () => toggle());
   const shutdown = () => {
     log("shutting down");
     stopListening();
     client.close();
-    try { overlayProc?.kill(); } catch { /* ignore */ }
+    try {
+      overlayProc?.kill();
+    } catch {
+      /* ignore */
+    }
     hud.stop();
     clearPid();
     process.exit(0);

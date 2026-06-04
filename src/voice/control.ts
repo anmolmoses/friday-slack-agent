@@ -10,6 +10,7 @@ export interface DaemonState {
   listening: boolean;
   wsConnected: boolean;
   model: string;
+  voice?: string;
   micPeakLevel?: number;
   startedAt: number;
   updatedAt: number;
