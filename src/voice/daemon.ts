@@ -4,7 +4,11 @@
 
 import { loadVoiceConfig } from "./config.ts";
 import { loadVoicePersona } from "./persona.ts";
-import { toolDefsForConfig, ToolRunner } from "./tools.ts";
+import {
+  toolDefsForConfig,
+  ToolRunner,
+  type ToolRunResult,
+} from "./tools.ts";
 import { MicCapture, Player, cue, rms16 } from "./audio.ts";
 import { RealtimeClient } from "./realtime.ts";
 import { HudServer } from "./hud-server.ts";
@@ -58,6 +62,9 @@ function engineeringContext(cfg: ReturnType<typeof loadVoiceConfig>): string {
     "If the injected associative-memory block contains a direct answer to a preference question, use it directly instead of asking Anmol again.",
     "For current or internet-dependent facts, use web_search first, then browser_page_text on the most relevant URLs before making claims.",
     "For browser/UI tasks, use browser_open_url as needed, take browser_screenshot or screen_screenshot before coordinate-based actions, then use mouse_control only when you have clear coordinates. The orange ring means you are controlling the pointer.",
+    cfg.cameraEnabled
+      ? "Camera vision is enabled. For physical-world visual questions, use camera_see. For identity, use visual_person_lookup first; if no confident match exists, ask for the person's name, then use visual_person_remember only after explicit confirmation."
+      : "Camera vision is disabled by FRIDAY_VOICE_CAMERA=false. Do not claim you can see through the camera.",
     "For Slack app tasks, control the visible Slack app instead of using Slack API tokens: open_app Slack, use cmd+k to jump to a channel/person such as agent-test, press return, type the message, then press return to send.",
     "For substantial coding/build/debug/review tasks, use dispatch_engineering.",
     "Do not ask Anmol which repo to use unless the request is truly ambiguous and choosing wrong would be destructive.",
@@ -228,7 +235,17 @@ export async function runDaemon(opts: {
       const result = await tools.exec(name, args);
       turn.pendingTools = Math.max(0, turn.pendingTools - 1);
       turn.responseDone = false;
-      client.sendFunctionResult(callId, result);
+      const output = toolOutput(result);
+      const images = toolImages(result);
+      if (images.length > 0) {
+        client.sendFunctionResult(callId, output, false);
+        for (const image of images) {
+          client.sendImageInput(image.path, image.prompt);
+        }
+        client.createResponse();
+      } else {
+        client.sendFunctionResult(callId, output);
+      }
     },
     onOpen: () => syncState(),
     onClose: () => syncState(),
@@ -256,6 +273,14 @@ export async function runDaemon(opts: {
       fallbackTimer: null,
       captureTimer: null,
     };
+  }
+
+  function toolOutput(result: ToolRunResult): string {
+    return typeof result === "string" ? result : result.output;
+  }
+
+  function toolImages(result: ToolRunResult): Array<{ path: string; prompt?: string }> {
+    return typeof result === "string" ? [] : (result.realtimeImages ?? []);
   }
 
   function clearVoiceTurnTimers(turn: VoiceTurn): void {
@@ -530,6 +555,8 @@ export async function runDaemon(opts: {
       noiseReduction: cfg.inputNoiseReduction,
       transcriptionModel: cfg.transcriptionModel,
       backgroundTranscription: cfg.backgroundTranscription,
+      cameraEnabled: cfg.cameraEnabled,
+      cameraIndex: cfg.cameraIndex,
       interruptMinLevel: cfg.interruptMinLevel,
       interruptFrames: cfg.interruptFrames,
       micPeakLevel: lastPeakLevel,

@@ -37,6 +37,14 @@ export interface VoiceConfig {
   transcriptionPrompt?: string;
   /** Let Realtime answer immediately while transcription finishes in the background. */
   backgroundTranscription: boolean;
+  /** Master camera/vision feature switch. */
+  cameraEnabled: boolean;
+  /** ffmpeg avfoundation video device index. */
+  cameraIndex: string;
+  /** Camera capture width. */
+  cameraWidth: number;
+  /** Camera capture height. */
+  cameraHeight: number;
   /** Drop mic frames briefly after speaker audio so Friday does not hear herself. */
   echoSuppressionMs: number;
   /** Local, noise-gated interruption toggle. Server auto-interrupt stays off. */
@@ -124,6 +132,10 @@ export function loadVoiceConfig(): VoiceConfig {
     transcriptionLanguage: process.env.FRIDAY_VOICE_TRANSCRIPTION_LANGUAGE ?? "en",
     transcriptionPrompt: process.env.FRIDAY_VOICE_TRANSCRIPTION_PROMPT,
     backgroundTranscription: bool("FRIDAY_VOICE_BACKGROUND_TRANSCRIPTION", true),
+    cameraEnabled: bool("FRIDAY_VOICE_CAMERA", false),
+    cameraIndex: process.env.FRIDAY_VOICE_CAMERA_INDEX ?? "0",
+    cameraWidth: Number(process.env.FRIDAY_VOICE_CAMERA_WIDTH ?? "1280"),
+    cameraHeight: Number(process.env.FRIDAY_VOICE_CAMERA_HEIGHT ?? "720"),
     echoSuppressionMs: Number(
       process.env.FRIDAY_VOICE_ECHO_SUPPRESSION_MS ?? "1200",
     ),

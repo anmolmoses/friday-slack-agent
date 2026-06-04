@@ -15,6 +15,8 @@ export interface DaemonState {
   noiseReduction?: string;
   transcriptionModel?: string;
   backgroundTranscription?: boolean;
+  cameraEnabled?: boolean;
+  cameraIndex?: string;
   interruptMinLevel?: number;
   interruptFrames?: number;
   micPeakLevel?: number;

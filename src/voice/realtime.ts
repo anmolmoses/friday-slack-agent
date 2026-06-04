@@ -6,10 +6,19 @@
 // is a one-line fix. Receive side is tolerant (accepts both GA
 // `response.output_audio.delta` and legacy `response.audio.delta`).
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import type { VoiceConfig } from "./config.ts";
 import type { RealtimeTool } from "./tools.ts";
 
 const log = (...a: unknown[]) => console.log("[voice:rt]", ...a);
+
+function imageMime(file: string): string {
+  const ext = path.extname(file).toLowerCase();
+  if (ext === ".png") return "image/png";
+  if (ext === ".webp") return "image/webp";
+  return "image/jpeg";
+}
 
 // Centralized event-type strings — adjust here if the API schema shifts.
 const EVT = {
@@ -182,12 +191,33 @@ export class RealtimeClient {
   }
 
   /** Return a tool result, then ask the model to continue (speak the outcome). */
-  sendFunctionResult(callId: string, output: string): void {
+  sendFunctionResult(
+    callId: string,
+    output: string,
+    createResponse = true,
+  ): void {
     this.send({
       type: EVT.itemCreate,
       item: { type: "function_call_output", call_id: callId, output },
     });
-    this.createResponse();
+    if (createResponse) this.createResponse();
+  }
+
+  /** Attach a local image file as a user input item in the Realtime conversation. */
+  sendImageInput(file: string, prompt?: string): void {
+    const b64 = readFileSync(file).toString("base64");
+    const content: Array<Record<string, string>> = [];
+    if (prompt?.trim()) {
+      content.push({ type: "input_text", text: prompt.trim() });
+    }
+    content.push({
+      type: "input_image",
+      image_url: `data:${imageMime(file)};base64,${b64}`,
+    });
+    this.send({
+      type: EVT.itemCreate,
+      item: { type: "message", role: "user", content },
+    });
   }
 
   /** Ask the model to respond, optionally with per-turn memory context. */

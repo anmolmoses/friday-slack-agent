@@ -18,6 +18,12 @@ import {
 } from "node:fs";
 import { reindexIncremental } from "../memory/engram-bridge.ts";
 import { searchMemory } from "../memory/search.ts";
+import {
+  cameraPermissionHelp,
+  captureCameraFrame,
+  lookupVisualPerson,
+  rememberVisualPerson,
+} from "../memory/vision.ts";
 import { inferRepoFromText } from "../slack/routing.ts";
 import type { VoiceConfig } from "./config.ts";
 
@@ -46,11 +52,29 @@ export interface RealtimeTool {
   parameters: Record<string, unknown>;
 }
 
+export interface RealtimeImageAttachment {
+  path: string;
+  prompt?: string;
+}
+
+export interface ToolExecutionResult {
+  output: string;
+  realtimeImages?: RealtimeImageAttachment[];
+}
+
+export type ToolRunResult = string | ToolExecutionResult;
+
 function repoToolDescription(cfg?: VoiceConfig): string {
   const repos = cfg?.repos.map((r) => r.name).join(", ");
   return repos
     ? `Optional repo name. Known repos: ${repos}. If omitted, Friday will infer it from the prompt/URL/keywords.`
     : "Optional repo name. If omitted, Friday will infer it from the prompt when possible.";
+}
+
+function cameraState(cfg?: VoiceConfig): string {
+  return cfg?.cameraEnabled
+    ? "Camera is enabled."
+    : "Camera is disabled by FRIDAY_VOICE_CAMERA=false.";
 }
 
 export function toolDefsForConfig(cfg?: VoiceConfig): RealtimeTool[] {
@@ -227,6 +251,91 @@ export function toolDefsForConfig(cfg?: VoiceConfig): RealtimeTool[] {
             description: "Optional reason for the screenshot.",
           },
         },
+      },
+    },
+    {
+      type: "function",
+      name: "camera_snapshot",
+      description:
+        `Capture one still image from the Mac camera and return its path/dimensions. ${cameraState(cfg)} Use only when Anmol asks Friday to look through the camera or when vision is needed.`,
+      parameters: {
+        type: "object",
+        properties: {
+          note: {
+            type: "string",
+            description: "Optional reason for the camera snapshot.",
+          },
+        },
+      },
+    },
+    {
+      type: "function",
+      name: "camera_see",
+      description:
+        `Capture one Mac camera frame and attach it to the live Realtime conversation as vision input so Friday can inspect it. ${cameraState(cfg)} Use this to answer visual questions about the physical scene.`,
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: {
+            type: "string",
+            description:
+              "Short instruction for what to inspect in the camera image.",
+          },
+        },
+      },
+    },
+    {
+      type: "function",
+      name: "visual_person_lookup",
+      description:
+        `Compare a camera frame or image path against Friday's confirmed visual-person memory. ${cameraState(cfg)} Treat matches as tentative unless confidence is high; ask for confirmation when uncertain.`,
+      parameters: {
+        type: "object",
+        properties: {
+          image_path: {
+            type: "string",
+            description:
+              "Optional image path. If omitted, capture a fresh camera frame.",
+          },
+          limit: {
+            type: "number",
+            description: "Number of candidate people to return, 1-10.",
+          },
+        },
+      },
+    },
+    {
+      type: "function",
+      name: "visual_person_remember",
+      description:
+        `Remember a confirmed person's visual identity by saving a camera image and an Engram-indexable memory card. ${cameraState(cfg)} Use only after Anmol or the person confirms their name.`,
+      parameters: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description: "Confirmed person name.",
+          },
+          image_path: {
+            type: "string",
+            description:
+              "Optional image path from camera_snapshot/camera_see. If omitted, capture a fresh camera frame.",
+          },
+          relationship: {
+            type: "string",
+            description: "Optional relationship/context, e.g. friend, teammate.",
+          },
+          notes: {
+            type: "string",
+            description: "Optional stable notes to remember about this person.",
+          },
+          description: {
+            type: "string",
+            description:
+              "Optional visual description from the current camera image.",
+          },
+        },
+        required: ["name"],
       },
     },
     {
@@ -595,7 +704,7 @@ export class ToolRunner {
     this.cfg = cfg;
   }
 
-  async exec(name: string, args: Record<string, unknown>): Promise<string> {
+  async exec(name: string, args: Record<string, unknown>): Promise<ToolRunResult> {
     try {
       switch (name) {
         case "run_shell":
@@ -638,6 +747,27 @@ export class ToolRunner {
         case "screen_screenshot":
           return await this.screenScreenshot(
             args.note ? String(args.note) : undefined,
+          );
+        case "camera_snapshot":
+          return await this.cameraSnapshot(
+            args.note ? String(args.note) : undefined,
+          );
+        case "camera_see":
+          return await this.cameraSee(
+            args.prompt ? String(args.prompt) : undefined,
+          );
+        case "visual_person_lookup":
+          return await this.visualPersonLookup(
+            args.image_path ? String(args.image_path) : undefined,
+            args.limit,
+          );
+        case "visual_person_remember":
+          return await this.visualPersonRemember(
+            String(args.name ?? ""),
+            args.image_path ? String(args.image_path) : undefined,
+            args.relationship ? String(args.relationship) : undefined,
+            args.notes ? String(args.notes) : undefined,
+            args.description ? String(args.description) : undefined,
           );
         case "mouse_control":
           return await this.mouseControl(
@@ -859,6 +989,163 @@ export class ToolRunner {
         "\n",
       ),
     );
+  }
+
+  private cameraDisabledMessage(): string | null {
+    if (this.cfg.cameraEnabled) return null;
+    return "Camera is disabled by FRIDAY_VOICE_CAMERA=false. Set FRIDAY_VOICE_CAMERA=true in .env and restart Friday voice to enable camera vision.";
+  }
+
+  private async captureCamera(): Promise<{
+    file: string;
+    relPath: string;
+    dims: string;
+  }> {
+    const disabled = this.cameraDisabledMessage();
+    if (disabled) throw new Error(disabled);
+    try {
+      return await captureCameraFrame({
+        deviceIndex: this.cfg.cameraIndex,
+        width: this.cfg.cameraWidth,
+        height: this.cfg.cameraHeight,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/Camera capture failed/i.test(message)) throw err;
+      throw new Error(cameraPermissionHelp(message));
+    }
+  }
+
+  private async cameraSnapshot(note?: string): Promise<string> {
+    const disabled = this.cameraDisabledMessage();
+    if (disabled) return disabled;
+    try {
+      const shot = await this.captureCamera();
+      return truncate(
+        [
+          `Camera snapshot saved: ${shot.file}`,
+          `Memory-relative path: ${shot.relPath}`,
+          note ? `Reason: ${note}` : "",
+          shot.dims,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  private async cameraSee(prompt?: string): Promise<ToolExecutionResult | string> {
+    const disabled = this.cameraDisabledMessage();
+    if (disabled) return disabled;
+    try {
+      const shot = await this.captureCamera();
+      const visionPrompt =
+        prompt?.trim() ||
+        "Inspect this Mac camera image and answer Anmol's visual question. If a visible person is unknown, ask for their name before storing identity.";
+      return {
+        output: truncate(
+          [
+            `Camera image captured and attached for vision: ${shot.file}`,
+            `Memory-relative path: ${shot.relPath}`,
+            shot.dims,
+            "Use visual_person_lookup if this is about recognizing a person.",
+            "Use visual_person_remember only after the person's name is confirmed.",
+          ].join("\n"),
+        ),
+        realtimeImages: [{ path: shot.file, prompt: visionPrompt }],
+      };
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  private async visualPersonLookup(
+    imagePath?: string,
+    limitValue?: unknown,
+  ): Promise<string> {
+    const disabled = this.cameraDisabledMessage();
+    if (disabled) return disabled;
+    try {
+      const image = imagePath?.trim()
+        ? { file: imagePath.trim(), relPath: imagePath.trim() }
+        : await this.captureCamera();
+      const matches = await lookupVisualPerson({
+        imagePath: image.file,
+        limit: clampInt(limitValue, 5, 1, 10),
+      });
+      if (matches.length === 0) {
+        return `No visual person memories exist yet. Image checked: ${image.relPath}`;
+      }
+      return truncate(
+        [
+          `Image checked: ${image.relPath}`,
+          "Visual identity candidates:",
+          ...matches.map((m, i) => {
+            const confidence = `${Math.round(m.confidence * 100)}%`;
+            const caution =
+              m.distance <= 12
+                ? "strong"
+                : m.distance <= 20
+                  ? "tentative"
+                  : "weak";
+            return [
+              `${i + 1}. ${m.name} (${caution}, confidence ${confidence}, distance ${m.distance}/64)`,
+              m.relationship ? `relationship: ${m.relationship}` : "",
+              m.notes ? `notes: ${m.notes}` : "",
+              m.description ? `description: ${m.description}` : "",
+              `reference: ${m.imagePath}`,
+            ]
+              .filter(Boolean)
+              .join("\n");
+          }),
+          "Do not claim identity from a tentative/weak match without asking for confirmation.",
+        ].join("\n\n"),
+      );
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  private async visualPersonRemember(
+    name: string,
+    imagePath?: string,
+    relationship?: string,
+    notes?: string,
+    description?: string,
+  ): Promise<string> {
+    const disabled = this.cameraDisabledMessage();
+    if (disabled) return disabled;
+    const confirmedName = name.trim();
+    if (!confirmedName) {
+      return "visual_person_remember needs a confirmed person name.";
+    }
+    try {
+      const image = imagePath?.trim()
+        ? { file: imagePath.trim(), relPath: imagePath.trim() }
+        : await this.captureCamera();
+      const remembered = await rememberVisualPerson({
+        name: confirmedName,
+        imagePath: image.file,
+        relationship,
+        notes,
+        description,
+      });
+      return truncate(
+        [
+          `Remembered visual identity for ${remembered.profile.name}.`,
+          `Person id: ${remembered.profile.id}`,
+          `Reference image: ${remembered.image.path}`,
+          `Visual hash: ${remembered.image.hash}`,
+          remembered.indexed
+            ? "Engram index updated."
+            : "Engram index update was skipped or already running.",
+        ].join("\n"),
+      );
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
   }
 
   private async mouseControl(

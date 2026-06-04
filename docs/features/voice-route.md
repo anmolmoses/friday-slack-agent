@@ -13,6 +13,8 @@ exactly as before.
   control glow.
 - Internet/browser tools: search the web, open URLs, extract readable page text, and take
   Playwright browser screenshots.
+- Opt-in camera vision: capture one Mac camera frame, attach it to Realtime as image input,
+  and store confirmed visual-person memories.
 - Memory tools: search local Friday memory, recall associative engram context, and write
   durable voice memories that trigger incremental engram indexing.
 - Voice turns use Engram without blocking speech: a startup primer and memory tools support
@@ -31,6 +33,7 @@ exactly as before.
 	                                              run_shell / run_applescript / open_app /
 	                                              type_text / key_combo / web_search /
 	                                              browser_* / screen_screenshot / mouse_control /
+	                                              camera_* / visual_person_* /
 	                                              memory_search / engram_recall / remember /
 	                                              dispatch_engineering
  skhd hotkey ─▶ bin/friday-voice toggle ─(SIGUSR2)▶ daemon: flip listening on/off
@@ -83,6 +86,10 @@ A detached daemon logs to `/tmp/friday-voice/daemon.log`.
 | `FRIDAY_VOICE_MIC_INDEX` | `0` | avfoundation audio device index |
 | `FRIDAY_VOICE_MIC_GAIN` | `4` | local gain applied before sending PCM to Realtime |
 | `FRIDAY_VOICE_NOISE_REDUCTION` | `far_field` | OpenAI input noise reduction: `far_field` for laptop mic, `near_field` for headset mic, `off` to disable |
+| `FRIDAY_VOICE_CAMERA` | `false` | master switch for camera/vision tools; set `true` to enable |
+| `FRIDAY_VOICE_CAMERA_INDEX` | `0` | avfoundation video device index |
+| `FRIDAY_VOICE_CAMERA_WIDTH` | `1280` | camera snapshot width |
+| `FRIDAY_VOICE_CAMERA_HEIGHT` | `720` | camera snapshot height |
 | `FRIDAY_VOICE_ECHO_SUPPRESSION_MS` | `1200` | keep Friday from hearing herself while speaker audio is still playing |
 | `FRIDAY_VOICE_INTERRUPTION` | `false` | enable local, noise-gated interruption while Friday is speaking |
 | `FRIDAY_VOICE_INTERRUPT_MIN_LEVEL` | `0.75` | local post-gain mic RMS threshold required to interrupt |
@@ -104,6 +111,9 @@ A detached daemon logs to `/tmp/friday-voice/daemon.log`.
 Find the mic index with: `ffmpeg -f avfoundation -list_devices true -i ""` (look under
 "AVFoundation audio devices"). On this Mac, `0` = "MacBook Pro Microphone".
 
+Find the camera index with the same command (look under "AVFoundation video devices"). On this
+Mac, `0` = "FaceTime HD Camera".
+
 ## One-time macOS permissions (TCC)
 
 The **app that launches the daemon** (Terminal/iTerm, or skhd if launched from the hotkey)
@@ -118,6 +128,10 @@ needs:
   Recording. On newer macOS this pane is named **Screen & System Audio Recording**. If Terminal is
   already enabled there, quit Terminal completely with Cmd+Q, reopen it, then restart Friday voice;
   macOS does not apply the permission to Terminal sessions that were already running.
+- **Camera** — `camera_snapshot`, `camera_see`, and visual-person memory use ffmpeg's
+  AVFoundation camera input. Grant the launching app, usually Terminal, in System Settings →
+  Privacy & Security → Camera, then quit Terminal completely with Cmd+Q, reopen it, and restart
+  Friday voice.
 
 ## Smart Agent Tools
 
@@ -128,6 +142,12 @@ The Realtime model now sees these first-class tools:
   inspection. URL screenshots use `npx playwright screenshot`; no-URL screenshots capture the
   current Mac screen.
 - `screen_screenshot` before coordinate-based UI actions or when Anmol asks what is visible.
+- `camera_snapshot` captures one Mac camera still and returns its path/dimensions.
+- `camera_see` captures one camera still and attaches it to the live Realtime conversation as
+  image input, so FRIDAY can answer visual questions about the physical scene.
+- `visual_person_lookup` compares a camera frame/image path against confirmed visual-person memory.
+- `visual_person_remember` stores a confirmed person's name plus reference image under
+  `memory/vision/people/`, writes an Engram-indexable profile card, and reindexes.
 - `mouse_control` for permission checks, move/click/double-click/drag. The helper compiles lazily
   to `~/.friday/voice/friday-mouse` and flashes an orange ring while taking control.
 - `memory_search` for Friday's local BM25 memory corpus.
@@ -165,6 +185,25 @@ If `ENGRAM_CAPTURE=1`, Friday writes the pair through `captureExchange()`, which
 file under `memory/conversations/<date>/` and schedules enrichment plus incremental engram
 indexing. This is what makes voice-only facts, like "Numb by Linkin Park is my favorite song",
 recallable in later sessions.
+
+## Vision Memory
+
+Camera vision is opt-in behind `FRIDAY_VOICE_CAMERA`. When enabled, `camera_see` captures a single
+frame from the Mac camera and sends it into the existing Realtime session as an `input_image`.
+FRIDAY does not continuously watch the camera.
+
+Visual identity memory stays explicit and confirmed:
+
+- `visual_person_lookup` computes a local perceptual fingerprint for a camera frame and compares it
+  with saved reference images.
+- If no confident match exists, FRIDAY should ask who the person is.
+- After Anmol or the person confirms the name, `visual_person_remember` copies the reference image
+  under `memory/vision/people/<person-id>/`, stores a `profile.json`, writes `profile.md`, and runs
+  incremental Engram indexing.
+
+Engram still indexes text, not pixels. The image files are durable references; the markdown profile
+card is the searchable/associative memory that links the person name, context, notes, and image
+paths. Visual matches are tentative unless confidence is high.
 
 ## Keyboard shortcut (skhd)
 
