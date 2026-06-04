@@ -11,6 +11,8 @@ export interface DaemonState {
   wsConnected: boolean;
   model: string;
   voice?: string;
+  interruptionEnabled?: boolean;
+  noiseReduction?: string;
   micPeakLevel?: number;
   startedAt: number;
   updatedAt: number;
@@ -40,7 +42,11 @@ export function readPid(): number | null {
 }
 
 export function clearPid(): void {
-  try { rmSync(PID_FILE, { force: true }); } catch { /* ignore */ }
+  try {
+    rmSync(PID_FILE, { force: true });
+  } catch {
+    /* ignore */
+  }
 }
 
 /** True if a process with this pid is alive (signal 0 = existence check). */

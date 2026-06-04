@@ -14,20 +14,31 @@ const PLAYER_BIN = "/tmp/friday-voice/friday-audio-player";
 
 function ensureNativePlayer(): string | null {
   try {
-    const fresh = existsSync(PLAYER_BIN) && statSync(PLAYER_BIN).mtimeMs >= statSync(PLAYER_SRC).mtimeMs;
+    const fresh =
+      existsSync(PLAYER_BIN) &&
+      statSync(PLAYER_BIN).mtimeMs >= statSync(PLAYER_SRC).mtimeMs;
     if (fresh) return PLAYER_BIN;
     log("compiling audio-player.swift...");
-    const result = Bun.spawnSync(["swiftc", "-O", PLAYER_SRC, "-o", PLAYER_BIN], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    const result = Bun.spawnSync(
+      ["swiftc", "-O", PLAYER_SRC, "-o", PLAYER_BIN],
+      {
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
     if (result.exitCode !== 0) {
-      log("swiftc audio-player failed:", result.stderr.toString().slice(0, 600));
+      log(
+        "swiftc audio-player failed:",
+        result.stderr.toString().slice(0, 600),
+      );
       return null;
     }
     return PLAYER_BIN;
   } catch (err) {
-    log("native player unavailable:", err instanceof Error ? err.message : String(err));
+    log(
+      "native player unavailable:",
+      err instanceof Error ? err.message : String(err),
+    );
     return null;
   }
 }
@@ -39,7 +50,8 @@ export function amplify16(buf: Uint8Array, gain: number): void {
   const dv = new DataView(buf.buffer, buf.byteOffset, n * 2);
   for (let i = 0; i < n; i++) {
     let s = dv.getInt16(i * 2, true) * gain;
-    if (s > 32767) s = 32767; else if (s < -32768) s = -32768;
+    if (s > 32767) s = 32767;
+    else if (s < -32768) s = -32768;
     dv.setInt16(i * 2, s, true);
   }
 }
@@ -50,7 +62,10 @@ export function rms16(buf: Uint8Array): number {
   if (n === 0) return 0;
   const dv = new DataView(buf.buffer, buf.byteOffset, n * 2);
   let sum = 0;
-  for (let i = 0; i < n; i++) { const s = dv.getInt16(i * 2, true) / 32768; sum += s * s; }
+  for (let i = 0; i < n; i++) {
+    const s = dv.getInt16(i * 2, true) / 32768;
+    sum += s * s;
+  }
   return Math.min(1, Math.sqrt(sum / n) * 2.2); // *2.2 = gentle gain so speech reads well
 }
 
@@ -58,7 +73,7 @@ export class MicCapture {
   private proc: Subprocess<"ignore", "pipe", "pipe"> | null = null;
   private micIndex: string;
   private rate: number;
-  private onChunk: (base64: string, level: number) => void;
+  private onChunk: (base64: string, level: number, durationMs: number) => void;
   private onLevel?: (level: number) => void;
   private gain: number;
   private stopped = false;
@@ -66,7 +81,7 @@ export class MicCapture {
   constructor(
     micIndex: string,
     rate: number,
-    onChunk: (base64: string, level: number) => void,
+    onChunk: (base64: string, level: number, durationMs: number) => void,
     onLevel?: (level: number) => void,
     gain = 1,
   ) {
@@ -83,10 +98,21 @@ export class MicCapture {
     // ":<idx>" = no video, audio device <idx>. Raw signed-16 LE mono PCM to stdout.
     this.proc = Bun.spawn(
       [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-f", "avfoundation", "-i", `:${this.micIndex}`,
-        "-ac", "1", "-ar", String(this.rate),
-        "-f", "s16le", "-",
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "avfoundation",
+        "-i",
+        `:${this.micIndex}`,
+        "-ac",
+        "1",
+        "-ar",
+        String(this.rate),
+        "-f",
+        "s16le",
+        "-",
       ],
       { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
     );
@@ -97,9 +123,13 @@ export class MicCapture {
   private async pump(): Promise<void> {
     if (!this.proc) return;
     const reader = this.proc.stdout.getReader();
-    let chunks = 0, bytes = 0;
+    let chunks = 0,
+      bytes = 0;
     const tick = setInterval(() => {
-      if (this.stopped) { clearInterval(tick); return; }
+      if (this.stopped) {
+        clearInterval(tick);
+        return;
+      }
       log(`mic: ${chunks} chunks, ${(bytes / 1024).toFixed(0)} KB captured`);
     }, 2000);
     try {
@@ -107,11 +137,19 @@ export class MicCapture {
         const { done, value } = await reader.read();
         if (done || this.stopped) break;
         if (value && value.byteLength) {
-          chunks++; bytes += value.byteLength;
-          amplify16(value, this.gain);     // boost the quiet built-in mic so VAD triggers
+          chunks++;
+          bytes += value.byteLength;
+          amplify16(value, this.gain); // boost the quiet built-in mic so VAD triggers
           const level = rms16(value);
+          const durationMs = Math.ceil(
+            (value.byteLength / (this.rate * 2)) * 1000,
+          );
           this.onLevel?.(level);
-          this.onChunk(Buffer.from(value).toString("base64"), level);
+          this.onChunk(
+            Buffer.from(value).toString("base64"),
+            level,
+            durationMs,
+          );
         }
       }
     } catch {
@@ -119,7 +157,9 @@ export class MicCapture {
     } finally {
       clearInterval(tick);
       if (chunks === 0 && !this.stopped) {
-        log("mic: NO audio captured — likely Microphone permission denied for this process");
+        log(
+          "mic: NO audio captured — likely Microphone permission denied for this process",
+        );
       }
     }
   }
@@ -130,12 +170,18 @@ export class MicCapture {
       const err = await new Response(this.proc.stderr).text();
       const t = err.trim();
       if (t && !this.stopped) log("ffmpeg:", t.slice(0, 400));
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   stop(): void {
     this.stopped = true;
-    try { this.proc?.kill(); } catch { /* ignore */ }
+    try {
+      this.proc?.kill();
+    } catch {
+      /* ignore */
+    }
     this.proc = null;
   }
 }
@@ -150,11 +196,16 @@ export class Player {
   private started = false;
   private prebufferTimer: ReturnType<typeof setTimeout> | null = null;
   private finishTimer: ReturnType<typeof setTimeout> | null = null;
+  private playbackStartedAt = 0;
+  private writtenMs = 0;
 
   constructor(rate: number, prebufferMs = 350) {
     this.rate = rate;
     this.prebufferMs = prebufferMs;
-    this.prebufferBytes = Math.max(1, Math.round(rate * 2 * prebufferMs / 1000));
+    this.prebufferBytes = Math.max(
+      1,
+      Math.round((rate * 2 * prebufferMs) / 1000),
+    );
   }
 
   private spawn(): void {
@@ -162,44 +213,71 @@ export class Player {
     const args = nativePlayer
       ? [nativePlayer, String(this.rate)]
       : [
-          "ffplay", "-hide_banner", "-loglevel", "error",
-          "-nodisp", "-autoexit",
-          "-f", "s16le", "-ar", String(this.rate), "-ch_layout", "mono",
-          "-i", "-",
+          "ffplay",
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-nodisp",
+          "-autoexit",
+          "-f",
+          "s16le",
+          "-ar",
+          String(this.rate),
+          "-ch_layout",
+          "mono",
+          "-i",
+          "-",
         ];
-    this.proc = Bun.spawn(
-      args,
-      { stdin: "pipe", stdout: "ignore", stderr: "pipe" },
-    );
+    this.proc = Bun.spawn(args, {
+      stdin: "pipe",
+      stdout: "ignore",
+      stderr: "pipe",
+    });
     const proc = this.proc;
     void this.drainStderr(proc);
-    void proc.exited.then(() => {
-      if (this.proc === proc) this.proc = null;
-    }).catch(() => {});
+    void proc.exited
+      .then(() => {
+        if (this.proc === proc) this.proc = null;
+      })
+      .catch(() => {});
   }
 
-  private async drainStderr(proc: Subprocess<"pipe", "ignore", "pipe">): Promise<void> {
+  private async drainStderr(
+    proc: Subprocess<"pipe", "ignore", "pipe">,
+  ): Promise<void> {
     try {
       const err = await new Response(proc.stderr).text();
       const t = err.trim();
       if (t) log("ffplay:", t.slice(0, 400));
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   private writeNow(pcm: Buffer): void {
     if (!this.proc) this.spawn();
+    if (!this.playbackStartedAt) this.playbackStartedAt = Date.now();
+    this.writtenMs += Math.ceil((pcm.byteLength / (this.rate * 2)) * 1000);
     try {
       this.proc!.stdin.write(pcm);
       this.proc!.stdin.flush();
     } catch {
       this.spawn();
-      try { this.proc!.stdin.write(pcm); this.proc!.stdin.flush(); } catch { /* drop */ }
+      try {
+        this.proc!.stdin.write(pcm);
+        this.proc!.stdin.flush();
+      } catch {
+        /* drop */
+      }
     }
   }
 
   private startQueued(): void {
     if (this.started || this.queue.length === 0) return;
-    if (this.prebufferTimer) { clearTimeout(this.prebufferTimer); this.prebufferTimer = null; }
+    if (this.prebufferTimer) {
+      clearTimeout(this.prebufferTimer);
+      this.prebufferTimer = null;
+    }
     this.started = true;
     const chunks = this.queue;
     this.queue = [];
@@ -209,7 +287,10 @@ export class Player {
 
   /** Append a PCM chunk to the speaker. Buffers a short pre-roll for smooth speech. */
   write(pcm: Buffer): void {
-    if (this.finishTimer) { clearTimeout(this.finishTimer); this.finishTimer = null; }
+    if (this.finishTimer) {
+      clearTimeout(this.finishTimer);
+      this.finishTimer = null;
+    }
     if (this.started) {
       this.writeNow(pcm);
       return;
@@ -219,8 +300,26 @@ export class Player {
     if (this.queuedBytes >= this.prebufferBytes) {
       this.startQueued();
     } else if (!this.prebufferTimer) {
-      this.prebufferTimer = setTimeout(() => this.startQueued(), this.prebufferMs);
+      this.prebufferTimer = setTimeout(
+        () => this.startQueued(),
+        this.prebufferMs,
+      );
     }
+  }
+
+  /** Reset playback accounting at the beginning of a new assistant audio item. */
+  beginResponse(): void {
+    this.playbackStartedAt = 0;
+    this.writtenMs = 0;
+  }
+
+  /** Approximate how much assistant audio actually reached the speakers. */
+  playedMs(): number {
+    if (!this.playbackStartedAt) return 0;
+    return Math.max(
+      0,
+      Math.min(this.writtenMs, Date.now() - this.playbackStartedAt),
+    );
   }
 
   /** Let queued audio drain, then close ffplay so the next response gets fresh pre-roll. */
@@ -228,32 +327,60 @@ export class Player {
     if (this.finishTimer) clearTimeout(this.finishTimer);
     this.finishTimer = setTimeout(() => {
       this.startQueued();
-      try { this.proc?.stdin.end(); } catch { /* ignore */ }
+      try {
+        this.proc?.stdin.end();
+      } catch {
+        /* ignore */
+      }
       this.proc = null;
       this.started = false;
+      this.playbackStartedAt = 0;
+      this.writtenMs = 0;
       this.finishTimer = null;
     }, delayMs);
   }
 
   /** Stop playback immediately and drop any queued audio. */
   flush(): void {
-    if (this.prebufferTimer) { clearTimeout(this.prebufferTimer); this.prebufferTimer = null; }
-    if (this.finishTimer) { clearTimeout(this.finishTimer); this.finishTimer = null; }
+    if (this.prebufferTimer) {
+      clearTimeout(this.prebufferTimer);
+      this.prebufferTimer = null;
+    }
+    if (this.finishTimer) {
+      clearTimeout(this.finishTimer);
+      this.finishTimer = null;
+    }
     this.queue = [];
     this.queuedBytes = 0;
     this.started = false;
-    try { this.proc?.stdin.end(); } catch { /* ignore */ }
-    try { this.proc?.kill(); } catch { /* ignore */ }
+    this.playbackStartedAt = 0;
+    this.writtenMs = 0;
+    try {
+      this.proc?.stdin.end();
+    } catch {
+      /* ignore */
+    }
+    try {
+      this.proc?.kill();
+    } catch {
+      /* ignore */
+    }
     this.proc = null;
   }
 }
 
 /** Fire a system-sound cue (on/off toggle feedback). Non-fatal, fire-and-forget. */
 export function cue(kind: "on" | "off"): void {
-  const sound = kind === "on"
-    ? "/System/Library/Sounds/Tink.aiff"
-    : "/System/Library/Sounds/Bottle.aiff";
+  const sound =
+    kind === "on"
+      ? "/System/Library/Sounds/Tink.aiff"
+      : "/System/Library/Sounds/Bottle.aiff";
   try {
-    Bun.spawn(["afplay", sound], { stdout: "ignore", stderr: "ignore" }).unref();
-  } catch { /* ignore */ }
+    Bun.spawn(["afplay", sound], {
+      stdout: "ignore",
+      stderr: "ignore",
+    }).unref();
+  } catch {
+    /* ignore */
+  }
 }

@@ -7,7 +7,7 @@ exactly as before.
 
 ## What it does
 
-- Low-latency voice conversation (server-side VAD, hands-free).
+- Low-latency voice conversation (server-side VAD, hands-free, optional noise-gated interruption).
 - Full Mac control via function tools: open apps, run shell, run AppleScript, type text,
   press key combos, screenshot the screen, and move/click/drag the mouse with an orange
   control glow.
@@ -80,7 +80,13 @@ A detached daemon logs to `/tmp/friday-voice/daemon.log`.
 | `FRIDAY_VOICE_VAD_SILENCE_MS` | `700` | trailing silence before Friday answers |
 | `FRIDAY_VOICE_MIC_INDEX` | `0` | avfoundation audio device index |
 | `FRIDAY_VOICE_MIC_GAIN` | `4` | local gain applied before sending PCM to Realtime |
+| `FRIDAY_VOICE_NOISE_REDUCTION` | `far_field` | OpenAI input noise reduction: `far_field` for laptop mic, `near_field` for headset mic, `off` to disable |
 | `FRIDAY_VOICE_ECHO_SUPPRESSION_MS` | `1200` | keep Friday from hearing herself while speaker audio is still playing |
+| `FRIDAY_VOICE_INTERRUPTION` | `false` | enable local, noise-gated interruption while Friday is speaking |
+| `FRIDAY_VOICE_INTERRUPT_MIN_LEVEL` | `0.35` | local post-gain mic RMS threshold required to interrupt |
+| `FRIDAY_VOICE_INTERRUPT_FRAMES` | `8` | consecutive mic chunks above threshold before interrupting |
+| `FRIDAY_VOICE_INTERRUPT_BUFFER_MS` | `650` | recent mic audio replayed to Realtime after an accepted interrupt |
+| `FRIDAY_VOICE_INTERRUPT_COOLDOWN_MS` | `2500` | minimum gap between accepted interruptions |
 | `FRIDAY_VOICE_PLAYBACK_PREBUFFER_MS` | `350` | small output prebuffer for smoother speech playback |
 | `FRIDAY_VOICE_WS_IDLE_OFF` | `true` | drop WS when toggled off |
 | `SLACK_VOICE_CHANNEL` | — | channel id for Claude dispatch audit thread; if unset, engineering dispatch falls back to Codex |
@@ -114,6 +120,16 @@ The Realtime model now sees these first-class tools:
 - `engram_recall` for associative memories from `.engram/dashboard.db`, independent of the
   live `ENGRAM_RECALL=1` prompt bridge.
 - `remember` appends a durable note under `memory/daily/` and triggers `reindexIncremental()`.
+
+## Interruption Mode
+
+Realtime's WebSocket docs say interruption needs client-side playback handling: stop output,
+cancel the in-flight response, then send `conversation.item.truncate` with the assistant audio
+duration that was actually played. Friday does that only after a local noise gate passes.
+
+`turn_detection.interrupt_response` intentionally stays `false` even when
+`FRIDAY_VOICE_INTERRUPTION=true`; otherwise OpenAI's VAD would auto-cancel on any detected noise
+before Friday can apply the local threshold/frame/cooldown filters.
 
 ## Keyboard shortcut (skhd)
 

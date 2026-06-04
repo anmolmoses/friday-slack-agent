@@ -7,6 +7,8 @@ export interface VoiceRepo {
   path: string;
 }
 
+export type VoiceNoiseReduction = "near_field" | "far_field" | "off";
+
 export interface VoiceConfig {
   openaiApiKey: string;
   /** Realtime model. "gpt-realtime-2" is what Anmol calls "Realtime Voice 2". */
@@ -25,8 +27,20 @@ export interface VoiceConfig {
   vadSilenceMs: number;
   /** Mic gain multiplier — the built-in MacBook mic is quiet; x4 helps VAD trigger. */
   micGain: number;
+  /** OpenAI input noise reduction before VAD/model. */
+  inputNoiseReduction: VoiceNoiseReduction;
   /** Drop mic frames briefly after speaker audio so Friday does not hear herself. */
   echoSuppressionMs: number;
+  /** Local, noise-gated interruption toggle. Server auto-interrupt stays off. */
+  interruptionEnabled: boolean;
+  /** Local mic RMS level that must be sustained before interrupting. */
+  interruptMinLevel: number;
+  /** Consecutive local mic chunks above the threshold before interrupting. */
+  interruptFrames: number;
+  /** Recent mic audio to send when an interruption is accepted. */
+  interruptBufferMs: number;
+  /** Minimum gap between accepted interruptions. */
+  interruptCooldownMs: number;
   /** Buffer this much output audio before starting playback to smooth network jitter. */
   playbackPrebufferMs: number;
   /** Drop the WS when toggled off so an idle daemon costs nothing. */
@@ -51,6 +65,14 @@ function bool(name: string, def: boolean): boolean {
   return v === "1" || v.toLowerCase() === "true";
 }
 
+function noiseReduction(
+  name: string,
+  def: VoiceNoiseReduction,
+): VoiceNoiseReduction {
+  const v = process.env[name];
+  return v === "near_field" || v === "far_field" || v === "off" ? v : def;
+}
+
 export function loadVoiceConfig(): VoiceConfig {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -61,7 +83,10 @@ export function loadVoiceConfig(): VoiceConfig {
 
   let repos: VoiceRepo[] = [];
   try {
-    const raw = JSON.parse(process.env.REPOS ?? "[]") as Array<{ name: string; path: string }>;
+    const raw = JSON.parse(process.env.REPOS ?? "[]") as Array<{
+      name: string;
+      path: string;
+    }>;
     repos = raw.map((r) => ({ name: r.name, path: r.path }));
   } catch {
     repos = [];
@@ -77,8 +102,27 @@ export function loadVoiceConfig(): VoiceConfig {
     vadThreshold: Number(process.env.FRIDAY_VOICE_VAD_THRESHOLD ?? "0.05"),
     vadSilenceMs: Number(process.env.FRIDAY_VOICE_VAD_SILENCE_MS ?? "700"),
     micGain: Number(process.env.FRIDAY_VOICE_MIC_GAIN ?? "4"),
-    echoSuppressionMs: Number(process.env.FRIDAY_VOICE_ECHO_SUPPRESSION_MS ?? "1200"),
-    playbackPrebufferMs: Number(process.env.FRIDAY_VOICE_PLAYBACK_PREBUFFER_MS ?? "350"),
+    inputNoiseReduction: noiseReduction(
+      "FRIDAY_VOICE_NOISE_REDUCTION",
+      "far_field",
+    ),
+    echoSuppressionMs: Number(
+      process.env.FRIDAY_VOICE_ECHO_SUPPRESSION_MS ?? "1200",
+    ),
+    interruptionEnabled: bool("FRIDAY_VOICE_INTERRUPTION", false),
+    interruptMinLevel: Number(
+      process.env.FRIDAY_VOICE_INTERRUPT_MIN_LEVEL ?? "0.35",
+    ),
+    interruptFrames: Number(process.env.FRIDAY_VOICE_INTERRUPT_FRAMES ?? "8"),
+    interruptBufferMs: Number(
+      process.env.FRIDAY_VOICE_INTERRUPT_BUFFER_MS ?? "650",
+    ),
+    interruptCooldownMs: Number(
+      process.env.FRIDAY_VOICE_INTERRUPT_COOLDOWN_MS ?? "2500",
+    ),
+    playbackPrebufferMs: Number(
+      process.env.FRIDAY_VOICE_PLAYBACK_PREBUFFER_MS ?? "350",
+    ),
     wsIdleOff: bool("FRIDAY_VOICE_WS_IDLE_OFF", true),
     hudEnabled: bool("FRIDAY_VOICE_HUD", true),
     hudPort: Number(process.env.FRIDAY_VOICE_HUD_PORT ?? "3030"),

@@ -45,6 +45,15 @@ export async function runDaemon(opts: {
   const player = new Player(cfg.sampleRate, cfg.playbackPrebufferMs);
   let suppressMicUntil = 0;
   let estimatedPlaybackUntil = 0;
+  let dropCanceledAudioUntil = 0;
+  let acceptedInterruptUntil = 0;
+  let lastInterruptAt = 0;
+  let interruptHighFrames = 0;
+  let activeAssistantAudioItemId: string | null = null;
+  let activeAssistantAudioContentIndex = 0;
+  let audioResponseStarted = false;
+  let micRingMs = 0;
+  const micRing: Array<{ b64: string; durationMs: number }> = [];
 
   // On-screen holographic HUD (localhost page + transparent Swift overlay).
   const hud = new HudServer(cfg.hudPort);
@@ -55,8 +64,19 @@ export async function runDaemon(opts: {
   }
 
   const client = new RealtimeClient(cfg, instructions, toolDefs, {
-    onAudioDelta: (pcm) => {
+    onAudioDelta: (pcm, meta) => {
       const now = Date.now();
+      if (now < dropCanceledAudioUntil) return;
+      const itemId = meta.itemId ?? activeAssistantAudioItemId;
+      if (
+        !audioResponseStarted ||
+        (itemId && itemId !== activeAssistantAudioItemId)
+      ) {
+        player.beginResponse();
+        audioResponseStarted = true;
+      }
+      if (itemId) activeAssistantAudioItemId = itemId;
+      activeAssistantAudioContentIndex = meta.contentIndex;
       const pcmMs = Math.ceil((pcm.byteLength / (cfg.sampleRate * 2)) * 1000);
       estimatedPlaybackUntil =
         Math.max(estimatedPlaybackUntil, now + cfg.playbackPrebufferMs) + pcmMs;
@@ -79,11 +99,23 @@ export async function runDaemon(opts: {
       if (listening) hud.set("thinking");
     },
     onResponseDone: () => {
+      if (Date.now() < dropCanceledAudioUntil) {
+        dropCanceledAudioUntil = 0;
+        estimatedPlaybackUntil = 0;
+        suppressMicUntil = 0;
+        audioResponseStarted = false;
+        activeAssistantAudioItemId = null;
+        player.flush();
+        if (listening) hud.set("hearing", "interrupted");
+        return;
+      }
       suppressMicUntil = Math.max(
         suppressMicUntil,
         estimatedPlaybackUntil + cfg.echoSuppressionMs,
       );
       estimatedPlaybackUntil = 0;
+      audioResponseStarted = false;
+      activeAssistantAudioItemId = null;
       player.finishSoon();
       if (listening) hud.set("listening");
     },
@@ -98,15 +130,79 @@ export async function runDaemon(opts: {
     onClose: () => syncState(),
   });
 
+  function rememberMicChunk(b64: string, durationMs: number): void {
+    micRing.push({ b64, durationMs });
+    micRingMs += durationMs;
+    while (micRingMs > cfg.interruptBufferMs && micRing.length > 1) {
+      const old = micRing.shift()!;
+      micRingMs -= old.durationMs;
+    }
+  }
+
+  function assistantIsAudible(now: number): boolean {
+    return (
+      audioResponseStarted &&
+      (estimatedPlaybackUntil > now || player.playedMs() > 0)
+    );
+  }
+
+  function tryInterrupt(level: number): boolean {
+    if (!cfg.interruptionEnabled) return false;
+    const now = Date.now();
+    if (!assistantIsAudible(now)) {
+      interruptHighFrames = 0;
+      return false;
+    }
+    if (now - lastInterruptAt < cfg.interruptCooldownMs) return false;
+
+    interruptHighFrames =
+      level >= cfg.interruptMinLevel ? interruptHighFrames + 1 : 0;
+    if (interruptHighFrames < cfg.interruptFrames) return false;
+
+    const playedMs = player.playedMs();
+    const itemId = activeAssistantAudioItemId;
+    lastInterruptAt = now;
+    interruptHighFrames = 0;
+    acceptedInterruptUntil = now + 5000;
+    dropCanceledAudioUntil = now + 3000;
+    estimatedPlaybackUntil = 0;
+    suppressMicUntil = 0;
+
+    log(
+      `accepted interruption: level=${level.toFixed(3)} frames=${cfg.interruptFrames} played=${playedMs}ms item=${itemId ?? "unknown"}`,
+    );
+    client.cancelResponse();
+    if (itemId)
+      client.truncateResponseAudio(
+        itemId,
+        playedMs,
+        activeAssistantAudioContentIndex,
+      );
+    player.flush();
+    for (const chunk of micRing) client.appendAudio(chunk.b64);
+    micRing.length = 0;
+    micRingMs = 0;
+    if (listening) hud.set("hearing", "interrupted");
+    return true;
+  }
+
   let voiceLevel = 0;
   let peakLevel = 0;
   let lastPeakLevel = 0;
   const mic = new MicCapture(
     cfg.micIndex,
     cfg.sampleRate,
-    (b64) => {
+    (b64, lvl, durationMs) => {
       if (!listening || !client.connected) return;
-      if (Date.now() >= suppressMicUntil) client.appendAudio(b64);
+      rememberMicChunk(b64, durationMs);
+      const now = Date.now();
+      if (now < suppressMicUntil) {
+        if (tryInterrupt(lvl)) return;
+        if (now < acceptedInterruptUntil) client.appendAudio(b64);
+        return;
+      }
+      interruptHighFrames = 0;
+      client.appendAudio(b64);
     },
     (lvl) => {
       voiceLevel = Math.max(voiceLevel, lvl);
@@ -127,6 +223,8 @@ export async function runDaemon(opts: {
       wsConnected: client.connected,
       model: cfg.model,
       voice: cfg.voice,
+      interruptionEnabled: cfg.interruptionEnabled,
+      noiseReduction: cfg.inputNoiseReduction,
       micPeakLevel: lastPeakLevel,
       startedAt,
       updatedAt: Date.now(),

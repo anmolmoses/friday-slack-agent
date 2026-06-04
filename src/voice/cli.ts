@@ -42,7 +42,8 @@ async function runOutputTest(text: string): Promise<void> {
     const client = new RealtimeClient(cfg, persona, toolDefs, {
       onAudioDelta: (pcm) => player.write(pcm),
       onSpeechStarted: () => {},
-      onFunctionCall: ({ callId, name }) => client.sendFunctionResult(callId, `Output test skipped tool ${name}.`),
+      onFunctionCall: ({ callId, name }) =>
+        client.sendFunctionResult(callId, `Output test skipped tool ${name}.`),
       onOpen: () => client.sendText(text),
       onResponseDone: () => {
         clearTimeout(timer);
@@ -71,7 +72,9 @@ async function runMicTest(ms: number): Promise<void> {
       chunks++;
       bytes += Buffer.from(b64, "base64").byteLength;
     },
-    (level) => { peak = Math.max(peak, level); },
+    (level) => {
+      peak = Math.max(peak, level);
+    },
     cfg.micGain,
   );
 
@@ -80,13 +83,18 @@ async function runMicTest(ms: number): Promise<void> {
   mic.stop();
   console.log(
     `Mic test (${Math.round(ms / 1000)}s): ${chunks} chunks, ${Math.round(bytes / 1024)} KB, peak ${peak.toFixed(3)}` +
-    (peak < 0.01 ? "\nMic is effectively silent. Check macOS Microphone permission for the app launching Friday voice." : ""),
+      (peak < 0.01
+        ? "\nMic is effectively silent. Check macOS Microphone permission for the app launching Friday voice."
+        : ""),
   );
 }
 
 async function spawnDetached(startListening: boolean): Promise<void> {
   ensureStateDir();
-  appendFileSync(LOG_FILE, `[voice:cli] spawning detached daemon (startListening=${startListening})\n`);
+  appendFileSync(
+    LOG_FILE,
+    `[voice:cli] spawning detached daemon (startListening=${startListening})\n`,
+  );
   const repoRoot = path.resolve(__dirname, "../..");
   const q = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
   const cmd = [
@@ -119,7 +127,9 @@ async function main(): Promise<void> {
         console.log(`Voice daemon already running (pid ${existing}).`);
         return;
       }
-      await runDaemon({ startListening: process.env.FRIDAY_VOICE_START_ON === "1" });
+      await runDaemon({
+        startListening: process.env.FRIDAY_VOICE_START_ON === "1",
+      });
       // runDaemon keeps the process alive (signals + interval); never returns.
       break;
     }
@@ -156,18 +166,22 @@ async function main(): Promise<void> {
       }
       console.log(
         `Voice daemon: running (pid ${pid})\n` +
-        `  listening:    ${state.listening}\n` +
-        `  ws connected: ${state.wsConnected}\n` +
-        `  model:        ${state.model}\n` +
-        `  voice:        ${state.voice ?? "(unknown)"}\n` +
-        `  mic peak:     ${(state.micPeakLevel ?? 0).toFixed(3)}\n` +
-        `  uptime:       ${Math.round((Date.now() - state.startedAt) / 1000)}s`,
+          `  listening:    ${state.listening}\n` +
+          `  ws connected: ${state.wsConnected}\n` +
+          `  model:        ${state.model}\n` +
+          `  voice:        ${state.voice ?? "(unknown)"}\n` +
+          `  interruption: ${state.interruptionEnabled ? "on" : "off"}\n` +
+          `  noise reduce: ${state.noiseReduction ?? "(unknown)"}\n` +
+          `  mic peak:     ${(state.micPeakLevel ?? 0).toFixed(3)}\n` +
+          `  uptime:       ${Math.round((Date.now() - state.startedAt) / 1000)}s`,
       );
       break;
     }
 
     case "test-output": {
-      const text = process.argv.slice(3).join(" ").trim() || "Voice output test. If you can hear me, the speaker path is working.";
+      const text =
+        process.argv.slice(3).join(" ").trim() ||
+        "Voice output test. If you can hear me, the speaker path is working.";
       await runOutputTest(text);
       break;
     }
@@ -179,7 +193,9 @@ async function main(): Promise<void> {
     }
 
     default:
-      console.log("Usage: friday-voice <start|toggle|stop|status|test-output|mic-test>");
+      console.log(
+        "Usage: friday-voice <start|toggle|stop|status|test-output|mic-test>",
+      );
       process.exit(1);
   }
 }

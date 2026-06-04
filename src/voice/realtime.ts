@@ -17,10 +17,12 @@ const EVT = {
   sessionUpdate: "session.update",
   audioAppend: "input_audio_buffer.append",
   itemCreate: "conversation.item.create",
+  itemTruncate: "conversation.item.truncate",
   responseCreate: "response.create",
   responseCancel: "response.cancel",
   // server → client (audio out — accept both GA + legacy)
   audioDelta: ["response.output_audio.delta", "response.audio.delta"],
+  outputItemAdded: "response.output_item.added",
   speechStarted: "input_audio_buffer.speech_started",
   speechStopped: "input_audio_buffer.speech_stopped",
   fnArgsDone: "response.function_call_arguments.done",
@@ -30,11 +32,18 @@ const EVT = {
 } as const;
 
 export interface RealtimeCallbacks {
-  onAudioDelta: (pcm: Buffer) => void;
+  onAudioDelta: (
+    pcm: Buffer,
+    meta: { itemId?: string; contentIndex: number; responseId?: string },
+  ) => void;
   onSpeechStarted: () => void;
   onSpeechStopped?: () => void;
   onResponseDone?: () => void;
-  onFunctionCall: (call: { callId: string; name: string; args: Record<string, unknown> }) => void;
+  onFunctionCall: (call: {
+    callId: string;
+    name: string;
+    args: Record<string, unknown>;
+  }) => void;
   onUserTranscript?: (text: string) => void;
   onOpen?: () => void;
   onClose?: () => void;
@@ -48,8 +57,14 @@ export class RealtimeClient {
   private ws: WebSocket | null = null;
   private audioDeltas = 0;
   private sent = 0;
+  private currentAssistantItemId: string | null = null;
 
-  constructor(cfg: VoiceConfig, instructions: string, tools: RealtimeTool[], cb: RealtimeCallbacks) {
+  constructor(
+    cfg: VoiceConfig,
+    instructions: string,
+    tools: RealtimeTool[],
+    cb: RealtimeCallbacks,
+  ) {
     this.cfg = cfg;
     this.instructions = instructions;
     this.tools = tools;
@@ -74,7 +89,9 @@ export class RealtimeClient {
       this.cb.onOpen?.();
     });
     this.ws.addEventListener("message", (e) => this.onMessage(e));
-    this.ws.addEventListener("error", (e) => log("ws error:", (e as ErrorEvent).message ?? e));
+    this.ws.addEventListener("error", (e) =>
+      log("ws error:", (e as ErrorEvent).message ?? e),
+    );
     this.ws.addEventListener("close", (e) => {
       log(`closed (${(e as CloseEvent).code})`);
       this.ws = null;
@@ -83,7 +100,11 @@ export class RealtimeClient {
   }
 
   close(): void {
-    try { this.ws?.close(); } catch { /* ignore */ }
+    try {
+      this.ws?.close();
+    } catch {
+      /* ignore */
+    }
     this.ws = null;
   }
 
@@ -93,6 +114,10 @@ export class RealtimeClient {
 
   private sendSessionUpdate(): void {
     const fmt = { type: "audio/pcm", rate: this.cfg.sampleRate };
+    const inputNoiseReduction =
+      this.cfg.inputNoiseReduction === "off"
+        ? null
+        : { type: this.cfg.inputNoiseReduction };
     this.send({
       type: EVT.sessionUpdate,
       session: {
@@ -102,8 +127,10 @@ export class RealtimeClient {
         audio: {
           input: {
             format: fmt,
+            noise_reduction: inputNoiseReduction,
             // Lower threshold (built-in mic is quiet even with gain); 700ms trailing
-            // silence ends the turn; create_response makes the model auto-reply.
+            // silence ends the turn. Server auto-interrupt stays off: the daemon
+            // gates noisy barge-in locally, then cancels/truncates explicitly.
             turn_detection: {
               type: this.cfg.vad,
               threshold: this.cfg.vadThreshold,
@@ -123,10 +150,15 @@ export class RealtimeClient {
 
   /** Stream a base64 PCM chunk from the mic. With server VAD, no manual commit. */
   appendAudio(base64: string): void {
-    if (!this.connected) { return; }
+    if (!this.connected) {
+      return;
+    }
     this.send({ type: EVT.audioAppend, audio: base64 });
     this.sent++;
-    if (this.sent % 100 === 0) log(`sent ${this.sent} audio chunks to server (connected=${this.connected})`);
+    if (this.sent % 100 === 0)
+      log(
+        `sent ${this.sent} audio chunks to server (connected=${this.connected})`,
+      );
   }
 
   /** Return a tool result, then ask the model to continue (speak the outcome). */
@@ -154,9 +186,23 @@ export class RealtimeClient {
     });
   }
 
-  /** Barge-in: stop the in-flight spoken response. */
+  /** Stop the in-flight spoken response. */
   cancelResponse(): void {
     this.send({ type: EVT.responseCancel });
+  }
+
+  /** Synchronize server conversation state with what the user actually heard. */
+  truncateResponseAudio(
+    itemId: string,
+    audioEndMs: number,
+    contentIndex = 0,
+  ): void {
+    this.send({
+      type: EVT.itemTruncate,
+      item_id: itemId,
+      content_index: contentIndex,
+      audio_end_ms: Math.max(0, Math.floor(audioEndMs)),
+    });
   }
 
   private onMessage(e: MessageEvent): void {
@@ -170,7 +216,21 @@ export class RealtimeClient {
 
     if ((EVT.audioDelta as readonly string[]).includes(type)) {
       const b64 = (msg.delta ?? msg.audio) as string | undefined;
-      if (b64) { this.audioDeltas++; this.cb.onAudioDelta(Buffer.from(b64, "base64")); }
+      const itemId =
+        typeof msg.item_id === "string"
+          ? msg.item_id
+          : (this.currentAssistantItemId ?? undefined);
+      const contentIndex =
+        typeof msg.content_index === "number" ? msg.content_index : 0;
+      if (b64) {
+        this.audioDeltas++;
+        this.cb.onAudioDelta(Buffer.from(b64, "base64"), {
+          itemId,
+          contentIndex,
+          responseId:
+            typeof msg.response_id === "string" ? msg.response_id : undefined,
+        });
+      }
       return;
     }
 
@@ -182,6 +242,15 @@ export class RealtimeClient {
     }
 
     switch (type) {
+      case EVT.outputItemAdded: {
+        const item = msg.item as
+          | { id?: unknown; type?: unknown; role?: unknown }
+          | undefined;
+        if (item?.role === "assistant" && typeof item.id === "string") {
+          this.currentAssistantItemId = item.id;
+        }
+        break;
+      }
       case EVT.speechStarted:
         this.cb.onSpeechStarted();
         break;
@@ -191,11 +260,16 @@ export class RealtimeClient {
       case EVT.responseDone:
         log(`response done (${this.audioDeltas} audio chunks sent to speaker)`);
         this.audioDeltas = 0;
+        this.currentAssistantItemId = null;
         this.cb.onResponseDone?.();
         break;
       case EVT.fnArgsDone: {
         let args: Record<string, unknown> = {};
-        try { args = JSON.parse((msg.arguments as string) || "{}"); } catch { /* keep {} */ }
+        try {
+          args = JSON.parse((msg.arguments as string) || "{}");
+        } catch {
+          /* keep {} */
+        }
         this.cb.onFunctionCall({
           callId: msg.call_id as string,
           name: msg.name as string,
