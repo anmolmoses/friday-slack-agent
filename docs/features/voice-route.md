@@ -10,19 +10,19 @@ exactly as before.
 - Low-latency voice conversation (server-side VAD, hands-free, with barge-in).
 - Full Mac control via function tools: open apps, run shell, run AppleScript, type text,
   press key combos.
-- Hands heavy engineering work to the existing `bin/dispatch-claude.sh` (`dispatch_to_claude`),
-  which reports back in a Slack thread.
+- Hands heavy engineering work to `dispatch_engineering`, which infers the repo and routes to
+  Claude+Slack when configured or local Codex in Terminal when Slack is unavailable.
 - Toggle on/off from a keyboard shortcut (skhd) or the CLI.
 
 ## Architecture
 
 ```
  mic ──ffmpeg(s16le 24k mono)──▶ daemon ──base64──▶  OpenAI Realtime WS (gpt-realtime-2)
- spkr ◀──ffplay(s16le 24k)────── daemon ◀──output_audio.delta──┘   │
+ spkr ◀──native AVAudio player──── daemon ◀──output_audio.delta────┘   │
                                           ▲ function_call           │
                                           └── tools.ts ──────────────┘
                                               run_shell / run_applescript / open_app /
-                                              type_text / key_combo / dispatch_to_claude
+                                              type_text / key_combo / dispatch_engineering
  skhd hotkey ─▶ bin/friday-voice toggle ─(SIGUSR2)▶ daemon: flip listening on/off
 ```
 
@@ -37,8 +37,9 @@ daemon costs nothing.
 | `src/voice/config.ts` | env → `VoiceConfig` (reuses `OPENAI_API_KEY`, `SLACK_BOT_TOKEN`, `REPOS`) |
 | `src/voice/control.ts` | pidfile + state.json under `/tmp/friday-voice/` |
 | `src/voice/persona.ts` | short spoken persona (loads `friday-personal/VOICE.md`) |
-| `src/voice/tools.ts` | tool defs + executors (Mac control + `dispatch_to_claude`) |
-| `src/voice/audio.ts` | ffmpeg mic capture + ffplay playback + barge-in flush |
+| `src/voice/tools.ts` | tool defs + executors (Mac control + smart engineering dispatch) |
+| `src/voice/audio.ts` | ffmpeg mic capture + native PCM playback + barge-in flush |
+| `src/voice/audio-player.swift` | tiny AVFoundation PCM player used instead of `ffplay` |
 | `src/voice/realtime.ts` | OpenAI Realtime WS client (event names centralized in `EVT`) |
 | `src/voice/daemon.ts` | orchestrator + lifecycle + signal handling |
 | `src/voice/cli.ts` | `start` / `toggle` / `stop` / `status` |
@@ -70,8 +71,10 @@ A detached daemon logs to `/tmp/friday-voice/daemon.log`.
 | `FRIDAY_VOICE_VAD_SILENCE_MS` | `700` | trailing silence before Friday answers |
 | `FRIDAY_VOICE_MIC_INDEX` | `0` | avfoundation audio device index |
 | `FRIDAY_VOICE_MIC_GAIN` | `4` | local gain applied before sending PCM to Realtime |
+| `FRIDAY_VOICE_ECHO_SUPPRESSION_MS` | `1200` | keep Friday from interrupting herself while speaker audio is still playing |
+| `FRIDAY_VOICE_PLAYBACK_PREBUFFER_MS` | `350` | small output prebuffer for smoother speech playback |
 | `FRIDAY_VOICE_WS_IDLE_OFF` | `true` | drop WS when toggled off |
-| `SLACK_VOICE_CHANNEL` | — | channel id for `dispatch_to_claude` audit thread; tool disabled if unset |
+| `SLACK_VOICE_CHANNEL` | — | channel id for Claude dispatch audit thread; if unset, engineering dispatch falls back to Codex |
 
 Find the mic index with: `ffmpeg -f avfoundation -list_devices true -i ""` (look under
 "AVFoundation audio devices"). On this Mac, `0` = "MacBook Pro Microphone".
@@ -111,14 +114,29 @@ launchctl unload   ~/Library/LaunchAgents/com.friday.voice.plist   # disable
 `friday-voice stop` stays stopped (KeepAlive is off); the hotkey re-launches a detached
 daemon on demand. Idle daemon holds no WS, so it costs nothing until you toggle on.
 
-## How `dispatch_to_claude` works
+## How Engineering Dispatch Works
+
+Friday exposes `dispatch_engineering` as the preferred voice tool for substantial coding,
+debugging, builds, PR reviews, and releases. It chooses a repo without asking when it can:
+
+- GitHub/PR URL → configured repo name from the URL.
+- Exact configured repo name in the request.
+- Keyword aliases: backend/api/server → `gx-backend`; mobile/app/expo/iOS/Android → `gx-client-expo`;
+  web/Next/frontend → `gx-client-next`; admin/dashboard → `gx-admin-client`; talent/candidate →
+  `gx-talent-client`.
+- No match → the Friday repo itself.
+
+If `SLACK_VOICE_CHANNEL` is configured, `dispatch_engineering` routes through
+`dispatch_to_claude` and reports in Slack. If Slack is not configured, it starts a local
+`codex exec` session in Terminal via `dispatch_to_codex` instead of refusing the task.
+
+## How `dispatch_to_claude` Works
 
 It needs a Slack thread to report into (the existing Stop-hook posts results there). On the
 first dispatch of a session it posts a seed message to `SLACK_VOICE_CHANNEL`, captures the
 thread `ts`, and reuses it. `repo` (optional) maps to a configured repo's clone root; the
 dispatch script then isolates a per-thread worktree exactly as for Slack-driven dispatches.
-If `SLACK_VOICE_CHANNEL` is unset, the tool tells Friday it's disabled and she does the work
-directly instead.
+If `SLACK_VOICE_CHANNEL` is unset, the voice route falls back to local Codex dispatch.
 
 ## Realtime API notes
 

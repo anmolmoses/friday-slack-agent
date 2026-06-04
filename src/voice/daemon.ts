@@ -4,7 +4,7 @@
 
 import { loadVoiceConfig } from "./config.ts";
 import { loadVoicePersona } from "./persona.ts";
-import { TOOL_DEFS, ToolRunner } from "./tools.ts";
+import { toolDefsForConfig, ToolRunner } from "./tools.ts";
 import { MicCapture, Player, cue, rms16 } from "./audio.ts";
 import { RealtimeClient } from "./realtime.ts";
 import { HudServer } from "./hud-server.ts";
@@ -14,9 +14,24 @@ import type { Subprocess } from "bun";
 
 const log = (...a: unknown[]) => console.log("[voice:daemon]", ...a);
 
+function engineeringContext(cfg: ReturnType<typeof loadVoiceConfig>): string {
+  const repos = cfg.repos.map((r) => `- ${r.name}: ${r.path}`).join("\n") || "- friday: this repo";
+  return [
+    "## Engineering voice routing",
+    "For substantial coding/build/debug/review tasks, use dispatch_engineering.",
+    "Do not ask Anmol which repo to use unless the request is truly ambiguous and choosing wrong would be destructive.",
+    "Infer the repo from GitHub URLs, PR URLs, explicit repo names, or keywords: backend/api -> gx-backend; mobile/app/expo/iOS/Android -> gx-client-expo; web/Next/frontend -> gx-client-next; admin/dashboard -> gx-admin-client; talent/candidate -> gx-talent-client.",
+    "If Slack dispatch is unavailable, dispatch_engineering will start local Codex in Terminal instead of refusing.",
+    "Configured repos:",
+    repos,
+  ].join("\n");
+}
+
 export async function runDaemon(opts: { startListening: boolean }): Promise<void> {
   const cfg = loadVoiceConfig();
   const persona = await loadVoicePersona();
+  const instructions = `${persona}\n\n${engineeringContext(cfg)}`;
+  const toolDefs = toolDefsForConfig(cfg);
   const tools = new ToolRunner(cfg);
   const player = new Player(cfg.sampleRate, cfg.playbackPrebufferMs);
   let suppressMicUntil = 0;
@@ -30,7 +45,7 @@ export async function runDaemon(opts: { startListening: boolean }): Promise<void
     overlayProc = await spawnOverlay(hud.url);
   }
 
-  const client = new RealtimeClient(cfg, persona, TOOL_DEFS, {
+  const client = new RealtimeClient(cfg, instructions, toolDefs, {
     onAudioDelta: (pcm) => {
       const now = Date.now();
       const pcmMs = Math.ceil((pcm.byteLength / (cfg.sampleRate * 2)) * 1000);

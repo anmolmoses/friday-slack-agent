@@ -9,11 +9,14 @@
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { inferRepoFromText } from "../slack/routing.ts";
 import type { VoiceConfig } from "./config.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../..");
 const DISPATCH_SH = path.join(REPO_ROOT, "bin", "dispatch-claude.sh");
+const VOICE_DISPATCH_DIR = "/tmp/friday-voice/dispatch";
 
 const MAX_OUTPUT = 4000; // chars of tool output handed back to the model
 
@@ -24,7 +27,15 @@ export interface RealtimeTool {
   parameters: Record<string, unknown>;
 }
 
-export const TOOL_DEFS: RealtimeTool[] = [
+function repoToolDescription(cfg?: VoiceConfig): string {
+  const repos = cfg?.repos.map((r) => r.name).join(", ");
+  return repos
+    ? `Optional repo name. Known repos: ${repos}. If omitted, Friday will infer it from the prompt/URL/keywords.`
+    : "Optional repo name. If omitted, Friday will infer it from the prompt when possible.";
+}
+
+export function toolDefsForConfig(cfg?: VoiceConfig): RealtimeTool[] {
+  return [
   {
     type: "function",
     name: "run_shell",
@@ -90,6 +101,45 @@ export const TOOL_DEFS: RealtimeTool[] = [
   },
   {
     type: "function",
+    name: "dispatch_engineering",
+    description:
+      "Preferred tool for substantial engineering work. It infers the target repo from the prompt, GitHub URL, PR URL, or keywords; then dispatches to Claude+Slack when Slack is configured, otherwise local Codex in a Terminal. Use this instead of asking Anmol which repo unless the task is truly ambiguous and dangerous.",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt: { type: "string", description: "The full engineering task instruction." },
+        repo: {
+          type: "string",
+          description: repoToolDescription(cfg),
+        },
+        engine: {
+          type: "string",
+          enum: ["auto", "codex", "claude"],
+          description: "auto chooses Claude+Slack when available, otherwise local Codex. Use codex for local terminal work; claude for Slack-audited dispatch.",
+        },
+      },
+      required: ["prompt"],
+    },
+  },
+  {
+    type: "function",
+    name: "dispatch_to_codex",
+    description:
+      "Start a local Codex engineering session in Terminal. Use when Slack dispatch is unavailable, when Anmol says Codex, or for local repo work that should not depend on Slack.",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt: { type: "string", description: "The full engineering task instruction." },
+        repo: {
+          type: "string",
+          description: repoToolDescription(cfg),
+        },
+      },
+      required: ["prompt"],
+    },
+  },
+  {
+    type: "function",
     name: "dispatch_to_claude",
     description:
       "Hand a substantial engineering task to a full Claude Code session in a terminal (building a feature, fixing a bug, reviewing a PR, running a release). It runs asynchronously and reports back in Slack. Use this instead of doing big coding work yourself.",
@@ -99,16 +149,23 @@ export const TOOL_DEFS: RealtimeTool[] = [
         prompt: { type: "string", description: "The full task instruction for the Claude Code session." },
         repo: {
           type: "string",
-          description: "Optional repo name to run in (one of the configured repos). Omit for a general/non-repo task.",
+          description: repoToolDescription(cfg),
         },
       },
       required: ["prompt"],
     },
   },
 ];
+}
+
+export const TOOL_DEFS: RealtimeTool[] = toolDefsForConfig();
 
 function truncate(s: string): string {
   return s.length > MAX_OUTPUT ? `${s.slice(0, MAX_OUTPUT)}\n…[truncated]` : s;
+}
+
+function shellQuote(s: string): string {
+  return `'${s.replaceAll("'", "'\\''")}'`;
 }
 
 async function run(cmd: string[], input?: string): Promise<string> {
@@ -187,8 +244,16 @@ export class ToolRunner {
           );
         case "key_combo":
           return await run(["/usr/bin/osascript", "-"], comboToAppleScript(String(args.combo ?? "")));
+        case "dispatch_engineering":
+          return await this.dispatchEngineering(
+            String(args.prompt ?? ""),
+            args.repo ? String(args.repo) : undefined,
+            args.engine ? String(args.engine) : "auto",
+          );
+        case "dispatch_to_codex":
+          return await this.dispatchCodex(String(args.prompt ?? ""), args.repo ? String(args.repo) : undefined);
         case "dispatch_to_claude":
-          return await this.dispatch(String(args.prompt ?? ""), args.repo ? String(args.repo) : undefined);
+          return await this.dispatchClaude(String(args.prompt ?? ""), args.repo ? String(args.repo) : undefined);
         default:
           return `Unknown tool: ${name}`;
       }
@@ -197,26 +262,66 @@ export class ToolRunner {
     }
   }
 
-  private async dispatch(prompt: string, repo?: string): Promise<string> {
-    const { slackBotToken, slackVoiceChannel } = this.cfg;
-    if (!slackBotToken || !slackVoiceChannel) {
-      return "I can't dispatch — no Slack channel is configured (set SLACK_VOICE_CHANNEL). I can do it directly here instead.";
+  private resolveRepo(prompt: string, repo?: string): { name: string; path: string; reason: string } {
+    const configured = this.cfg.repos;
+    const names = configured.map((r) => r.name);
+    const lower = (s: string) => s.toLowerCase();
+
+    if (repo) {
+      const explicit = configured.find((r) => lower(r.name) === lower(repo));
+      if (explicit) return { name: explicit.name, path: explicit.path, reason: `explicit repo "${repo}"` };
     }
 
-    // Resolve cwd: the named repo's clone root, else the Friday repo itself.
-    let cwd = REPO_ROOT;
-    if (repo) {
-      const match = this.cfg.repos.find((r) => r.name.toLowerCase() === repo.toLowerCase());
-      if (!match) {
-        return `I don't have a repo called "${repo}". Configured repos: ${this.cfg.repos.map((r) => r.name).join(", ") || "(none)"}.`;
-      }
-      cwd = match.path;
+    const fromUrl = inferRepoFromText(prompt, names);
+    if (fromUrl) {
+      const match = configured.find((r) => r.name === fromUrl)!;
+      return { name: match.name, path: match.path, reason: "GitHub URL" };
     }
+
+    for (const r of configured) {
+      const escaped = r.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (new RegExp(`(^|[^a-z0-9_-])${escaped}([^a-z0-9_-]|$)`, "i").test(prompt)) {
+        return { name: r.name, path: r.path, reason: `repo name "${r.name}" mentioned` };
+      }
+    }
+
+    const aliases: Array<[RegExp, string]> = [
+      [/\b(api|backend|server|cron|mongo|database|payments?)\b/i, "gx-backend"],
+      [/\b(mobile|app|expo|react native|ios|android|ota|eas)\b/i, "gx-client-expo"],
+      [/\b(web|website|next|landing|frontend|client next)\b/i, "gx-client-next"],
+      [/\b(admin|dashboard|internal tool)\b/i, "gx-admin-client"],
+      [/\b(talent|candidate|recruit)\b/i, "gx-talent-client"],
+      [/\b(slack lookup|slack-lookup)\b/i, "slack-lookup"],
+      [/\b(built at growthx|built-at-growthx|portfolio)\b/i, "Built-at-GrowthX"],
+    ];
+    for (const [pattern, name] of aliases) {
+      if (!pattern.test(prompt)) continue;
+      const match = configured.find((r) => r.name === name);
+      if (match) return { name: match.name, path: match.path, reason: `keyword alias → ${name}` };
+    }
+
+    return { name: "friday", path: REPO_ROOT, reason: "no repo inferred; using Friday repo" };
+  }
+
+  private async dispatchEngineering(prompt: string, repo?: string, engine = "auto"): Promise<string> {
+    const wantsClaude = engine === "claude" || (engine === "auto" && Boolean(this.cfg.slackBotToken && this.cfg.slackVoiceChannel));
+    if (wantsClaude) return await this.dispatchClaude(prompt, repo);
+    return await this.dispatchCodex(prompt, repo);
+  }
+
+  private async dispatchClaude(prompt: string, repo?: string): Promise<string> {
+    const { slackBotToken, slackVoiceChannel } = this.cfg;
+    if (!slackBotToken || !slackVoiceChannel) {
+      return await this.dispatchCodex(prompt, repo);
+    }
+
+    const resolved = this.resolveRepo(prompt, repo);
+    const cwd = resolved.path;
 
     // Seed (or reuse) a Slack thread so dispatch-claude.sh can report back.
     if (!this.dispatchThreadTs) {
       const seed = await this.postSlack(
-        `:microphone: *Voice dispatch* — Anmol asked me (by voice) to work on ${repo ? `\`${repo}\`` : "a task"}.`,
+        `:microphone: *Voice dispatch* — Anmol asked me (by voice) to work on \`${resolved.name}\`.`,
       );
       if (!seed) return "I couldn't open a Slack thread to track that — Slack post failed.";
       this.dispatchThreadTs = seed;
@@ -242,7 +347,46 @@ export class ToolRunner {
     if (code !== 0) {
       return `Dispatch failed (exit ${code}): ${truncate((err || out).trim())}`;
     }
-    return `Kicked off a Claude session${repo ? ` on ${repo}` : ""} — it's running in a terminal and will report back in the Slack thread. ${out.trim()}`;
+    return `Kicked off a Claude session on ${resolved.name} (${resolved.reason}) — it's running in a terminal and will report back in the Slack thread. ${out.trim()}`;
+  }
+
+  private async dispatchCodex(prompt: string, repo?: string): Promise<string> {
+    const resolved = this.resolveRepo(prompt, repo);
+    mkdirSync(VOICE_DISPATCH_DIR, { recursive: true });
+    const id = `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`;
+    const promptPath = path.join(VOICE_DISPATCH_DIR, `${id}.prompt.md`);
+    const fullPrompt = [
+      `You are handling an engineering task from Friday's voice route.`,
+      `Target repo: ${resolved.name}`,
+      `Repo path: ${resolved.path}`,
+      `Repo selection reason: ${resolved.reason}`,
+      "",
+      prompt,
+    ].join("\n");
+    writeFileSync(promptPath, fullPrompt);
+
+    const command = [
+      `cd ${shellQuote(resolved.path)}`,
+      [
+        "codex exec",
+        "--ask-for-approval never",
+        "--sandbox danger-full-access",
+        "--search",
+        `--cd ${shellQuote(resolved.path)}`,
+        `< ${shellQuote(promptPath)}`,
+      ].join(" "),
+      "printf '\\n[Friday voice Codex dispatch complete]\\n'",
+    ].join(" && ");
+
+    const script = [
+      `tell application "Terminal"`,
+      `activate`,
+      `do script ${JSON.stringify(command)}`,
+      `end tell`,
+    ].join("\n");
+    const res = await run(["/usr/bin/osascript", "-"], script);
+    if (res.startsWith("[exit ")) return `Codex dispatch failed: ${res}`;
+    return `Started a local Codex session on ${resolved.name} (${resolved.reason}). It is running in Terminal.`;
   }
 
   /** Post to SLACK_VOICE_CHANNEL via Web API; returns the message ts (thread root). */

@@ -15,7 +15,7 @@ import { loadVoiceConfig } from "./config.ts";
 import { loadVoicePersona } from "./persona.ts";
 import { MicCapture, Player } from "./audio.ts";
 import { RealtimeClient } from "./realtime.ts";
-import { TOOL_DEFS } from "./tools.ts";
+import { toolDefsForConfig } from "./tools.ts";
 import {
   runningDaemonPid,
   readState,
@@ -29,6 +29,7 @@ const CLI_PATH = path.join(__dirname, "cli.ts");
 async function runOutputTest(text: string): Promise<void> {
   const cfg = loadVoiceConfig();
   const persona = await loadVoicePersona();
+  const toolDefs = toolDefsForConfig(cfg);
   const player = new Player(cfg.sampleRate, cfg.playbackPrebufferMs);
 
   await new Promise<void>((resolve, reject) => {
@@ -38,7 +39,7 @@ async function runOutputTest(text: string): Promise<void> {
       reject(new Error("Timed out waiting for Realtime output audio."));
     }, 20_000);
 
-    const client = new RealtimeClient(cfg, persona, TOOL_DEFS, {
+    const client = new RealtimeClient(cfg, persona, toolDefs, {
       onAudioDelta: (pcm) => player.write(pcm),
       onSpeechStarted: () => {},
       onFunctionCall: ({ callId, name }) => client.sendFunctionResult(callId, `Output test skipped tool ${name}.`),
