@@ -527,12 +527,13 @@ export class SessionManager {
         const args = event.text.trim();
         const lightOnly = /\blight\b/.test(args);
         const dryRun = /\bdry\b/.test(args);
+        const withDecay = /\bdecay\b/.test(args);
         this.onCommandResponse?.(event, `Dreaming (${lightOnly ? "light only" : dryRun ? "dry run" : "full"})… this can take a minute.`);
         (async () => {
           try {
             const { runDream } = await import("../memory/dreaming.ts");
-            const result = await runDream({ lightOnly, dryRun, withNarrative: true });
-            const head = `Dream complete. light=${result.lightHits} rem=${result.remHits} deep=${result.deepPromoted}`;
+            const result = await runDream({ lightOnly, dryRun, withNarrative: true, withDecay });
+            const head = `Dream complete. light=${result.lightHits} rem=${result.remHits} deep=${result.deepPromoted}${withDecay ? ` decay=${result.decayArchived}` : ""}`;
             this.onCommandResponse?.(
               event,
               `${head}\n\n${result.summary.slice(0, 2500)}`,

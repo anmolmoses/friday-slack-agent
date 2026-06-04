@@ -101,12 +101,14 @@ async function main() {
       const dryRun = parseFlag(args, "--dry-run", false) === true;
       const lightOnly = parseFlag(args, "--light-only", false) === true;
       const narrative = parseFlag(args, "--narrative", false) === true;
+      const decay = parseFlag(args, "--decay", false) === true;
       const lookback = Number.parseInt((parseFlag(args, "--lookback", true) as string) ?? "3", 10);
       const deepLimit = Number.parseInt((parseFlag(args, "--deep-limit", true) as string) ?? "10", 10);
       const result = await runDream({
         dryRun,
         lightOnly,
         withNarrative: narrative,
+        withDecay: decay,
         lightLookbackDays: lookback,
         deepLimit,
       });

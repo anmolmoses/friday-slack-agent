@@ -2,22 +2,26 @@
  * Auto-capture — the "remember what was said" half of Friday's memory, with
  * structured + emotional tagging.
  *
- * After each turn, the exchange is written as its OWN markdown file under
- * memory/conversations/<date>/ with frontmatter tags, so engram indexes it as a
- * first-class, typed memory (not an untagged blob). Capture is instant with
- * basic tags; a debounced (5s) batch then asks the LLM to ENRICH the new files
- * — tier (episodic/semantic/procedural → the short/long-term split), importance,
- * emotion + intensity, topic, people — rewrites their frontmatter, and runs an
- * incremental reindex so they're recallable within seconds.
+ * After each turn the exchange is held in a per-process WORKING buffer (in
+ * memory, no disk, emotion-free) — the live --resume transcript is the real
+ * working memory; this buffer just stages the exchange for the salience gate.
+ * A debounced (5s) batch then asks the LLM to TAG the buffered exchanges —
+ * tier (episodic/semantic/procedural → the short/long-term split), importance,
+ * emotion + intensity, topic, people — and only those that clear the salience
+ * gate (T1, see salience.ts) are written to memory/conversations/<date>/ as
+ * first-class short-term files + incrementally reindexed. The rest evaporate.
  *
- * Everything fails soft: if tagging fails, the basic-tagged memory still
- * persists and indexes. OFF BY DEFAULT — ENGRAM_CAPTURE=1.
+ * Fails soft two ways: if tagging fails, the whole batch persists with basic
+ * tags (we'd rather over-capture than lose memory on an LLM hiccup); and the
+ * gate can be disabled with ENGRAM_CAPTURE_GATE=0 (persist everything, the
+ * pre-T1 behavior). OFF BY DEFAULT — ENGRAM_CAPTURE=1.
  */
 
 import path from "node:path";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { log } from "../logger.ts";
 import { reindexIncremental, tagExchanges } from "./engram-bridge.ts";
+import { isSalient, detectExplicitRemember } from "./salience.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../..");
 const CONV_ROOT = path.join(REPO_ROOT, "memory", "conversations");
@@ -27,9 +31,15 @@ export function engramCaptureEnabled(): boolean {
   return process.env.ENGRAM_CAPTURE === "1";
 }
 
+/** The salience gate is on unless explicitly disabled (rollback to pre-T1). */
+function captureGateEnabled(): boolean {
+  return process.env.ENGRAM_CAPTURE_GATE !== "0";
+}
+
 interface Pending {
-  file: string;
+  file: string; // target path, written only if the exchange clears the gate
   body: string;
+  explicit: boolean; // user asked to remember → always salient
   base: { date: string; author: string | null; channel: string; thread: string };
 }
 const pending: Pending[] = [];
@@ -78,8 +88,9 @@ function renderFile(body: string, fm: {
 }
 
 /**
- * Persist one exchange as a tagged memory file (basic tags now), and schedule a
- * batched LLM enrichment + incremental reindex. No-op when disabled or trivial.
+ * Stage one exchange in the working buffer and schedule the batched tag +
+ * salience gate. Nothing touches disk here — only salient exchanges are
+ * persisted later (see enrichAndReindex). No-op when disabled or trivial.
  */
 export function captureExchange(args: {
   channel: string; channelName?: string | null; threadId: string;
@@ -90,25 +101,41 @@ export function captureExchange(args: {
   if (userText.length < MIN_CAPTURE_CHARS) return;
 
   try {
-    const dir = dayDir();
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     const now = new Date();
     const stamp = now.toISOString().replace(/[:.]/g, "-");
-    const file = path.join(dir, `${stamp}-${args.threadId.replace(/\./g, "_")}.md`);
+    // Target path is computed at capture time (so filenames keep capture order)
+    // but the file is only written if the exchange clears the gate.
+    const file = path.join(dayDir(), `${stamp}-${args.threadId.replace(/\./g, "_")}.md`);
     const body = `**Them:** ${clip(userText, 1500)}\n\n**Friday:** ${clip(args.reply ?? "", 1500)}`;
 
-    // Basic tags now — episodic, neutral, mid importance. Enrichment refines these.
-    writeFileSync(file, renderFile(body, {
-      date: now.toISOString(), tier: "episodic", importance: 0.5, emotion: "neutral",
-      emotionIntensity: 0, topic: "", people: args.user ?? "", author: args.user,
-      channel: args.channelName ? `#${args.channelName}` : args.channel, thread: args.threadId, enriched: false,
-    }), "utf-8");
-
-    pending.push({ file, body, base: { date: now.toISOString(), author: args.user, channel: args.channelName ? `#${args.channelName}` : args.channel, thread: args.threadId } });
+    pending.push({
+      file,
+      body,
+      explicit: detectExplicitRemember(userText),
+      base: {
+        date: now.toISOString(), author: args.user,
+        channel: args.channelName ? `#${args.channelName}` : args.channel, thread: args.threadId,
+      },
+    });
     scheduleEnrich();
   } catch (err) {
     log.warn("engram", `captureExchange failed: ${err}`);
   }
+}
+
+/** Write one buffered exchange to disk with the given tags. */
+function persist(b: Pending, tag: {
+  tier: string; importance: number; emotion: string; emotionIntensity: number;
+  topic: string; people: string; enriched: boolean; summary?: string;
+}): void {
+  const dir = path.dirname(b.file);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(b.file, renderFile(b.body, {
+    date: b.base.date, tier: tag.tier, importance: tag.importance, emotion: tag.emotion,
+    emotionIntensity: tag.emotionIntensity, topic: tag.topic, people: tag.people,
+    author: b.base.author, channel: b.base.channel, thread: b.base.thread,
+    enriched: tag.enriched, summary: tag.summary,
+  }), "utf-8");
 }
 
 function scheduleEnrich(): void {
@@ -116,32 +143,59 @@ function scheduleEnrich(): void {
   enrichTimer = setTimeout(() => { enrichTimer = null; void enrichAndReindex(); }, 5_000);
 }
 
-/** Tag the queued exchanges (LLM), rewrite their frontmatter, then reindex. */
+/**
+ * Tag the buffered exchanges (LLM), gate them on salience, persist the
+ * survivors, then reindex. On tagging failure, fail soft: persist the whole
+ * batch with basic tags rather than lose memory.
+ */
 async function enrichAndReindex(): Promise<void> {
   const batch = pending.splice(0, pending.length);
   if (batch.length === 0) return;
 
+  let persisted = 0;
   try {
     const tags = await tagExchanges(batch.map((b) => b.body));
-    if (tags) {
+
+    if (!tags) {
+      // Tagging unavailable — degrade to pre-T1: persist everything, basic tags.
+      for (const b of batch) {
+        try {
+          persist(b, {
+            tier: "episodic", importance: 0.5, emotion: "neutral", emotionIntensity: 0,
+            topic: "", people: b.base.author ?? "", enriched: false,
+          });
+          persisted++;
+        } catch { /* skip this one */ }
+      }
+      log.warn("engram", `tagging unavailable — persisted ${persisted} exchange(s) with basic tags`);
+    } else {
+      const gated = captureGateEnabled();
+      let dropped = 0;
       for (let i = 0; i < batch.length; i++) {
         const b = batch[i]!, t = tags[i]!;
+        const salient = !gated || isSalient({
+          emotionIntensity: t.emotionIntensity ?? 0,
+          importance: t.importance ?? 0,
+          tier: t.tier || "episodic",
+          explicit: b.explicit,
+        });
+        if (!salient) { dropped++; continue; } // evaporates with working memory
         // Merge LLM-extracted people with the author handle.
         const people = [...new Set([...(t.people ?? []), b.base.author].filter(Boolean) as string[])].join(", ");
         try {
-          writeFileSync(b.file, renderFile(b.body, {
-            date: b.base.date, tier: t.tier || "episodic", importance: t.importance ?? 0.5,
+          persist(b, {
+            tier: t.tier || "episodic", importance: t.importance ?? 0.5,
             emotion: t.emotion || "neutral", emotionIntensity: t.emotionIntensity ?? 0,
-            topic: t.topic || "", people, author: b.base.author,
-            channel: b.base.channel, thread: b.base.thread, enriched: true, summary: t.summary,
-          }), "utf-8");
-        } catch { /* keep basic file */ }
+            topic: t.topic || "", people, enriched: true, summary: t.summary,
+          });
+          persisted++;
+        } catch { /* skip this one */ }
       }
-      log.info("engram", `enriched ${batch.length} captured exchange(s)`);
+      log.info("engram", `salience gate: kept ${persisted}, dropped ${dropped} of ${batch.length} exchange(s)`);
     }
   } catch (err) {
-    log.warn("engram", `enrichment failed (keeping basic tags): ${err}`);
+    log.warn("engram", `enrichment failed: ${err}`);
   }
 
-  await reindexIncremental();
+  if (persisted > 0) await reindexIncremental();
 }

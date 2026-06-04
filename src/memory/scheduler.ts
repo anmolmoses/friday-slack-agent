@@ -17,6 +17,7 @@ const DEFAULT_OPTIONS: ScheduleOptions = {
     lightLookbackDays: 3,
     deepLimit: 10,
     withNarrative: true,
+    withDecay: true,
     dryRun: false,
   },
 };
@@ -47,7 +48,7 @@ export function startNightlyDream(partial: Partial<ScheduleOptions> = {}): () =>
         const result = await runDream(opts.dreamOptions);
         log.info(
           "memory/scheduler",
-          `dream done — light=${result.lightHits} rem=${result.remHits} deep=${result.deepPromoted}`,
+          `dream done — light=${result.lightHits} rem=${result.remHits} deep=${result.deepPromoted} decay=${result.decayArchived}`,
         );
       } catch (err) {
         log.error("memory/scheduler", `dream failed: ${err}`);

@@ -66,6 +66,8 @@ export interface PromotionWeights {
   recency: number;
   consolidation: number;
   conceptual: number;
+  /** Emotional salience at encode time — the amygdala tag (see emotion.ts). */
+  emotion: number;
 }
 
 export interface PromotionComponents extends PromotionWeights {}
@@ -93,23 +95,42 @@ export interface PromotionCandidate {
   recallDays: string[];
   conceptTags: string[];
   components: PromotionComponents;
+  /** Dominant emotion label from the source file's frontmatter. */
+  emotion?: string;
+  /** [0, 1] emotion intensity used for scoring + the flashbulb gate. */
+  emotionIntensity?: number;
+  /** [0, 1] importance from frontmatter — second half of the flashbulb gate. */
+  importance?: number;
+  /** True when promoted via the flashbulb bypass (felt one-off, not repeated). */
+  flashbulb?: boolean;
 }
 
 export interface DreamResult {
-  ran: Array<"light" | "rem" | "deep">;
+  ran: Array<"light" | "rem" | "deep" | "decay">;
   lightHits: number;
   remHits: number;
   deepPromoted: number;
+  /** Short-term files archived by the decay phase (T2). */
+  decayArchived: number;
   candidates: PromotionCandidate[];
   summary: string;
   themes: string[];
 }
 
+// Sum is exactly 1.0 — promotion scores stay in [0, 1] against the 0.8 gate.
+// Emotion carved out of the frequency/relevance/diversity/recency budget so a
+// felt memory consolidates faster than a merely repeated one.
 export const DEFAULT_WEIGHTS: PromotionWeights = {
-  frequency: 0.24,
-  relevance: 0.30,
-  diversity: 0.15,
-  recency: 0.15,
+  frequency: 0.20,
+  relevance: 0.26,
+  diversity: 0.12,
+  recency: 0.13,
   consolidation: 0.10,
-  conceptual: 0.06,
+  conceptual: 0.07,
+  emotion: 0.12,
 };
+
+/** Flashbulb bypass: a single felt, consequential memory consolidates even
+ *  without repeated recall — both thresholds must be met. */
+export const FLASHBULB_EMOTION_MIN = 0.66;
+export const FLASHBULB_IMPORTANCE_MIN = 0.66;

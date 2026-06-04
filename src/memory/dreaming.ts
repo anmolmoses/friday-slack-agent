@@ -4,6 +4,7 @@ import { loadRecentDailySnippets } from "./corpus.ts";
 import { extractConceptTags, tokenize } from "./concepts.ts";
 import { recordPhaseSignals, recordRecalls, markPromoted } from "./recall.ts";
 import { rankPromotionCandidates, formatCandidates } from "./promote.ts";
+import { pruneShortTerm } from "./decay.ts";
 import type { DreamResult, PromotionCandidate } from "./types.ts";
 import { snippetKey } from "./paths.ts";
 import { log as logger } from "../logger.ts";
@@ -19,6 +20,8 @@ export interface DreamOptions {
   deepLimit?: number;
   /** Also run the REM narrative phase */
   withNarrative?: boolean;
+  /** Run the decay phase (T2): archive aged-out, unrecalled short-term files */
+  withDecay?: boolean;
 }
 
 /**
@@ -147,6 +150,7 @@ export async function runDream(options: DreamOptions = {}): Promise<DreamResult>
     lightOnly = false,
     deepLimit = 10,
     withNarrative = false,
+    withDecay = false,
   } = options;
 
   const ran: DreamResult["ran"] = [];
@@ -174,11 +178,25 @@ export async function runDream(options: DreamOptions = {}): Promise<DreamResult>
     ran.push("deep");
   }
 
+  // Decay phase (T2): archive short-term files that have aged out, scaled by
+  // emotion. Recalled-recently and promoted files are always kept. Honors dryRun.
+  let decayArchived = 0;
+  if (withDecay) {
+    try {
+      const prune = pruneShortTerm({ dryRun });
+      decayArchived = prune.archived;
+      ran.push("decay");
+    } catch (err) {
+      logger.warn("memory/dream", `decay phase failed: ${err}`);
+    }
+  }
+
   return {
     ran,
     lightHits,
     remHits,
     deepPromoted,
+    decayArchived,
     candidates,
     themes: remThemes,
     summary: [
@@ -186,6 +204,7 @@ export async function runDream(options: DreamOptions = {}): Promise<DreamResult>
       remThemes.length > 0 ? `REM themes: ${remThemes.join(", ")}` : null,
       `Deep: ${lightOnly ? "skipped" : dryRun ? "dry-run" : `promoted ${deepPromoted}`}.`,
       deepSummary !== "Deep phase skipped." ? deepSummary : null,
+      withDecay ? `Decay: ${dryRun ? "would archive" : "archived"} ${decayArchived} aged short-term file(s).` : null,
     ]
       .filter(Boolean)
       .join("\n\n"),
@@ -200,12 +219,14 @@ async function writeCandidatesToMemory(candidates: PromotionCandidate[]): Promis
   const promptBody = [
     "You are the deep-phase memory consolidator.",
     "",
-    "I'm giving you short-term memory snippets that have been recalled repeatedly over multiple days.",
+    "I'm giving you short-term memory snippets that have been recalled repeatedly over multiple days,",
+    "or that were emotionally salient enough to keep on their own (marked ⚡flashbulb).",
     "Your job: update `memory/MEMORY.md` so these durable facts are captured there (no duplicates).",
     "",
     "Rules:",
     "- Edit MEMORY.md in place (Edit tool). Keep existing structure.",
-    "- Do NOT add one-off events; only genuinely durable facts (rules, people, systems, lessons).",
+    "- Do NOT add routine chatter; only genuinely durable facts (rules, people, systems, lessons) —",
+    "  EXCEPT ⚡flashbulb items, which earned their place by emotional weight even if recalled once.",
     "- If a fact is already in MEMORY.md, refine/merge rather than duplicate.",
     "- Cite the source daily note in a parenthetical like `(2026-04-23 thread ...)` only when it helps traceability.",
     "- Keep MEMORY.md under ~300 lines. If adding content pushes over, consolidate older sections.",
@@ -214,8 +235,13 @@ async function writeCandidatesToMemory(candidates: PromotionCandidate[]): Promis
     "",
     candidates
       .map(
-        (c, i) =>
-          `### ${i + 1}. ${c.path}:${c.startLine}-${c.endLine}  (score ${c.score.toFixed(2)}, recalls ${c.recallCount}, days ${c.dailyCount}, tags ${c.conceptTags.join(",") || "-"})\n${c.snippet.slice(0, 800)}`,
+        (c, i) => {
+          const emo = c.emotion && c.emotion !== "neutral"
+            ? `, emotion ${c.emotion}/${(c.emotionIntensity ?? 0).toFixed(2)}`
+            : "";
+          const flash = c.flashbulb ? " ⚡flashbulb" : "";
+          return `### ${i + 1}. ${c.path}:${c.startLine}-${c.endLine}  (score ${c.score.toFixed(2)}${flash}, recalls ${c.recallCount}, days ${c.dailyCount}${emo}, tags ${c.conceptTags.join(",") || "-"})\n${c.snippet.slice(0, 800)}`;
+        },
       )
       .join("\n\n"),
     "",
