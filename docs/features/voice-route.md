@@ -115,7 +115,9 @@ needs:
   uses a stable helper at `~/.friday/voice/friday-mouse`; grant that helper too if macOS prompts.
 - **Screen Recording** — `screen_screenshot` and current-browser inspection use `screencapture`.
   Grant the launching app, usually Terminal, in System Settings → Privacy & Security → Screen
-  Recording, then restart Terminal/Friday voice.
+  Recording. On newer macOS this pane is named **Screen & System Audio Recording**. If Terminal is
+  already enabled there, quit Terminal completely with Cmd+Q, reopen it, then restart Friday voice;
+  macOS does not apply the permission to Terminal sessions that were already running.
 
 ## Smart Agent Tools
 

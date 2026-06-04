@@ -506,7 +506,8 @@ function screenRecordingHelp(): string {
   return [
     "Screen screenshot failed because macOS did not return a valid image.",
     "Grant Screen Recording permission to the app launching Friday voice, usually Terminal.",
-    "Open: System Settings > Privacy & Security > Screen Recording, enable Terminal, then restart Terminal/Friday voice.",
+    "On newer macOS this pane is named Screen & System Audio Recording.",
+    "If Terminal is already enabled there, quit Terminal completely with Cmd+Q, reopen it, then restart Friday voice. macOS does not apply this permission to Terminal sessions that were already running.",
   ].join("\n");
 }
 
