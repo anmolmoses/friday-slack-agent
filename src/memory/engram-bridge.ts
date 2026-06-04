@@ -17,7 +17,7 @@
  */
 
 import path from "node:path";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, watch, type FSWatcher } from "node:fs";
 import { log } from "../logger.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../..");
@@ -75,13 +75,59 @@ export async function reindexFriday(timeoutMs = 120_000): Promise<boolean> {
   return runIndex(["--fresh"], timeoutMs, "index refreshed");
 }
 
+// Serialise incremental reindexes: every trigger (boot, 6h tick, capture, the
+// file watcher) calls the same function, and two `node cli.js index` processes
+// writing the same SQLite db at once risks "database is locked". At most one
+// runs; a request that lands mid-run coalesces into exactly one follow-up pass
+// that captures everything written while the first was running.
+let indexRunning = false;
+let indexAgain = false;
+
 /**
  * Incremental reindex — only embeds new/changed content (skips unchanged
- * chunks). Cheap enough to run after each auto-captured exchange so it's
- * recallable within seconds, even with a paid embedder.
+ * chunks). Cheap enough to run after each write so it's recallable within
+ * seconds, even with a paid embedder. Concurrency-safe (see above).
  */
 export async function reindexIncremental(timeoutMs = 60_000): Promise<boolean> {
-  return runIndex(["--incremental"], timeoutMs, "incremental index");
+  if (indexRunning) { indexAgain = true; return false; }
+  indexRunning = true;
+  try {
+    let ok = await runIndex(["--incremental"], timeoutMs, "incremental index");
+    while (indexAgain) {
+      indexAgain = false;
+      ok = await runIndex(["--incremental"], timeoutMs, "incremental index");
+    }
+    return ok;
+  } finally {
+    indexRunning = false;
+  }
+}
+
+/**
+ * Watch memory/ and incrementally reindex shortly after any markdown write —
+ * so a memory the agent (or a human) writes by hand becomes recallable within
+ * seconds instead of waiting for the next 6-hour tick. Debounced to coalesce
+ * bursts; ignores the index db and non-markdown noise. Returns a stop fn.
+ *
+ * Recursive fs.watch is supported on macOS (this deployment) + Windows; on
+ * Linux it throws, which we swallow — the periodic reindex still covers it.
+ */
+export function startMemoryWatch(debounceMs = 4_000): () => void {
+  if (!existsSync(ENGRAM_CLI) || !existsSync(MEMORY_DIR)) return () => {};
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let watcher: FSWatcher | null = null;
+  try {
+    watcher = watch(MEMORY_DIR, { recursive: true }, (_event, filename) => {
+      if (filename && !/\.(md|markdown|mdx|txt)$/i.test(filename.toString())) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { timer = null; void reindexIncremental(); }, debounceMs);
+    });
+    log.info("engram", "watching memory/ for writes → incremental reindex");
+  } catch (err) {
+    log.warn("engram", `memory watch unavailable (${err}); relying on periodic reindex`);
+    return () => {};
+  }
+  return () => { if (timer) clearTimeout(timer); watcher?.close(); };
 }
 
 export interface MemoryTag {

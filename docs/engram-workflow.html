@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  :root{
+    --bg:#0b0f17; --panel:#121826; --panel2:#0f1521; --line:#1f2a3d;
+    --ink:#e6edf6; --dim:#8a99b0; --faint:#5d6c83;
+    --slack:#36c5f0; --friday:#a78bfa; --engram:#22c55e; --openai:#10a37f;
+    --claude:#d97757; --store:#eab308; --bg-card:#0e1320;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;font-family:"SF Pro Display","Inter",system-ui,sans-serif}
+  body{background:var(--bg);color:var(--ink);width:1640px;padding:40px 44px 46px}
+  h1{font-size:30px;font-weight:700;letter-spacing:-.5px}
+  h1 .mono{font-family:"SF Mono",ui-monospace,monospace;color:var(--engram)}
+  .sub{color:var(--dim);font-size:14.5px;margin-top:7px;line-height:1.5;max-width:1180px}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin:20px 0 26px;font-size:12.5px;color:var(--dim)}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  .dot{width:11px;height:11px;border-radius:3px;display:inline-block}
+  .row{display:flex;gap:18px;align-items:stretch}
+  .col{display:flex;flex-direction:column;gap:14px;flex:1}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:15px 17px;position:relative}
+  .card .tag{font-size:10.5px;letter-spacing:1.4px;text-transform:uppercase;font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+  .card .tag .num{width:20px;height:20px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;background:#1c2433}
+  .card h3{font-size:16px;font-weight:650;margin-bottom:5px;letter-spacing:-.2px}
+  .card p{font-size:13px;color:var(--dim);line-height:1.5}
+  .card code{font-family:"SF Mono",ui-monospace,monospace;font-size:11.5px;color:#cdd9ec;background:#0c121e;padding:1.5px 6px;border-radius:5px;border:1px solid #1b2433}
+  .num{width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11.5px;font-weight:700;color:#0b0f17}
+  .arrow{display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:26px;flex:0 0 30px}
+  .arrow.down{height:26px;font-size:22px}
+  .section{margin-top:30px}
+  .banner{font-size:12px;letter-spacing:2px;text-transform:uppercase;font-weight:700;color:var(--faint);margin:0 0 14px;display:flex;align-items:center;gap:12px}
+  .banner::after{content:"";flex:1;height:1px;background:var(--line)}
+  .pill{font-size:10.5px;font-weight:700;letter-spacing:.6px;padding:3px 9px;border-radius:999px;display:inline-block}
+  .p-openai{background:rgba(16,163,127,.16);color:#34d3a6;border:1px solid rgba(16,163,127,.4)}
+  .p-claude{background:rgba(217,119,87,.16);color:#f0a07c;border:1px solid rgba(217,119,87,.4)}
+  .p-none{background:rgba(120,130,150,.14);color:#9fb0c8;border:1px solid rgba(120,130,150,.3)}
+  .p-store{background:rgba(234,179,8,.14);color:#f2cf57;border:1px solid rgba(234,179,8,.35)}
+  .leftbar{position:absolute;left:0;top:14px;bottom:14px;width:4px;border-radius:4px}
+  .b-slack{background:var(--slack)} .b-friday{background:var(--friday)}
+  .b-engram{background:var(--engram)} .b-store{background:var(--store)}
+  .b-claude{background:var(--claude)}
+  .inner-pad{padding-left:9px}
+  .meta{font-size:11px;color:var(--faint);margin-top:8px;font-family:"SF Mono",ui-monospace,monospace}
+  .pills{display:flex;gap:7px;margin-top:9px;flex-wrap:wrap}
+  .store-card{background:linear-gradient(180deg,#13110a,#0f0c06);border-color:#3a3210}
+  .gridbg{background:
+     radial-gradient(circle at 20% 0%, rgba(167,139,250,.06), transparent 40%),
+     radial-gradient(circle at 85% 100%, rgba(34,197,94,.05), transparent 45%);
+     position:fixed;inset:0;z-index:-1}
+  .flowtag{font-size:11px;font-weight:700;letter-spacing:.5px;padding:2px 8px;border-radius:6px}
+  .ft-in{background:rgba(54,197,240,.14);color:#7dd3fc}
+  .ft-out{background:rgba(34,197,94,.14);color:#86efac}
+</style>
+</head>
+<body>
+<div class="gridbg"></div>
+
+<h1>How a Slack message flows through <span class="mono">friday</span> + <span class="mono">engram</span></h1>
+<p class="sub">
+  Friday's session manager owns every trigger — engram is a passive CLI/library it shells out to. The <b>OpenAI key is used only for embeddings</b>
+  (vectorizing text on index &amp; query). All <i>reasoning</i> — enrichment tagging, rerank, edge inference — shells out to the <b>Claude subscription CLI</b> (no key).
+  Both halves are off unless <code>ENGRAM_RECALL=1</code> / <code>ENGRAM_CAPTURE=1</code>, and every engram call <b>fails soft</b>.
+</p>
+
+<div class="legend">
+  <span><i class="dot" style="background:var(--slack)"></i> Slack I/O</span>
+  <span><i class="dot" style="background:var(--friday)"></i> friday (src/ — the bot)</span>
+  <span><i class="dot" style="background:var(--engram)"></i> engram (the memory engine)</span>
+  <span><i class="dot" style="background:var(--store)"></i> storage</span>
+  <span><i class="dot" style="background:var(--claude)"></i> Claude CLI subprocess</span>
+  <span><span class="pill p-openai">OpenAI key</span> = embeddings only</span>
+  <span><span class="pill p-claude">Claude CLI</span> = reasoning, no key</span>
+</div>
+
+<!-- ============ INBOUND / RECALL ============ -->
+<div class="section">
+  <div class="banner"><span class="flowtag ft-in">▼ INBOUND — recall path (runs before Friday thinks)</span></div>
+  <div class="row">
+
+    <div class="col" style="flex:0 0 230px">
+      <div class="card"><div class="leftbar b-slack"></div><div class="inner-pad">
+        <div class="tag" style="color:var(--slack)"><span class="num" style="background:var(--slack)">1</span> SLACK EVENT</div>
+        <h3>Message arrives</h3>
+        <p>A thread message hits <code>slack/events.ts</code> → routed to the session manager. Busy thread → buffered.</p>
+      </div></div>
+    </div>
+    <div class="arrow">→</div>
+
+    <div class="col" style="flex:0 0 300px">
+      <div class="card"><div class="leftbar b-friday"></div><div class="inner-pad">
+        <div class="tag" style="color:var(--friday)"><span class="num" style="background:var(--friday)">2</span> FRIDAY · TRIGGER</div>
+        <h3>manager calls recallContext(prompt)</h3>
+        <p>If <code>ENGRAM_RECALL=1</code>, before spawning Claude, Friday asks engram for related memory. <b>Friday decides <i>when</i>.</b></p>
+        <div class="meta">src/session/manager.ts:649</div>
+      </div></div>
+    </div>
+    <div class="arrow">→</div>
+
+    <div class="col">
+      <div class="card"><div class="leftbar b-engram"></div><div class="inner-pad">
+        <div class="tag" style="color:var(--engram)"><span class="num" style="background:var(--engram)">3</span> ENGRAM · RECALL &nbsp;<code>cli.js recall --associative --reinforce --mark-used</code></div>
+        <h3>Embed query → hybrid → spreading activation</h3>
+        <p style="margin-bottom:8px">
+          <b>a.</b> Embed the query → <span class="pill p-openai" style="vertical-align:middle">OpenAI text-embedding-3-small</span><br/>
+          <b>b.</b> <b>Hybrid:</b> semantic cosine (vectors) + lexical FTS5/bm25, fused with Reciprocal Rank Fusion.<br/>
+          <b>c.</b> <b>Spreading activation</b> over the associative graph — a hit <i>charges its neighbours</i>, surfacing memories that share <i>no keywords</i>.<br/>
+          <b>d.</b> Reinforce co-recalled edges + mark used. Returns top-k with a <code>why</code> trace.
+        </p>
+        <div class="pills"><span class="pill p-openai">OpenAI key · embeddings</span><span class="pill p-none">no LLM call on this path</span></div>
+        <div class="meta">shells out under Node (better-sqlite3 won't load in Bun) → reads .engram/dashboard.db</div>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="arrow down">↓</div>
+
+  <div class="row">
+    <div class="col" style="flex:0 0 380px">
+      <div class="card"><div class="leftbar b-friday"></div><div class="inner-pad">
+        <div class="tag" style="color:var(--friday)"><span class="num" style="background:var(--friday)">4</span> FRIDAY · INJECT</div>
+        <h3>&lt;associative-memory&gt; block → system prompt</h3>
+        <p>Top hits formatted as an extra prompt block ("related past context, including memories that share no keywords. Use if relevant").</p>
+        <div class="meta">engram-bridge.ts → recallContext()</div>
+      </div></div>
+    </div>
+    <div class="arrow">→</div>
+
+    <div class="col">
+      <div class="card"><div class="leftbar b-claude"></div><div class="inner-pad">
+        <div class="tag" style="color:var(--claude)"><span class="num" style="background:var(--claude)">5</span> CLAUDE CLI · THE TURN &nbsp; (the only place agents run)</div>
+        <h3>spawnClaude → <code>claude -p --resume … --output-format stream-json</code></h3>
+        <p>Short-lived subprocess on the Max subscription. This is where <b>agent routing</b> happens (build / review / frontend / architect / pm) and where Friday actually reasons — now primed with both the static MEMORY.md snapshot <i>and</i> the engram recall block.</p>
+        <div class="pills"><span class="pill p-claude">Claude subscription · no key</span></div>
+        <div class="meta">src/claude/spawner.ts · agents/router.ts</div>
+      </div></div>
+    </div>
+    <div class="arrow">→</div>
+
+    <div class="col" style="flex:0 0 220px">
+      <div class="card"><div class="leftbar b-slack"></div><div class="inner-pad">
+        <div class="tag" style="color:var(--slack)"><span class="num" style="background:var(--slack)">6</span> SLACK</div>
+        <h3>Stream reply</h3>
+        <p>stream-json events → incremental Slack posts; final <code>result</code> = the reply.</p>
+      </div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ OUTBOUND / CAPTURE ============ -->
+<div class="section">
+  <div class="banner"><span class="flowtag ft-out">▲ OUTBOUND — capture path (runs after the reply is posted)</span></div>
+  <div class="row">
+
+    <div class="col" style="flex:0 0 320px">
+      <div class="card"><div class="leftbar b-friday"></div><div class="inner-pad">
+        <div class="tag" style="color:var(--friday)"><span class="num" style="background:var(--friday)">7</span> FRIDAY · TRIGGER &nbsp;<span class="pill p-none">instant · no LLM</span></div>
+        <h3>captureExchange() writes a memory file</h3>
+        <p>onRunComplete, if <code>ENGRAM_CAPTURE=1</code>: write the exchange to <code>memory/conversations/&lt;date&gt;/…md</code> with <b>basic frontmatter</b> (episodic, neutral, 0.5). Friday does this itself — engram isn't called yet.</p>
+        <div class="meta">manager.ts:748 → auto-capture.ts</div>
+      </div></div>
+    </div>
+    <div class="arrow">→</div>
+
+    <div class="col" style="flex:0 0 360px">
+      <div class="card"><div class="leftbar b-engram"></div><div class="inner-pad">
+        <div class="tag" style="color:var(--engram)"><span class="num" style="background:var(--engram)">8</span> ENGRAM · ENRICH &nbsp;<code>cli.js tag</code> &nbsp;<span style="font-size:10px;color:var(--faint)">(debounced 5s, batched)</span></div>
+        <h3>LLM tags → rewrite frontmatter</h3>
+        <p>The batch is sent to engram's <code>tag</code> command → <b>Claude CLI</b> returns tier (episodic/semantic/procedural), importance, emotion + intensity, topic, people, summary. Friday rewrites each file's frontmatter.</p>
+        <div class="pills"><span class="pill p-claude">Claude CLI (sonnet) · no key</span></div>
+      </div></div>
+    </div>
+    <div class="arrow">→</div>
+
+    <div class="col">
+      <div class="card"><div class="leftbar b-engram"></div><div class="inner-pad">
+        <div class="tag" style="color:var(--engram)"><span class="num" style="background:var(--engram)">9</span> ENGRAM · REINDEX &nbsp;<code>cli.js index --incremental</code></div>
+        <h3>Embed only changed chunks → store + graph</h3>
+        <p>Incremental index re-embeds <i>only</i> new/changed chunks (cheap with a paid embedder) → writes vectors + builds graph edges (entity / temporal / similarity). Recallable within seconds.</p>
+        <div class="pills"><span class="pill p-openai">OpenAI key · embeddings</span></div>
+        <div class="meta">engram-bridge.ts → reindexIncremental()</div>
+      </div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ STORAGE + BACKGROUND ============ -->
+<div class="section">
+  <div class="banner"><span style="color:var(--faint)">PERSISTENT STATE &amp; BACKGROUND</span></div>
+  <div class="row">
+    <div class="col">
+      <div class="card store-card"><div class="leftbar b-store"></div><div class="inner-pad">
+        <div class="tag" style="color:var(--store)">🗄 STORAGE</div>
+        <h3><code>.engram/dashboard.db</code> — one SQLite file</h3>
+        <p>Embedding vectors + FTS5 lexical index + the associative graph (typed edges). A <b>rebuildable cache</b> — the <code>memory/</code> markdown stays the source of truth.</p>
+      </div></div>
+    </div>
+    <div class="col">
+      <div class="card store-card"><div class="leftbar b-store"></div><div class="inner-pad">
+        <div class="tag" style="color:var(--store)">📄 SOURCE OF TRUTH</div>
+        <h3><code>memory/</code> markdown</h3>
+        <p>MEMORY.md index + <code>conversations/&lt;date&gt;/*.md</code> tagged exchanges + snapshots. Delete the .db and rebuild from these anytime.</p>
+      </div></div>
+    </div>
+    <div class="col">
+      <div class="card"><div class="leftbar b-engram"></div><div class="inner-pad">
+        <div class="tag" style="color:var(--engram)">🌙 DREAMING / CONSOLIDATION &nbsp;<span style="font-size:10px;color:var(--faint)">(cron, background)</span></div>
+        <h3><code>mem.dream()</code></h3>
+        <p><b>Promotion:</b> memories recalled repeatedly are lifted short-term → durable long-term tier. <b>Consolidation:</b> cold-archives the noise. Hebbian edges strengthen on co-recall.</p>
+      </div></div>
+    </div>
+    <div class="col">
+      <div class="card"><div class="leftbar b-engram"></div><div class="inner-pad">
+        <div class="tag" style="color:var(--engram)">🪟 DASHBOARD &nbsp;<span style="font-size:10px;color:var(--faint)">(read-only viz)</span></div>
+        <h3><code>engram dashboard</code></h3>
+        <p>Neuron-graph visualiser over the same <code>.engram/dashboard.db</code> — type a query, watch neurons fire, tinted by emotion.</p>
+      </div></div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
