@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "worktrees": "bun run src/worktree/cli.ts list",
-    "cleanup": "bun run src/worktree/cli.ts reap"
+    "cleanup": "bun run src/worktree/cli.ts reap",
+    "browser-login": "bun bin/browser-login.ts"
   },
   "dependencies": {
     "@playwright/mcp": "^0.0.70",

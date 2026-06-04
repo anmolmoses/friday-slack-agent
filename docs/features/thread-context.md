@@ -116,11 +116,15 @@ Spawned Claude processes get `SLACK_CHANNEL`, `SLACK_THREAD_TS`, `SLACK_BOT_TOKE
 
 ## Browser Automation
 
-Playwright MCP (`.mcp.json`) gives Claude browser tools: navigate, click, scroll, type, screenshot. The workflow for sharing what it sees:
+Playwright MCP gives Claude browser tools: navigate, click, scroll, type, screenshot. The workflow for sharing what it sees:
 
 1. Claude takes screenshot via Playwright MCP → saves to file
 2. Claude runs `bin/slack-upload.sh /tmp/screenshot.png "Here's what I found"`
 3. Image appears in the Slack thread
+
+**Authenticated browsing (gated pages).** The Playwright MCP runs `--headless` against a *persistent* profile at `~/.friday/browser-profile` (pinned in `src/claude/mcp-config.ts`, the per-thread config Friday's spawned `claude -p` actually uses — NOT just root `.mcp.json`). Cookies/SSO sessions survive between spawns, so once the profile is logged in, Friday can open GX-Team-gated Notion pages, Google Docs, and internal tools instead of bouncing in a redirect loop. A headless browser can't do an interactive SSO login, so log in once with `bun run browser-login` (headed; `bin/browser-login.ts`) and re-run whenever a session expires. Only one Chromium can hold the profile at a time — don't run the login while the bot is mid-browse.
+
+**Native Notion.** Set `NOTION_TOKEN` in Friday's env to an internal-integration token and share the relevant pages with that integration; `generateMcpConfig` then adds a `notion` MCP server for structured (non-scraped) reads. Google Docs/Drive/Gmail are covered by the persistent browser login; a dedicated Google connector (OAuth) is an optional follow-up.
 
 ## Message Deduplication
 

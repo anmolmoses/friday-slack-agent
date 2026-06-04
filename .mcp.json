@@ -2,7 +2,7 @@
   "mcpServers": {
     "playwright": {
       "command": "npx",
-      "args": ["@playwright/mcp", "--headless"]
+      "args": ["@playwright/mcp", "--headless", "--user-data-dir", "/Users/anmol/.friday/browser-profile"]
     }
   }
 }
