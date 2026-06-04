@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FRIDAY</title>
+<style>
+  html, body {
+    margin: 0; height: 100%; width: 100%;
+    background: transparent; overflow: hidden;
+    font-family: -apple-system, "SF Pro Display", system-ui, sans-serif;
+    -webkit-user-select: none; user-select: none; cursor: default;
+  }
+  #c { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #label {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    text-align: center; pointer-events: none;
+  }
+  #name {
+    font-size: 19px; font-weight: 800; letter-spacing: .12em; color: #fff;
+    text-shadow: 0 0 9px rgba(255,140,40,.55);
+  }
+  #status {
+    margin-top: 2px; font-size: 8px; letter-spacing: .32em; text-transform: uppercase;
+    color: rgba(255,180,120,.85);
+  }
+</style>
+</head>
+<body data-state="offline">
+  <canvas id="c"></canvas>
+  <div id="label"><div id="name">FRIDAY</div><div id="status">standby</div></div>
+<script>
+const ORANGE = "255,125,22", ORANGE_HOT = "255,165,60", TEAL = "46,200,182";
+const STATES = {
+  offline:   { intensity: 0.30, spin: 0.25, label: "standby" },
+  listening: { intensity: 0.95, spin: 0.8,  label: "listening" },
+  hearing:   { intensity: 1.0,  spin: 1.0,  label: "listening" },
+  thinking:  { intensity: 0.9,  spin: 2.6,  label: "thinking" },
+  speaking:  { intensity: 1.0,  spin: 1.4,  label: "speaking" },
+};
+let state = "offline", cfg = STATES.offline;
+let energy = cfg.intensity, level = 0, levelSmooth = 0;
+const statusEl = document.getElementById("status");
+
+function applyState(s) {
+  if (!STATES[s]) s = "offline";
+  state = s; cfg = STATES[s];
+  document.body.dataset.state = s; statusEl.textContent = cfg.label;
+}
+function connect() {
+  const es = new EventSource("/events");
+  es.onmessage = (e) => {
+    try { const d = JSON.parse(e.data);
+      if (typeof d.level === "number") level = d.level;
+      if (d.state) applyState(d.state);
+    } catch {}
+  };
+  es.onerror = () => { es.close(); setTimeout(connect, 1200); };
+}
+connect();
+
+const c = document.getElementById("c");
+const x = c.getContext("2d");
+let W = 260, H = 260, CX = 130, CY = 130, R = 110, DPR = 2;
+function resize() {
+  DPR = window.devicePixelRatio || 2;
+  W = window.innerWidth; H = window.innerHeight;
+  c.width = Math.round(W*DPR); c.height = Math.round(H*DPR);
+  CX = W/2; CY = H/2;
+  R = Math.min(W, H)/2 - 16;          // leave a margin so the glow isn't clipped
+}
+window.addEventListener("resize", resize); resize();
+
+let seed = 7;
+function rnd(){ seed = (seed*1103515245+12345)&0x7fffffff; return seed/0x7fffffff; }
+
+function tickRing(t, r, count, len, w, color, alpha, spin) {
+  x.save(); x.rotate(t*0.0004*spin);
+  for (let i=0;i<count;i++){
+    const a = (i/count)*Math.PI*2;
+    x.beginPath();
+    x.moveTo(Math.cos(a)*r, Math.sin(a)*r);
+    x.lineTo(Math.cos(a)*(r+len), Math.sin(a)*(r+len));
+    x.strokeStyle = `rgba(${color},${alpha})`; x.lineWidth = w; x.stroke();
+  }
+  x.restore();
+}
+function arcSeg(r, a0, a1, w, color, alpha, blur) {
+  x.beginPath(); x.lineWidth = w; x.lineCap = "butt";
+  x.strokeStyle = `rgba(${color},${alpha})`;
+  x.shadowBlur = blur; x.shadowColor = `rgba(${color},${alpha})`;
+  x.arc(0,0,r,a0,a1); x.stroke(); x.shadowBlur = 0;
+}
+
+function frame(t) {
+  x.setTransform(DPR,0,0,DPR,0,0);     // reset + hi-dpi scale each frame
+  x.clearRect(0,0,W,H);
+  energy += (cfg.intensity - energy)*0.07;
+  levelSmooth += (level - levelSmooth)*0.35;
+  level *= 0.92;
+  const E = energy, spin = cfg.spin, teal = state==="thinking";
+
+  x.translate(CX, CY);
+
+  // outer ticked ring + bright rim
+  tickRing(t, R*0.88, 60, R*0.06, 2.4, ORANGE, 0.20+0.55*E, spin*0.6);
+  arcSeg(R*0.95, -0.2, Math.PI*1.15, 4, ORANGE, 0.25+0.6*E, 9*E);
+  // mid chunky segmented ring (counter-rotating)
+  x.save(); x.rotate(-t*0.0005*spin);
+  arcSeg(R*0.70, 0.15, 1.25, R*0.06, ORANGE, 0.25+0.55*E, 8*E);
+  arcSeg(R*0.70, 2.0, 2.7, R*0.06, ORANGE, 0.22+0.5*E, 7*E);
+  arcSeg(R*0.70, 3.5, 5.2, R*0.055, ORANGE_HOT, 0.25+0.55*E, 8*E);
+  x.restore();
+  tickRing(t, R*0.57, 44, R*0.04, 1.6, ORANGE, 0.15+0.45*E, -spin*0.9);
+  // teal accent arc
+  x.save(); x.rotate(t*0.0007*spin);
+  arcSeg(R*0.57, -0.5, 0.9, 3, TEAL, (teal?0.95:0.55)*(0.4+0.6*E), 9*E);
+  x.restore();
+
+  // inner radial voice waveform
+  const baseR = R*0.34, bars = 72;
+  const amp = state==="offline" ? 0.05 : (0.12 + levelSmooth*1.5);
+  x.save(); x.rotate(t*0.0002*spin);
+  for (let i=0;i<bars;i++){
+    const a = (i/bars)*Math.PI*2;
+    const v = amp*(0.55 + 0.45*Math.abs(Math.sin(t*0.006 + i*0.7))) + (rnd()-0.5)*amp*0.25;
+    const h = Math.max(1.5, v*R*0.42);
+    const col = (i%9===0) ? TEAL : ORANGE;
+    x.beginPath();
+    x.moveTo(Math.cos(a)*baseR, Math.sin(a)*baseR);
+    x.lineTo(Math.cos(a)*(baseR+h), Math.sin(a)*(baseR+h));
+    x.strokeStyle = `rgba(${col},${0.30+0.6*E})`;
+    x.lineWidth = 2.4; x.lineCap = "round";
+    x.shadowBlur = 5*E; x.shadowColor = `rgba(${col},0.8)`;
+    x.stroke();
+  }
+  x.restore(); x.shadowBlur = 0;
+
+  // soft core glow
+  const cg = x.createRadialGradient(0,0,4,0,0,R*0.4);
+  cg.addColorStop(0, `rgba(${ORANGE_HOT},${0.10+0.18*E})`);
+  cg.addColorStop(1, "rgba(0,0,0,0)");
+  x.fillStyle = cg; x.beginPath(); x.arc(0,0,R*0.4,0,Math.PI*2); x.fill();
+
+  c.style.opacity = (0.45 + 0.55*E).toFixed(3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

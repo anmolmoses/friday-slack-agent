@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Thin shim so skhd / a keyboard shortcut can call the voice CLI by an absolute
+# path without knowing about bun or the repo layout.
+#
+#   friday-voice start|toggle|stop|status
+#
+# skhd binding example (~/.config/skhd/skhdrc):
+#   cmd + alt - space : /Users/anmol/Documents/GitHub/Friday/bin/friday-voice toggle
+set -euo pipefail
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BUN_BIN="${BUN_BIN:-$(command -v bun || echo /opt/homebrew/bin/bun)}"
+exec "$BUN_BIN" run "$REPO_ROOT/src/voice/cli.ts" "$@"

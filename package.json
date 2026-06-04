@@ -9,7 +9,11 @@
     "test": "bun test",
     "worktrees": "bun run src/worktree/cli.ts list",
     "cleanup": "bun run src/worktree/cli.ts reap",
-    "browser-login": "bun bin/browser-login.ts"
+    "browser-login": "bun bin/browser-login.ts",
+    "voice": "bun run src/voice/cli.ts start",
+    "voice:toggle": "bun run src/voice/cli.ts toggle",
+    "voice:status": "bun run src/voice/cli.ts status",
+    "voice:stop": "bun run src/voice/cli.ts stop"
   },
   "dependencies": {
     "@playwright/mcp": "^0.0.70",

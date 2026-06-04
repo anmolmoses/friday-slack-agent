@@ -22,6 +22,7 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 | System architecture, data flow, module dependencies? | [docs/architecture.md](docs/architecture.md) |
 | How does Slack event handling work? | [docs/features/slack-event-handler.md](docs/features/slack-event-handler.md) |
 | Thread context, persona, images, file upload, browser? | [docs/features/thread-context.md](docs/features/thread-context.md) |
+| Voice route — talk to Friday, she controls the Mac (OpenAI Realtime)? | [docs/features/voice-route.md](docs/features/voice-route.md) |
 | How does session management work (buffer, batch, drain)? | [docs/features/session-management.md](docs/features/session-management.md) |
 | How does Claude CLI spawning work? | [docs/features/claude-spawner.md](docs/features/claude-spawner.md) |
 | How do streaming updates to Slack work? | [docs/features/stream-to-slack.md](docs/features/stream-to-slack.md) |
@@ -170,6 +171,13 @@ bun run typecheck               # Type checking without emit
 
 # Slack bot management
 bun run cleanup                 # Clean stale worktrees and sessions
+
+# Voice route — talk to Friday, she controls the Mac (separate from Slack; OpenAI Realtime)
+bun run voice                   # Start the voice daemon (foreground, starts idle)
+bin/friday-voice toggle         # Toggle listening on/off (what the skhd hotkey calls)
+bin/friday-voice status         # Running? listening? ws connected? uptime
+bin/friday-voice stop           # Stop the daemon
+#   Full setup (skhd hotkey, mic/Accessibility perms, env): docs/features/voice-route.md
 
 # Memory — Wayback-style snapshot of an external source (provenance for things that drift)
 bun run src/memory/cli.ts snapshot <url> [--note "why"]      # fetch + archive.org Save Page Now + store
