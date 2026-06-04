@@ -83,10 +83,12 @@ A detached daemon logs to `/tmp/friday-voice/daemon.log`.
 | `FRIDAY_VOICE_NOISE_REDUCTION` | `far_field` | OpenAI input noise reduction: `far_field` for laptop mic, `near_field` for headset mic, `off` to disable |
 | `FRIDAY_VOICE_ECHO_SUPPRESSION_MS` | `1200` | keep Friday from hearing herself while speaker audio is still playing |
 | `FRIDAY_VOICE_INTERRUPTION` | `false` | enable local, noise-gated interruption while Friday is speaking |
-| `FRIDAY_VOICE_INTERRUPT_MIN_LEVEL` | `0.35` | local post-gain mic RMS threshold required to interrupt |
-| `FRIDAY_VOICE_INTERRUPT_FRAMES` | `8` | consecutive mic chunks above threshold before interrupting |
+| `FRIDAY_VOICE_INTERRUPT_MIN_LEVEL` | `0.75` | local post-gain mic RMS threshold required to interrupt |
+| `FRIDAY_VOICE_INTERRUPT_FRAMES` | `40` | consecutive mic chunks above threshold before interrupting |
 | `FRIDAY_VOICE_INTERRUPT_BUFFER_MS` | `650` | recent mic audio replayed to Realtime after an accepted interrupt |
-| `FRIDAY_VOICE_INTERRUPT_COOLDOWN_MS` | `2500` | minimum gap between accepted interruptions |
+| `FRIDAY_VOICE_INTERRUPT_COOLDOWN_MS` | `8000` | minimum gap between accepted interruptions |
+| `FRIDAY_VOICE_INTERRUPT_MIN_ASSISTANT_MS` | `1500` | no interruption during the first part of FRIDAY's response |
+| `FRIDAY_VOICE_INTERRUPT_MAX_PER_RESPONSE` | `1` | maximum accepted interruptions during one FRIDAY response |
 | `FRIDAY_VOICE_PLAYBACK_PREBUFFER_MS` | `350` | small output prebuffer for smoother speech playback |
 | `FRIDAY_VOICE_WS_IDLE_OFF` | `true` | drop WS when toggled off |
 | `SLACK_VOICE_CHANNEL` | — | channel id for Claude dispatch audit thread; if unset, engineering dispatch falls back to Codex |

@@ -172,6 +172,7 @@ async function main(): Promise<void> {
           `  voice:        ${state.voice ?? "(unknown)"}\n` +
           `  interruption: ${state.interruptionEnabled ? "on" : "off"}\n` +
           `  noise reduce: ${state.noiseReduction ?? "(unknown)"}\n` +
+          `  int gate:     ${(state.interruptMinLevel ?? 0).toFixed(2)} x ${state.interruptFrames ?? 0}\n` +
           `  mic peak:     ${(state.micPeakLevel ?? 0).toFixed(3)}\n` +
           `  uptime:       ${Math.round((Date.now() - state.startedAt) / 1000)}s`,
       );

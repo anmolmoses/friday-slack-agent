@@ -52,6 +52,8 @@ export async function runDaemon(opts: {
   let activeAssistantAudioItemId: string | null = null;
   let activeAssistantAudioContentIndex = 0;
   let audioResponseStarted = false;
+  let assistantAudioStartedAt = 0;
+  let interruptsThisResponse = 0;
   let micRingMs = 0;
   const micRing: Array<{ b64: string; durationMs: number }> = [];
 
@@ -74,6 +76,8 @@ export async function runDaemon(opts: {
       ) {
         player.beginResponse();
         audioResponseStarted = true;
+        assistantAudioStartedAt = now;
+        interruptsThisResponse = 0;
       }
       if (itemId) activeAssistantAudioItemId = itemId;
       activeAssistantAudioContentIndex = meta.contentIndex;
@@ -104,6 +108,8 @@ export async function runDaemon(opts: {
         estimatedPlaybackUntil = 0;
         suppressMicUntil = 0;
         audioResponseStarted = false;
+        assistantAudioStartedAt = 0;
+        interruptsThisResponse = 0;
         activeAssistantAudioItemId = null;
         player.flush();
         if (listening) hud.set("hearing", "interrupted");
@@ -115,6 +121,8 @@ export async function runDaemon(opts: {
       );
       estimatedPlaybackUntil = 0;
       audioResponseStarted = false;
+      assistantAudioStartedAt = 0;
+      interruptsThisResponse = 0;
       activeAssistantAudioItemId = null;
       player.finishSoon();
       if (listening) hud.set("listening");
@@ -153,6 +161,9 @@ export async function runDaemon(opts: {
       interruptHighFrames = 0;
       return false;
     }
+    if (now - assistantAudioStartedAt < cfg.interruptMinAssistantMs)
+      return false;
+    if (interruptsThisResponse >= cfg.interruptMaxPerResponse) return false;
     if (now - lastInterruptAt < cfg.interruptCooldownMs) return false;
 
     interruptHighFrames =
@@ -162,6 +173,7 @@ export async function runDaemon(opts: {
     const playedMs = player.playedMs();
     const itemId = activeAssistantAudioItemId;
     lastInterruptAt = now;
+    interruptsThisResponse++;
     interruptHighFrames = 0;
     acceptedInterruptUntil = now + 5000;
     dropCanceledAudioUntil = now + 3000;
@@ -225,6 +237,8 @@ export async function runDaemon(opts: {
       voice: cfg.voice,
       interruptionEnabled: cfg.interruptionEnabled,
       noiseReduction: cfg.inputNoiseReduction,
+      interruptMinLevel: cfg.interruptMinLevel,
+      interruptFrames: cfg.interruptFrames,
       micPeakLevel: lastPeakLevel,
       startedAt,
       updatedAt: Date.now(),

@@ -13,6 +13,8 @@ export interface DaemonState {
   voice?: string;
   interruptionEnabled?: boolean;
   noiseReduction?: string;
+  interruptMinLevel?: number;
+  interruptFrames?: number;
   micPeakLevel?: number;
   startedAt: number;
   updatedAt: number;

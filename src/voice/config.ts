@@ -41,6 +41,10 @@ export interface VoiceConfig {
   interruptBufferMs: number;
   /** Minimum gap between accepted interruptions. */
   interruptCooldownMs: number;
+  /** Do not allow interruption this soon after assistant audio starts. */
+  interruptMinAssistantMs: number;
+  /** Maximum accepted interruptions during one assistant response. */
+  interruptMaxPerResponse: number;
   /** Buffer this much output audio before starting playback to smooth network jitter. */
   playbackPrebufferMs: number;
   /** Drop the WS when toggled off so an idle daemon costs nothing. */
@@ -119,6 +123,12 @@ export function loadVoiceConfig(): VoiceConfig {
     ),
     interruptCooldownMs: Number(
       process.env.FRIDAY_VOICE_INTERRUPT_COOLDOWN_MS ?? "2500",
+    ),
+    interruptMinAssistantMs: Number(
+      process.env.FRIDAY_VOICE_INTERRUPT_MIN_ASSISTANT_MS ?? "1500",
+    ),
+    interruptMaxPerResponse: Number(
+      process.env.FRIDAY_VOICE_INTERRUPT_MAX_PER_RESPONSE ?? "1",
     ),
     playbackPrebufferMs: Number(
       process.env.FRIDAY_VOICE_PLAYBACK_PREBUFFER_MS ?? "350",
