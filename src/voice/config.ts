@@ -45,6 +45,8 @@ export interface VoiceConfig {
   cameraWidth: number;
   /** Camera capture height. */
   cameraHeight: number;
+  /** Milliseconds to let the camera auto-expose before saving a frame. */
+  cameraWarmupMs: number;
   /** Drop mic frames briefly after speaker audio so Friday does not hear herself. */
   echoSuppressionMs: number;
   /** Local, noise-gated interruption toggle. Server auto-interrupt stays off. */
@@ -136,6 +138,7 @@ export function loadVoiceConfig(): VoiceConfig {
     cameraIndex: process.env.FRIDAY_VOICE_CAMERA_INDEX ?? "0",
     cameraWidth: Number(process.env.FRIDAY_VOICE_CAMERA_WIDTH ?? "1280"),
     cameraHeight: Number(process.env.FRIDAY_VOICE_CAMERA_HEIGHT ?? "720"),
+    cameraWarmupMs: Number(process.env.FRIDAY_VOICE_CAMERA_WARMUP_MS ?? "1500"),
     echoSuppressionMs: Number(
       process.env.FRIDAY_VOICE_ECHO_SUPPRESSION_MS ?? "1200",
     ),

@@ -141,11 +141,13 @@ export async function captureCameraFrame(args: {
   deviceIndex: string;
   width: number;
   height: number;
+  warmupMs: number;
 }): Promise<CameraFrame> {
   mkdirSync(CAMERA_ROOT, { recursive: true });
   const file = path.join(CAMERA_ROOT, artifactName("camera", "jpg"));
   const input = `${args.deviceIndex}:none`;
-  const shot = await runText([
+  const warmupSeconds = Math.max(0, args.warmupMs) / 1000;
+  const cmd = [
     "ffmpeg",
     "-hide_banner",
     "-loglevel",
@@ -160,13 +162,19 @@ export async function captureCameraFrame(args: {
     `${args.width}x${args.height}`,
     "-i",
     input,
+  ];
+  if (warmupSeconds > 0) {
+    cmd.push("-ss", String(warmupSeconds));
+  }
+  cmd.push(
     "-frames:v",
     "1",
     "-q:v",
     "3",
     "-y",
     file,
-  ]);
+  );
+  const shot = await runText(cmd);
   if (shot.code !== 0 || !existsSync(file) || statSync(file).size < 1000) {
     throw new Error(cameraPermissionHelp(shot.body));
   }

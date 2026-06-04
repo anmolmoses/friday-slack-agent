@@ -1008,6 +1008,7 @@ export class ToolRunner {
         deviceIndex: this.cfg.cameraIndex,
         width: this.cfg.cameraWidth,
         height: this.cfg.cameraHeight,
+        warmupMs: this.cfg.cameraWarmupMs,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

@@ -90,6 +90,7 @@ A detached daemon logs to `/tmp/friday-voice/daemon.log`.
 | `FRIDAY_VOICE_CAMERA_INDEX` | `0` | avfoundation video device index |
 | `FRIDAY_VOICE_CAMERA_WIDTH` | `1280` | camera snapshot width |
 | `FRIDAY_VOICE_CAMERA_HEIGHT` | `720` | camera snapshot height |
+| `FRIDAY_VOICE_CAMERA_WARMUP_MS` | `1500` | wait this long after opening the camera before saving a frame so auto-exposure settles |
 | `FRIDAY_VOICE_ECHO_SUPPRESSION_MS` | `1200` | keep Friday from hearing herself while speaker audio is still playing |
 | `FRIDAY_VOICE_INTERRUPTION` | `false` | enable local, noise-gated interruption while Friday is speaking |
 | `FRIDAY_VOICE_INTERRUPT_MIN_LEVEL` | `0.75` | local post-gain mic RMS threshold required to interrupt |
@@ -188,9 +189,10 @@ recallable in later sessions.
 
 ## Vision Memory
 
-Camera vision is opt-in behind `FRIDAY_VOICE_CAMERA`. When enabled, `camera_see` captures a single
-frame from the Mac camera and sends it into the existing Realtime session as an `input_image`.
-FRIDAY does not continuously watch the camera.
+Camera vision is opt-in behind `FRIDAY_VOICE_CAMERA`. When enabled, `camera_see` opens the Mac
+camera, waits `FRIDAY_VOICE_CAMERA_WARMUP_MS` for auto-exposure to settle, captures a single frame,
+and sends it into the existing Realtime session as an `input_image`. FRIDAY does not continuously
+watch the camera.
 
 Visual identity memory stays explicit and confirmed:
 

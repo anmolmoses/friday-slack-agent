@@ -188,7 +188,7 @@ async function main(): Promise<void> {
           `  interruption: ${state.interruptionEnabled ? "on" : "off"}\n` +
           `  noise reduce: ${state.noiseReduction ?? "(unknown)"}\n` +
           `  transcript:   ${state.backgroundTranscription ? "background" : "blocking"} (${state.transcriptionModel ?? "off"})\n` +
-          `  camera:       ${state.cameraEnabled ? `on (device ${state.cameraIndex ?? "0"})` : "off"}\n` +
+          `  camera:       ${state.cameraEnabled ? `on (device ${state.cameraIndex ?? "0"}, warmup ${state.cameraWarmupMs ?? 0}ms)` : "off"}\n` +
           `  int gate:     ${(state.interruptMinLevel ?? 0).toFixed(2)} x ${state.interruptFrames ?? 0}\n` +
           `  mic peak:     ${(state.micPeakLevel ?? 0).toFixed(3)}\n` +
           `  uptime:       ${Math.round((Date.now() - state.startedAt) / 1000)}s` +

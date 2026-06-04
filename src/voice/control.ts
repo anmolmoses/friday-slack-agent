@@ -17,6 +17,7 @@ export interface DaemonState {
   backgroundTranscription?: boolean;
   cameraEnabled?: boolean;
   cameraIndex?: string;
+  cameraWarmupMs?: number;
   interruptMinLevel?: number;
   interruptFrames?: number;
   micPeakLevel?: number;

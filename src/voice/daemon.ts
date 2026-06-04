@@ -557,6 +557,7 @@ export async function runDaemon(opts: {
       backgroundTranscription: cfg.backgroundTranscription,
       cameraEnabled: cfg.cameraEnabled,
       cameraIndex: cfg.cameraIndex,
+      cameraWarmupMs: cfg.cameraWarmupMs,
       interruptMinLevel: cfg.interruptMinLevel,
       interruptFrames: cfg.interruptFrames,
       micPeakLevel: lastPeakLevel,
