@@ -2,6 +2,7 @@
 // Posts CoreGraphics mouse events and flashes an orange ring at the controlled point.
 
 import Cocoa
+import ApplicationServices
 import CoreGraphics
 import Foundation
 
@@ -19,6 +20,17 @@ let y = num(3)
 let x2 = num(4, x)
 let y2 = num(5, y)
 let durationMs = max(60, Int(num(6, 260)))
+
+let axOptions = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+if !AXIsProcessTrustedWithOptions(axOptions) {
+    fputs("Accessibility permission required for friday-mouse. Grant it in System Settings > Privacy & Security > Accessibility, then run again.\n", stderr)
+    exit(77)
+}
+
+if action == "check" {
+    print("friday-mouse accessibility trusted")
+    exit(0)
+}
 
 func post(_ type: CGEventType, _ point: CGPoint, _ button: CGMouseButton = .left) {
     CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: button)?
@@ -68,7 +80,7 @@ case "double_click":
 case "drag":
     drag(p, q)
 default:
-    fputs("usage: friday-mouse <move|click|double_click|drag> x y [toX toY durationMs]\n", stderr)
+    fputs("usage: friday-mouse <check|move|click|double_click|drag> x y [toX toY durationMs]\n", stderr)
     exit(2)
 }
 

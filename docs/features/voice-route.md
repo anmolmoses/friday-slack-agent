@@ -103,9 +103,11 @@ needs:
 - **Microphone** — ffmpeg captures the mic. First listen triggers the prompt; if it doesn't
   appear, grant it in System Settings → Privacy & Security → Microphone.
 - **Accessibility** — `type_text` / `key_combo` drive System Events. Grant the launching app
-  (and skhd) in System Settings → Privacy & Security → Accessibility.
+  (Terminal/iTerm and skhd) in System Settings → Privacy & Security → Accessibility. `mouse_control`
+  uses a stable helper at `~/.friday/voice/friday-mouse`; grant that helper too if macOS prompts.
 - **Screen Recording** — `screen_screenshot` and current-browser inspection use `screencapture`.
-  Grant the launching app in System Settings → Privacy & Security → Screen Recording.
+  Grant the launching app, usually Terminal, in System Settings → Privacy & Security → Screen
+  Recording, then restart Terminal/Friday voice.
 
 ## Smart Agent Tools
 
@@ -116,8 +118,8 @@ The Realtime model now sees these first-class tools:
   inspection. URL screenshots use `npx playwright screenshot`; no-URL screenshots capture the
   current Mac screen.
 - `screen_screenshot` before coordinate-based UI actions or when Anmol asks what is visible.
-- `mouse_control` for move/click/double-click/drag. The helper compiles lazily to
-  `/tmp/friday-voice/friday-mouse` and flashes an orange ring while taking control.
+- `mouse_control` for permission checks, move/click/double-click/drag. The helper compiles lazily
+  to `~/.friday/voice/friday-mouse` and flashes an orange ring while taking control.
 - `memory_search` for Friday's local BM25 memory corpus.
 - `engram_recall` for associative memories from `.engram/dashboard.db`, independent of the
   live `ENGRAM_RECALL=1` prompt bridge.

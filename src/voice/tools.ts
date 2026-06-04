@@ -26,8 +26,13 @@ const REPO_ROOT = path.resolve(__dirname, "../..");
 const DISPATCH_SH = path.join(REPO_ROOT, "bin", "dispatch-claude.sh");
 const VOICE_DISPATCH_DIR = "/tmp/friday-voice/dispatch";
 const VOICE_SCREENSHOT_DIR = "/tmp/friday-voice/screenshots";
+const VOICE_HELPER_DIR = path.join(
+  process.env.HOME ?? "/tmp",
+  ".friday",
+  "voice",
+);
 const MOUSE_SRC = path.join(__dirname, "mouse-control.swift");
-const MOUSE_BIN = "/tmp/friday-voice/friday-mouse";
+const MOUSE_BIN = path.join(VOICE_HELPER_DIR, "friday-mouse");
 const ENGRAM_DIR = path.join(REPO_ROOT, "engram");
 const ENGRAM_CLI = path.join(ENGRAM_DIR, "dist", "cli.js");
 const ENGRAM_DB = path.join(REPO_ROOT, ".engram", "dashboard.db");
@@ -234,8 +239,9 @@ export function toolDefsForConfig(cfg?: VoiceConfig): RealtimeTool[] {
         properties: {
           action: {
             type: "string",
-            enum: ["move", "click", "double_click", "drag"],
-            description: "Mouse action.",
+            enum: ["check", "move", "click", "double_click", "drag"],
+            description:
+              "Mouse action. Use check to verify Accessibility permission without moving the pointer.",
           },
           x: {
             type: "number",
@@ -260,7 +266,7 @@ export function toolDefsForConfig(cfg?: VoiceConfig): RealtimeTool[] {
             description: "Drag duration in milliseconds.",
           },
         },
-        required: ["action", "x", "y"],
+        required: ["action"],
       },
     },
     {
@@ -475,7 +481,7 @@ function normalizeSearchUrl(raw: string): string {
 function ensureMouseBinary(): string | null {
   if (!existsSync(MOUSE_SRC)) return null;
   try {
-    mkdirSync(path.dirname(MOUSE_BIN), { recursive: true });
+    mkdirSync(VOICE_HELPER_DIR, { recursive: true });
     const shouldCompile =
       !existsSync(MOUSE_BIN) ||
       statSync(MOUSE_SRC).mtimeMs > statSync(MOUSE_BIN).mtimeMs;
@@ -494,6 +500,21 @@ function ensureMouseBinary(): string | null {
   } catch {
     return null;
   }
+}
+
+function screenRecordingHelp(): string {
+  return [
+    "Screen screenshot failed because macOS did not return a valid image.",
+    "Grant Screen Recording permission to the app launching Friday voice, usually Terminal.",
+    "Open: System Settings > Privacy & Security > Screen Recording, enable Terminal, then restart Terminal/Friday voice.",
+  ].join("\n");
+}
+
+function accessibilityHelp(extra = ""): string {
+  return [
+    extra || "Mouse control needs macOS Accessibility permission.",
+    `Grant Accessibility to ${MOUSE_BIN} and Terminal in System Settings > Privacy & Security > Accessibility, then restart Friday voice.`,
+  ].join("\n");
 }
 
 async function run(cmd: string[], input?: string): Promise<string> {
@@ -757,6 +778,13 @@ export class ToolRunner {
     const file = path.join(VOICE_SCREENSHOT_DIR, artifactName("screen", "png"));
     const shot = await run(["/usr/sbin/screencapture", "-x", file]);
     if (shot.startsWith("[exit ")) return `Screenshot failed: ${shot}`;
+    if (!existsSync(file) || statSync(file).size < 1000) {
+      await run([
+        "/usr/bin/open",
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+      ]);
+      return screenRecordingHelp();
+    }
     const dims = await run([
       "/usr/bin/sips",
       "-g",
@@ -765,6 +793,13 @@ export class ToolRunner {
       "pixelHeight",
       file,
     ]);
+    if (dims.startsWith("[exit ") || /Warning:|Error:/i.test(dims)) {
+      await run([
+        "/usr/bin/open",
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+      ]);
+      return `${screenRecordingHelp()}\n\nsips output:\n${dims}`;
+    }
     return truncate(
       [`Screenshot saved: ${file}`, note ? `Reason: ${note}` : "", dims]
         .filter(Boolean)
@@ -804,6 +839,9 @@ export class ToolRunner {
     args.push(normalized, file);
     const shot = await run(args);
     if (shot.startsWith("[exit ")) return `Browser screenshot failed: ${shot}`;
+    if (!existsSync(file) || statSync(file).size < 1000) {
+      return `Browser screenshot failed: Playwright did not produce a valid image at ${file}.`;
+    }
     const dims = await run([
       "/usr/bin/sips",
       "-g",
@@ -812,6 +850,9 @@ export class ToolRunner {
       "pixelHeight",
       file,
     ]);
+    if (dims.startsWith("[exit ") || /Warning:|Error:/i.test(dims)) {
+      return `Browser screenshot failed: invalid image at ${file}.\n${dims}`;
+    }
     return truncate(
       [`Browser screenshot saved: ${file}`, `URL: ${normalized}`, dims].join(
         "\n",
@@ -828,16 +869,29 @@ export class ToolRunner {
     durationValue: unknown,
   ): Promise<string> {
     const action = actionRaw.trim();
-    if (!["move", "click", "double_click", "drag"].includes(action)) {
-      return "mouse_control action must be move, click, double_click, or drag.";
+    if (!["check", "move", "click", "double_click", "drag"].includes(action)) {
+      return "mouse_control action must be check, move, click, double_click, or drag.";
+    }
+    const bin = ensureMouseBinary();
+    if (!bin)
+      return "Mouse helper unavailable: could not compile src/voice/mouse-control.swift with /usr/bin/swiftc.";
+    if (action === "check") {
+      const out = await run([bin, "check"]);
+      if (out.startsWith("[exit 77]")) {
+        await run([
+          "/usr/bin/open",
+          "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+        ]);
+        return accessibilityHelp(out);
+      }
+      return out.startsWith("[exit ")
+        ? `Mouse helper check failed: ${out}`
+        : `Mouse helper ready: ${out}`;
     }
     const x = Number(xValue);
     const y = Number(yValue);
     if (!Number.isFinite(x) || !Number.isFinite(y))
       return "mouse_control needs finite x and y screen coordinates.";
-    const bin = ensureMouseBinary();
-    if (!bin)
-      return "Mouse helper unavailable: could not compile src/voice/mouse-control.swift with /usr/bin/swiftc.";
     const args = [bin, action, String(Math.round(x)), String(Math.round(y))];
     if (action === "drag") {
       const toX = Number(toXValue);
@@ -851,6 +905,13 @@ export class ToolRunner {
       );
     }
     const out = await run(args);
+    if (out.startsWith("[exit 77]")) {
+      await run([
+        "/usr/bin/open",
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+      ]);
+      return accessibilityHelp(out);
+    }
     return `Mouse ${action} at ${Math.round(x)},${Math.round(y)} with orange control glow.\n${out}`;
   }
 
