@@ -91,6 +91,14 @@ A detached daemon logs to `/tmp/friday-voice/daemon.log`.
 | `FRIDAY_VOICE_CAMERA_WIDTH` | `1280` | camera snapshot width |
 | `FRIDAY_VOICE_CAMERA_HEIGHT` | `720` | camera snapshot height |
 | `FRIDAY_VOICE_CAMERA_WARMUP_MS` | `1500` | wait this long after opening the camera before saving a frame so auto-exposure settles |
+| `FRIDAY_VOICE_CAMERA_AUTO_RECOGNIZE` | `false` | refresh a low-duty background visual identity cache while listening |
+| `FRIDAY_VOICE_CAMERA_AUTO_INTERVAL_MS` | `8000` | interval between background camera identity checks |
+| `FRIDAY_VOICE_CAMERA_AUTO_MIN_CONFIDENCE` | `0.78` | minimum cached visual confidence before FRIDAY treats a match as likely |
+| `FRIDAY_VOICE_SPEAKER_RECOGNITION` | `false` | local opt-in speaker recognition using mic audio already captured for voice |
+| `FRIDAY_VOICE_SPEAKER_MIN_SAMPLE_MS` | `900` | minimum speech sample length before speaker recognition runs |
+| `FRIDAY_VOICE_SPEAKER_MAX_SAMPLE_MS` | `5000` | maximum speech audio kept per turn for speaker recognition |
+| `FRIDAY_VOICE_SPEAKER_MIN_CONFIDENCE` | `0.72` | minimum speaker confidence before FRIDAY treats a voice match as likely |
+| `FRIDAY_VOICE_SPEAKER_NOVELTY_COOLDOWN_MS` | `60000` | minimum gap between proactive "who is speaking?" prompts |
 | `FRIDAY_VOICE_ECHO_SUPPRESSION_MS` | `1200` | keep Friday from hearing herself while speaker audio is still playing |
 | `FRIDAY_VOICE_INTERRUPTION` | `false` | enable local, noise-gated interruption while Friday is speaking |
 | `FRIDAY_VOICE_INTERRUPT_MIN_LEVEL` | `0.75` | local post-gain mic RMS threshold required to interrupt |
@@ -149,6 +157,10 @@ The Realtime model now sees these first-class tools:
 - `visual_person_lookup` compares a camera frame/image path against confirmed visual-person memory.
 - `visual_person_remember` stores a confirmed person's name plus reference image under
   `memory/vision/people/`, writes an Engram-indexable profile card, and reindexes.
+- `current_perception` reads the latest ambient camera/speaker cache without opening the camera or
+  delaying a response.
+- `voice_person_remember` stores the latest detected speaker sample under a confirmed person name,
+  writes an Engram-indexable voice profile card, and reindexes.
 - `mouse_control` for permission checks, move/click/double-click/drag. The helper compiles lazily
   to `~/.friday/voice/friday-mouse` and flashes an orange ring while taking control.
 - `memory_search` for Friday's local BM25 memory corpus.
@@ -191,8 +203,14 @@ recallable in later sessions.
 
 Camera vision is opt-in behind `FRIDAY_VOICE_CAMERA`. When enabled, `camera_see` opens the Mac
 camera, waits `FRIDAY_VOICE_CAMERA_WARMUP_MS` for auto-exposure to settle, captures a single frame,
-and sends it into the existing Realtime session as an `input_image`. FRIDAY does not continuously
-watch the camera.
+and sends it into the existing Realtime session as an `input_image`.
+
+If `FRIDAY_VOICE_CAMERA_AUTO_RECOGNIZE=true`, the daemon also keeps a low-duty ambient identity
+cache while listening. It captures temporary frames under `/tmp/friday-voice/vision`, compares them
+against confirmed visual-person memories, and injects only the short current-context summary into
+the Realtime session. That gives FRIDAY "who might be here" context without doing camera work inside
+the answer path. Turning `FRIDAY_VOICE_CAMERA=false` disables both camera tools and the ambient
+cache.
 
 Visual identity memory stays explicit and confirmed:
 
@@ -206,6 +224,19 @@ Visual identity memory stays explicit and confirmed:
 Engram still indexes text, not pixels. The image files are durable references; the markdown profile
 card is the searchable/associative memory that links the person name, context, notes, and image
 paths. Visual matches are tentative unless confidence is high.
+
+## Speaker Memory
+
+Speaker recognition is separately opt-in behind `FRIDAY_VOICE_SPEAKER_RECOGNITION`. It does not
+start another recorder. While Realtime is already listening, the daemon keeps a bounded copy of the
+current human speech turn, computes a local lightweight voice fingerprint after speech stops, and
+compares it with confirmed voice profiles under `memory/voice/people/`.
+
+If the speaker is unknown or confidence is low, FRIDAY queues a brief follow-up after any current
+response finishes: "I heard a voice I do not recognize; who is this so I can remember?" The prompt is
+cooldown-gated by `FRIDAY_VOICE_SPEAKER_NOVELTY_COOLDOWN_MS` so noisy rooms do not cause repeated
+interruptions. After a person confirms their name, `voice_person_remember` saves the WAV sample,
+profile JSON, and searchable markdown card, then runs Engram incremental indexing.
 
 ## Keyboard shortcut (skhd)
 

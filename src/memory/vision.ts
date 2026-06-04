@@ -14,6 +14,8 @@ const REPO_ROOT = path.resolve(import.meta.dir, "../..");
 const VISION_ROOT = path.join(REPO_ROOT, "memory", "vision");
 const CAMERA_ROOT = path.join(VISION_ROOT, "camera");
 const PEOPLE_ROOT = path.join(VISION_ROOT, "people");
+const TMP_CAMERA_ROOT = "/tmp/friday-voice/vision";
+let cameraCaptureChain = Promise.resolve();
 
 export interface CameraFrame {
   file: string;
@@ -54,6 +56,7 @@ function artifactName(prefix: string, ext: string): string {
 }
 
 function rel(absPath: string): string {
+  if (!absPath.startsWith(REPO_ROOT)) return absPath;
   return path.relative(REPO_ROOT, absPath);
 }
 
@@ -142,9 +145,27 @@ export async function captureCameraFrame(args: {
   width: number;
   height: number;
   warmupMs: number;
+  persist?: boolean;
 }): Promise<CameraFrame> {
-  mkdirSync(CAMERA_ROOT, { recursive: true });
-  const file = path.join(CAMERA_ROOT, artifactName("camera", "jpg"));
+  const outputRoot = args.persist === false ? TMP_CAMERA_ROOT : CAMERA_ROOT;
+  mkdirSync(outputRoot, { recursive: true });
+  const file = path.join(outputRoot, artifactName("camera", "jpg"));
+  await cameraCaptureChain;
+  const capture = captureCameraFrameUnlocked({ ...args, file });
+  cameraCaptureChain = capture.then(
+    () => undefined,
+    () => undefined,
+  );
+  return await capture;
+}
+
+async function captureCameraFrameUnlocked(args: {
+  deviceIndex: string;
+  width: number;
+  height: number;
+  warmupMs: number;
+  file: string;
+}): Promise<CameraFrame> {
   const input = `${args.deviceIndex}:none`;
   const warmupSeconds = Math.max(0, args.warmupMs) / 1000;
   const cmd = [
@@ -172,14 +193,18 @@ export async function captureCameraFrame(args: {
     "-q:v",
     "3",
     "-y",
-    file,
+    args.file,
   );
   const shot = await runText(cmd);
-  if (shot.code !== 0 || !existsSync(file) || statSync(file).size < 1000) {
+  if (
+    shot.code !== 0 ||
+    !existsSync(args.file) ||
+    statSync(args.file).size < 1000
+  ) {
     throw new Error(cameraPermissionHelp(shot.body));
   }
-  const dims = await imageDimensions(file);
-  return { file, relPath: rel(file), dims };
+  const dims = await imageDimensions(args.file);
+  return { file: args.file, relPath: rel(args.file), dims };
 }
 
 export async function imageDimensions(file: string): Promise<string> {

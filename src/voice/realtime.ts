@@ -74,6 +74,8 @@ export class RealtimeClient {
   private audioDeltas = 0;
   private sent = 0;
   private currentAssistantItemId: string | null = null;
+  private responseActive = false;
+  private queuedResponseInstructions: string | undefined | null = null;
 
   constructor(
     cfg: VoiceConfig,
@@ -122,6 +124,8 @@ export class RealtimeClient {
       /* ignore */
     }
     this.ws = null;
+    this.responseActive = false;
+    this.queuedResponseInstructions = undefined;
   }
 
   private send(obj: unknown): void {
@@ -177,6 +181,12 @@ export class RealtimeClient {
     });
   }
 
+  /** Update live session instructions without reconnecting the Realtime socket. */
+  updateInstructions(instructions: string): void {
+    this.instructions = instructions;
+    if (this.connected) this.sendSessionUpdate();
+  }
+
   /** Stream a base64 PCM chunk from the mic. With server VAD, no manual commit. */
   appendAudio(base64: string): void {
     if (!this.connected) {
@@ -222,12 +232,27 @@ export class RealtimeClient {
 
   /** Ask the model to respond, optionally with per-turn memory context. */
   createResponse(instructions?: string): void {
+    if (!this.connected) return;
+    if (this.responseActive) {
+      this.queuedResponseInstructions = instructions ?? null;
+      log("queued response.create while another response is active");
+      return;
+    }
+    this.responseActive = true;
     this.send({
       type: EVT.responseCreate,
       response: instructions
         ? { output_modalities: ["audio"], instructions }
         : { output_modalities: ["audio"] },
     });
+  }
+
+  private flushQueuedResponse(): void {
+    if (this.queuedResponseInstructions === undefined || this.responseActive)
+      return;
+    const instructions = this.queuedResponseInstructions ?? undefined;
+    this.queuedResponseInstructions = undefined;
+    this.createResponse(instructions);
   }
 
   /** One-shot text prompt, useful for testing output audio without the mic. */
@@ -315,6 +340,7 @@ export class RealtimeClient {
         break;
       }
       case EVT.responseCreated:
+        this.responseActive = true;
         this.cb.onResponseCreated?.();
         break;
       case EVT.speechStarted:
@@ -327,7 +353,9 @@ export class RealtimeClient {
         log(`response done (${this.audioDeltas} audio chunks sent to speaker)`);
         this.audioDeltas = 0;
         this.currentAssistantItemId = null;
+        this.responseActive = false;
         this.cb.onResponseDone?.();
+        this.flushQueuedResponse();
         break;
       case EVT.fnArgsDone: {
         let args: Record<string, unknown> = {};

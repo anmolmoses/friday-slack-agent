@@ -64,6 +64,15 @@ export interface ToolExecutionResult {
 
 export type ToolRunResult = string | ToolExecutionResult;
 
+export interface ToolRunnerHooks {
+  currentPerception?: () => string;
+  rememberCurrentSpeaker?: (args: {
+    name: string;
+    relationship?: string;
+    notes?: string;
+  }) => Promise<string>;
+}
+
 function repoToolDescription(cfg?: VoiceConfig): string {
   const repos = cfg?.repos.map((r) => r.name).join(", ");
   return repos
@@ -333,6 +342,40 @@ export function toolDefsForConfig(cfg?: VoiceConfig): RealtimeTool[] {
             type: "string",
             description:
               "Optional visual description from the current camera image.",
+          },
+        },
+        required: ["name"],
+      },
+    },
+    {
+      type: "function",
+      name: "current_perception",
+      description:
+        "Return Friday's latest background camera/speaker recognition cache. This is fast and does not open the camera, take a screenshot, or add response latency. Use before asking who is present or who is speaking.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+    {
+      type: "function",
+      name: "voice_person_remember",
+      description:
+        "Remember the latest detected speaker's voice under a confirmed person name. Use only after that person or Anmol explicitly confirms the name.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description: "Confirmed speaker name.",
+          },
+          relationship: {
+            type: "string",
+            description: "Optional relationship/context, e.g. friend, teammate.",
+          },
+          notes: {
+            type: "string",
+            description: "Optional stable notes to remember about this speaker.",
           },
         },
         required: ["name"],
@@ -698,10 +741,12 @@ function comboToAppleScript(combo: string): string {
 /** Stateful per-daemon-session tool runner (caches the seeded Slack thread). */
 export class ToolRunner {
   private cfg: VoiceConfig;
+  private hooks: ToolRunnerHooks;
   private dispatchThreadTs: string | null = null;
 
-  constructor(cfg: VoiceConfig) {
+  constructor(cfg: VoiceConfig, hooks: ToolRunnerHooks = {}) {
     this.cfg = cfg;
+    this.hooks = hooks;
   }
 
   async exec(name: string, args: Record<string, unknown>): Promise<ToolRunResult> {
@@ -768,6 +813,14 @@ export class ToolRunner {
             args.relationship ? String(args.relationship) : undefined,
             args.notes ? String(args.notes) : undefined,
             args.description ? String(args.description) : undefined,
+          );
+        case "current_perception":
+          return this.currentPerception();
+        case "voice_person_remember":
+          return await this.voicePersonRemember(
+            String(args.name ?? ""),
+            args.relationship ? String(args.relationship) : undefined,
+            args.notes ? String(args.notes) : undefined,
           );
         case "mouse_control":
           return await this.mouseControl(
@@ -1147,6 +1200,27 @@ export class ToolRunner {
     } catch (err) {
       return err instanceof Error ? err.message : String(err);
     }
+  }
+
+  private currentPerception(): string {
+    return this.hooks.currentPerception?.() ?? "No background perception cache is available yet.";
+  }
+
+  private async voicePersonRemember(
+    name: string,
+    relationship?: string,
+    notes?: string,
+  ): Promise<string> {
+    const confirmedName = name.trim();
+    if (!confirmedName) return "voice_person_remember needs a confirmed speaker name.";
+    if (!this.hooks.rememberCurrentSpeaker) {
+      return "Speaker recognition is not wired into this daemon session.";
+    }
+    return await this.hooks.rememberCurrentSpeaker({
+      name: confirmedName,
+      relationship,
+      notes,
+    });
   }
 
   private async mouseControl(

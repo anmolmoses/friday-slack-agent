@@ -47,6 +47,22 @@ export interface VoiceConfig {
   cameraHeight: number;
   /** Milliseconds to let the camera auto-expose before saving a frame. */
   cameraWarmupMs: number;
+  /** Refresh a low-duty background visual identity cache while listening. */
+  cameraAutoRecognize: boolean;
+  /** Milliseconds between background camera identity checks. */
+  cameraAutoIntervalMs: number;
+  /** Minimum confidence for using a background camera identity as likely. */
+  cameraAutoMinConfidence: number;
+  /** Local speaker recognition over mic samples already captured for voice. */
+  speakerRecognitionEnabled: boolean;
+  /** Minimum voice sample length before trying speaker recognition. */
+  speakerMinSampleMs: number;
+  /** Maximum mic audio retained per turn for speaker recognition. */
+  speakerMaxSampleMs: number;
+  /** Minimum confidence for using a speaker identity as likely. */
+  speakerMinConfidence: number;
+  /** Cooldown before proactively asking about an unknown speaker again. */
+  speakerNoveltyCooldownMs: number;
   /** Drop mic frames briefly after speaker audio so Friday does not hear herself. */
   echoSuppressionMs: number;
   /** Local, noise-gated interruption toggle. Server auto-interrupt stays off. */
@@ -139,6 +155,32 @@ export function loadVoiceConfig(): VoiceConfig {
     cameraWidth: Number(process.env.FRIDAY_VOICE_CAMERA_WIDTH ?? "1280"),
     cameraHeight: Number(process.env.FRIDAY_VOICE_CAMERA_HEIGHT ?? "720"),
     cameraWarmupMs: Number(process.env.FRIDAY_VOICE_CAMERA_WARMUP_MS ?? "1500"),
+    cameraAutoRecognize: bool(
+      "FRIDAY_VOICE_CAMERA_AUTO_RECOGNIZE",
+      false,
+    ),
+    cameraAutoIntervalMs: Number(
+      process.env.FRIDAY_VOICE_CAMERA_AUTO_INTERVAL_MS ?? "8000",
+    ),
+    cameraAutoMinConfidence: Number(
+      process.env.FRIDAY_VOICE_CAMERA_AUTO_MIN_CONFIDENCE ?? "0.78",
+    ),
+    speakerRecognitionEnabled: bool(
+      "FRIDAY_VOICE_SPEAKER_RECOGNITION",
+      false,
+    ),
+    speakerMinSampleMs: Number(
+      process.env.FRIDAY_VOICE_SPEAKER_MIN_SAMPLE_MS ?? "900",
+    ),
+    speakerMaxSampleMs: Number(
+      process.env.FRIDAY_VOICE_SPEAKER_MAX_SAMPLE_MS ?? "5000",
+    ),
+    speakerMinConfidence: Number(
+      process.env.FRIDAY_VOICE_SPEAKER_MIN_CONFIDENCE ?? "0.72",
+    ),
+    speakerNoveltyCooldownMs: Number(
+      process.env.FRIDAY_VOICE_SPEAKER_NOVELTY_COOLDOWN_MS ?? "60000",
+    ),
     echoSuppressionMs: Number(
       process.env.FRIDAY_VOICE_ECHO_SUPPRESSION_MS ?? "1200",
     ),

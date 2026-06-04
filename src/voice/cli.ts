@@ -22,6 +22,8 @@ import {
   ensureStateDir,
   LOG_FILE,
   type VoiceLatencyState,
+  type VoiceSpeakerState,
+  type VoiceVisionState,
 } from "./control.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -101,6 +103,23 @@ function formatLatencyStatus(lat: VoiceLatencyState | undefined): string {
     "\n" +
     `  last latency: stop->audio ${fmtMs(lat.stopToFirstAudioMs)}, stop->done ${fmtMs(lat.stopToDoneMs)} (${ageSec}s ago)\n` +
     `                speech ${fmtMs(lat.speechMs)}, transcript ${fmtMs(lat.stopToTranscriptMs)}, memory ${fmtMs(lat.memoryRecallMs)}, model ${fmtMs(lat.responseCreateToFirstAudioMs)}`
+  );
+}
+
+function clipStatus(s: string, n = 110): string {
+  const t = s.replace(/\s+/g, " ").trim();
+  return t.length <= n ? t : `${t.slice(0, n - 1)}…`;
+}
+
+function formatPerceptionStatus(args: {
+  vision?: VoiceVisionState;
+  speaker?: VoiceSpeakerState;
+}): string {
+  const age = (at: number) => `${Math.max(0, Math.round((Date.now() - at) / 1000))}s ago`;
+  return (
+    "\n" +
+    `  vision cache: ${args.vision ? `${clipStatus(args.vision.summary)} (${age(args.vision.at)})` : "-"}\n` +
+    `  speaker:      ${args.speaker ? `${clipStatus(args.speaker.summary)} (${age(args.speaker.at)})` : "-"}`
   );
 }
 
@@ -188,11 +207,16 @@ async function main(): Promise<void> {
           `  interruption: ${state.interruptionEnabled ? "on" : "off"}\n` +
           `  noise reduce: ${state.noiseReduction ?? "(unknown)"}\n` +
           `  transcript:   ${state.backgroundTranscription ? "background" : "blocking"} (${state.transcriptionModel ?? "off"})\n` +
-          `  camera:       ${state.cameraEnabled ? `on (device ${state.cameraIndex ?? "0"}, warmup ${state.cameraWarmupMs ?? 0}ms)` : "off"}\n` +
+          `  camera:       ${state.cameraEnabled ? `on (device ${state.cameraIndex ?? "0"}, warmup ${state.cameraWarmupMs ?? 0}ms, ambient ${state.cameraAutoRecognize ? `${state.cameraAutoIntervalMs ?? 0}ms` : "off"})` : "off"}\n` +
+          `  speaker id:   ${state.speakerRecognitionEnabled ? "on" : "off"}\n` +
           `  int gate:     ${(state.interruptMinLevel ?? 0).toFixed(2)} x ${state.interruptFrames ?? 0}\n` +
           `  mic peak:     ${(state.micPeakLevel ?? 0).toFixed(3)}\n` +
           `  uptime:       ${Math.round((Date.now() - state.startedAt) / 1000)}s` +
-          formatLatencyStatus(state.lastLatency),
+          formatLatencyStatus(state.lastLatency) +
+          formatPerceptionStatus({
+            vision: state.lastVision,
+            speaker: state.lastSpeaker,
+          }),
       );
       break;
     }

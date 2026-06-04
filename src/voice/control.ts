@@ -18,10 +18,15 @@ export interface DaemonState {
   cameraEnabled?: boolean;
   cameraIndex?: string;
   cameraWarmupMs?: number;
+  cameraAutoRecognize?: boolean;
+  cameraAutoIntervalMs?: number;
+  speakerRecognitionEnabled?: boolean;
   interruptMinLevel?: number;
   interruptFrames?: number;
   micPeakLevel?: number;
   lastLatency?: VoiceLatencyState;
+  lastVision?: VoiceVisionState;
+  lastSpeaker?: VoiceSpeakerState;
   startedAt: number;
   updatedAt: number;
 }
@@ -36,6 +41,23 @@ export interface VoiceLatencyState {
   stopToFirstAudioMs?: number;
   stopToDoneMs?: number;
   firstAudioToDoneMs?: number;
+}
+
+export interface VoiceVisionState {
+  at: number;
+  summary: string;
+  matchName?: string;
+  confidence?: number;
+  imagePath?: string;
+}
+
+export interface VoiceSpeakerState {
+  at: number;
+  summary: string;
+  matchName?: string;
+  confidence?: number;
+  sampleMs?: number;
+  unknownPromptPending?: boolean;
 }
 
 const STATE_DIR = "/tmp/friday-voice";

@@ -19,12 +19,24 @@ import {
   clearPid,
   type DaemonState,
   type VoiceLatencyState,
+  type VoiceSpeakerState,
+  type VoiceVisionState,
 } from "./control.ts";
 import { recallContext, engramRecallEnabled } from "../memory/engram-bridge.ts";
 import {
   captureExchange,
   engramCaptureEnabled,
 } from "../memory/auto-capture.ts";
+import {
+  captureCameraFrame,
+  lookupVisualPerson,
+  type VisualPersonMatch,
+} from "../memory/vision.ts";
+import {
+  lookupVoicePerson,
+  rememberVoicePerson,
+  type VoicePersonMatch,
+} from "../memory/voice.ts";
 import type { Subprocess } from "bun";
 
 const log = (...a: unknown[]) => console.log("[voice:daemon]", ...a);
@@ -49,6 +61,9 @@ interface VoiceTurn {
   captured: boolean;
   fallbackTimer: ReturnType<typeof setTimeout> | null;
   captureTimer: ReturnType<typeof setTimeout> | null;
+  speakerChunks: Buffer[];
+  speakerSampleMs: number;
+  speakerAnalyzed: boolean;
 }
 
 function engineeringContext(cfg: ReturnType<typeof loadVoiceConfig>): string {
@@ -63,8 +78,11 @@ function engineeringContext(cfg: ReturnType<typeof loadVoiceConfig>): string {
     "For current or internet-dependent facts, use web_search first, then browser_page_text on the most relevant URLs before making claims.",
     "For browser/UI tasks, use browser_open_url as needed, take browser_screenshot or screen_screenshot before coordinate-based actions, then use mouse_control only when you have clear coordinates. The orange ring means you are controlling the pointer.",
     cfg.cameraEnabled
-      ? "Camera vision is enabled. For physical-world visual questions, use camera_see. For identity, use visual_person_lookup first; if no confident match exists, ask for the person's name, then use visual_person_remember only after explicit confirmation."
+      ? "Camera vision is enabled. For physical-world visual questions, use current_perception first when cached context is enough; use camera_see only when you need a fresh visual inspection. For identity, use confirmed visual-person memory as tentative context; if no confident match exists, ask for the person's name, then use visual_person_remember only after explicit confirmation."
       : "Camera vision is disabled by FRIDAY_VOICE_CAMERA=false. Do not claim you can see through the camera.",
+    cfg.speakerRecognitionEnabled
+      ? "Speaker recognition is enabled. Use the current speaker context as tentative. If a new or unknown speaker identifies themselves, call voice_person_remember with the confirmed name. Do not claim a speaker identity from a weak match."
+      : "Speaker recognition is disabled by FRIDAY_VOICE_SPEAKER_RECOGNITION=false.",
     "For Slack app tasks, control the visible Slack app instead of using Slack API tokens: open_app Slack, use cmd+k to jump to a channel/person such as agent-test, press return, type the message, then press return to send.",
     "For substantial coding/build/debug/review tasks, use dispatch_engineering.",
     "Do not ask Anmol which repo to use unless the request is truly ambiguous and choosing wrong would be destructive.",
@@ -96,11 +114,40 @@ export async function runDaemon(opts: {
       );
     }
   }
-  const instructions = [persona, engineeringContext(cfg), voiceMemoryPrimer]
+  const baseInstructions = [persona, engineeringContext(cfg), voiceMemoryPrimer]
     .filter(Boolean)
     .join("\n\n");
+  let visualInstructionBlock = "";
+  let speakerInstructionBlock = "";
+  let lastVision: VoiceVisionState | undefined;
+  let lastSpeaker: VoiceSpeakerState | undefined;
+  let lastVisualSummary = "";
+  let lastSpeakerSummary = "";
+  let lastSpeakerSample: {
+    pcm: Buffer;
+    sampleRate: number;
+    durationMs: number;
+    at: number;
+  } | null = null;
+  let pendingUnknownSpeakerPrompt = "";
+  let lastUnknownSpeakerPromptAt = 0;
+
+  function currentInstructions(extra?: string): string {
+    return [
+      baseInstructions,
+      visualInstructionBlock,
+      speakerInstructionBlock,
+      extra,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
   const toolDefs = toolDefsForConfig(cfg);
-  const tools = new ToolRunner(cfg);
+  const tools = new ToolRunner(cfg, {
+    currentPerception: perceptionContextForTool,
+    rememberCurrentSpeaker,
+  });
   const player = new Player(cfg.sampleRate, cfg.playbackPrebufferMs);
   let suppressMicUntil = 0;
   let estimatedPlaybackUntil = 0;
@@ -111,6 +158,7 @@ export async function runDaemon(opts: {
   let activeAssistantAudioItemId: string | null = null;
   let activeAssistantAudioContentIndex = 0;
   let audioResponseStarted = false;
+  let responseInFlight = false;
   let assistantAudioStartedAt = 0;
   let interruptsThisResponse = 0;
   let micRingMs = 0;
@@ -126,7 +174,7 @@ export async function runDaemon(opts: {
     overlayProc = await spawnOverlay(hud.url);
   }
 
-  const client = new RealtimeClient(cfg, instructions, toolDefs, {
+  const client = new RealtimeClient(cfg, currentInstructions(), toolDefs, {
     onAudioDelta: (pcm, meta) => {
       const now = Date.now();
       if (now < dropCanceledAudioUntil) return;
@@ -174,12 +222,15 @@ export async function runDaemon(opts: {
       if (listening) hud.set("thinking");
       const turn = ensureVoiceTurn();
       turn.speechStoppedAt = Date.now();
+      void analyzeSpeakerTurn(turn);
       if (!cfg.backgroundTranscription) scheduleResponseFallback(turn);
     },
     onResponseCreated: () => {
+      responseInFlight = true;
       if (activeTurn) activeTurn.responseCreateAt ??= Date.now();
     },
     onResponseDone: () => {
+      responseInFlight = false;
       if (Date.now() < dropCanceledAudioUntil) {
         dropCanceledAudioUntil = 0;
         estimatedPlaybackUntil = 0;
@@ -214,6 +265,7 @@ export async function runDaemon(opts: {
           syncState();
         }
         scheduleVoiceCapture(turn);
+        maybeSpeakPendingUnknownSpeaker();
       }
     },
     onUserTranscript: (t) => {
@@ -272,6 +324,9 @@ export async function runDaemon(opts: {
       captured: false,
       fallbackTimer: null,
       captureTimer: null,
+      speakerChunks: [],
+      speakerSampleMs: 0,
+      speakerAnalyzed: false,
     };
   }
 
@@ -355,7 +410,7 @@ export async function runDaemon(opts: {
       }
     }
     const responseInstructions = memoryContext
-      ? `${instructions}\n\n${memoryContext}`
+      ? currentInstructions(memoryContext)
       : undefined;
     turn.responseCreateAt = Date.now();
     client.createResponse(responseInstructions);
@@ -454,6 +509,311 @@ export async function runDaemon(opts: {
     if (activeTurn === turn) activeTurn = null;
   }
 
+  function updateLiveInstructions(): void {
+    client.updateInstructions(currentInstructions());
+  }
+
+  function perceptionContextForTool(): string {
+    const age = (at?: number) =>
+      at ? `${Math.max(0, Math.round((Date.now() - at) / 1000))}s ago` : "never";
+    return [
+      "Background perception cache:",
+      lastVision
+        ? `- Vision (${age(lastVision.at)}): ${lastVision.summary}`
+        : `- Vision: ${cfg.cameraEnabled && cfg.cameraAutoRecognize ? "warming up / no cache yet" : "disabled"}`,
+      lastSpeaker
+        ? `- Speaker (${age(lastSpeaker.at)}): ${lastSpeaker.summary}`
+        : `- Speaker: ${cfg.speakerRecognitionEnabled ? "no speaker sample yet" : "disabled"}`,
+    ].join("\n");
+  }
+
+  function setVisionState(args: {
+    summary: string;
+    imagePath?: string;
+    match?: VisualPersonMatch;
+  }): void {
+    const changed = args.summary !== lastVisualSummary;
+    lastVisualSummary = args.summary;
+    lastVision = {
+      at: Date.now(),
+      summary: args.summary,
+      imagePath: args.imagePath,
+      matchName: args.match?.name,
+      confidence: args.match?.confidence,
+    };
+    if (changed) {
+      visualInstructionBlock = [
+        "## Current Camera Recognition",
+        args.summary,
+        "This is a background visual cache. Use it for zero-latency room/person context, but do not claim identity from weak or tentative matches.",
+      ].join("\n");
+      updateLiveInstructions();
+    }
+    syncState();
+  }
+
+  function setSpeakerState(args: {
+    summary: string;
+    match?: VoicePersonMatch;
+    sampleMs?: number;
+    unknownPromptPending?: boolean;
+  }): void {
+    const changed = args.summary !== lastSpeakerSummary;
+    lastSpeakerSummary = args.summary;
+    lastSpeaker = {
+      at: Date.now(),
+      summary: args.summary,
+      matchName: args.match?.name,
+      confidence: args.match?.confidence,
+      sampleMs: args.sampleMs,
+      unknownPromptPending: args.unknownPromptPending,
+    };
+    if (changed) {
+      speakerInstructionBlock = [
+        "## Current Speaker Recognition",
+        args.summary,
+        "This is a local voice-fingerprint cache from confirmed speaker memories. Treat it as tentative; if a new speaker gives a name, remember the voice only after confirmation.",
+      ].join("\n");
+      updateLiveInstructions();
+    }
+    syncState();
+  }
+
+  function visualSummaryForMatch(
+    matches: VisualPersonMatch[],
+  ): { summary: string; match?: VisualPersonMatch } {
+    const top = matches[0];
+    if (!top) {
+      return {
+        summary:
+          "Latest camera recognition: no saved visual person memories exist yet. Do not claim identity; ask for a name if identity matters.",
+      };
+    }
+    const pct = Math.round(top.confidence * 100);
+    if (top.confidence >= cfg.cameraAutoMinConfidence) {
+      return {
+        match: top,
+        summary: `Latest camera recognition: likely ${top.name} (${pct}% confidence, distance ${top.distance}/64). Treat as tentative unless confirmed.`,
+      };
+    }
+    return {
+      match: top,
+      summary: `Latest camera recognition: no confident identity match. Closest saved person is ${top.name} (${pct}% confidence, distance ${top.distance}/64). Ask before claiming identity.`,
+    };
+  }
+
+  async function refreshVisualContext(): Promise<void> {
+    if (!cfg.cameraEnabled || !cfg.cameraAutoRecognize) return;
+    if (visualRunning) return;
+    visualRunning = true;
+    try {
+      const frame = await captureCameraFrame({
+        deviceIndex: cfg.cameraIndex,
+        width: cfg.cameraWidth,
+        height: cfg.cameraHeight,
+        warmupMs: cfg.cameraWarmupMs,
+        persist: false,
+      });
+      const matches = await lookupVisualPerson({
+        imagePath: frame.file,
+        limit: 3,
+      });
+      const result = visualSummaryForMatch(matches);
+      setVisionState({
+        summary: `${result.summary} Frame: ${frame.relPath}.`,
+        imagePath: frame.file,
+        match: result.match,
+      });
+    } catch (err) {
+      log(
+        "ambient vision skipped:",
+        err instanceof Error ? err.message : String(err),
+      );
+    } finally {
+      visualRunning = false;
+    }
+  }
+
+  function startAutoVision(): void {
+    if (!cfg.cameraEnabled || !cfg.cameraAutoRecognize || visualTimer) return;
+    const interval = Math.max(3000, cfg.cameraAutoIntervalMs);
+    const tick = () => {
+      if (!listening || visualRunning) return;
+      void refreshVisualContext();
+    };
+    visualTimer = setInterval(tick, interval);
+    setTimeout(tick, 750);
+    log(`ambient vision ON (${interval}ms interval)`);
+  }
+
+  function stopAutoVision(): void {
+    if (!visualTimer) return;
+    clearInterval(visualTimer);
+    visualTimer = null;
+    visualRunning = false;
+    log("ambient vision OFF");
+  }
+
+  function captureSpeakerChunk(
+    b64: string,
+    level: number,
+    durationMs: number,
+  ): void {
+    if (!cfg.speakerRecognitionEnabled) return;
+    const turn = activeTurn;
+    if (!turn || turn.speechStoppedAt != null || turn.speakerAnalyzed) return;
+    if (turn.speakerSampleMs >= cfg.speakerMaxSampleMs) return;
+    if (level < 0.01) return;
+    turn.speakerChunks.push(Buffer.from(b64, "base64"));
+    turn.speakerSampleMs += durationMs;
+  }
+
+  function speakerSummaryForMatch(
+    matches: VoicePersonMatch[],
+  ): { summary: string; match?: VoicePersonMatch; recognized: boolean } {
+    const top = matches[0];
+    if (!top) {
+      return {
+        recognized: false,
+        summary:
+          "Latest speaker recognition: no saved voice profiles exist yet. If identity matters, ask who is speaking and remember the voice only after confirmation.",
+      };
+    }
+    const pct = Math.round(top.confidence * 100);
+    if (top.confidence >= cfg.speakerMinConfidence) {
+      return {
+        recognized: true,
+        match: top,
+        summary: `Latest speaker recognition: likely ${top.name} (${pct}% confidence, similarity ${top.similarity.toFixed(3)}). Treat as tentative unless confirmed.`,
+      };
+    }
+    return {
+      recognized: false,
+      match: top,
+      summary: `Latest speaker recognition: new or uncertain speaker. Closest saved voice is ${top.name} (${pct}% confidence, similarity ${top.similarity.toFixed(3)}). Ask who is speaking before claiming identity.`,
+    };
+  }
+
+  async function analyzeSpeakerTurn(turn: VoiceTurn): Promise<void> {
+    if (!cfg.speakerRecognitionEnabled || turn.speakerAnalyzed) return;
+    turn.speakerAnalyzed = true;
+    if (turn.speakerSampleMs < cfg.speakerMinSampleMs) return;
+    const pcm = Buffer.concat(turn.speakerChunks);
+    if (pcm.byteLength < cfg.sampleRate) return;
+    lastSpeakerSample = {
+      pcm,
+      sampleRate: cfg.sampleRate,
+      durationMs: turn.speakerSampleMs,
+      at: Date.now(),
+    };
+    try {
+      const matches = await lookupVoicePerson({
+        pcm,
+        sampleRate: cfg.sampleRate,
+        limit: 3,
+      });
+      const result = speakerSummaryForMatch(matches);
+      setSpeakerState({
+        summary: `${result.summary} Sample length: ${turn.speakerSampleMs}ms.`,
+        match: result.match,
+        sampleMs: turn.speakerSampleMs,
+      });
+      if (!result.recognized) queueUnknownSpeakerPrompt(result.match);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setSpeakerState({
+        summary: `Latest speaker recognition: skipped (${message}).`,
+        sampleMs: turn.speakerSampleMs,
+      });
+    }
+  }
+
+  function queueUnknownSpeakerPrompt(match?: VoicePersonMatch): void {
+    const now = Date.now();
+    if (now - lastUnknownSpeakerPromptAt < cfg.speakerNoveltyCooldownMs) return;
+    lastUnknownSpeakerPromptAt = now;
+    const seen =
+      lastVision?.matchName &&
+      (lastVision.confidence ?? 0) >= cfg.cameraAutoMinConfidence
+        ? ` I can see someone who may be ${lastVision.matchName}, but this voice is not confirmed yet.`
+        : "";
+    const closest = match
+      ? ` The closest saved voice was ${match.name}, but confidence was only ${Math.round(match.confidence * 100)}%.`
+      : "";
+    pendingUnknownSpeakerPrompt =
+      `A new or uncertain speaker was just detected.${seen}${closest} Ask one brief question to identify who is speaking so you can remember the voice. If they give a name, use voice_person_remember with that confirmed name.`;
+    setSpeakerState({
+      summary:
+        lastSpeaker?.summary ??
+        "Latest speaker recognition: new or uncertain speaker.",
+      match,
+      sampleMs: lastSpeaker?.sampleMs,
+      unknownPromptPending: true,
+    });
+    setTimeout(() => maybeSpeakPendingUnknownSpeaker(), 1200);
+  }
+
+  function maybeSpeakPendingUnknownSpeaker(): void {
+    if (!pendingUnknownSpeakerPrompt || !listening || !client.connected) return;
+    if (
+      responseInFlight ||
+      audioResponseStarted ||
+      (activeTurn &&
+        (!activeTurn.responseDone ||
+          activeTurn.pendingTools > 0 ||
+          activeTurn.sawToolCall))
+    ) {
+      setTimeout(() => maybeSpeakPendingUnknownSpeaker(), 1500);
+      return;
+    }
+    const prompt = pendingUnknownSpeakerPrompt;
+    pendingUnknownSpeakerPrompt = "";
+    if (lastSpeaker) {
+      lastSpeaker = { ...lastSpeaker, unknownPromptPending: false };
+      syncState();
+    }
+    client.createResponse(currentInstructions(prompt));
+  }
+
+  async function rememberCurrentSpeaker(args: {
+    name: string;
+    relationship?: string;
+    notes?: string;
+  }): Promise<string> {
+    if (!cfg.speakerRecognitionEnabled) {
+      return "Speaker recognition is disabled by FRIDAY_VOICE_SPEAKER_RECOGNITION=false.";
+    }
+    if (!lastSpeakerSample) {
+      return "No recent speaker sample is available yet. Ask the person to speak once, then try again.";
+    }
+    try {
+      const remembered = await rememberVoicePerson({
+        name: args.name,
+        pcm: lastSpeakerSample.pcm,
+        sampleRate: lastSpeakerSample.sampleRate,
+        relationship: args.relationship,
+        notes: args.notes,
+      });
+      const summary = `Latest speaker recognition: confirmed and remembered ${remembered.profile.name}. Future matches can use ${remembered.profile.name}'s saved voice profile.`;
+      setSpeakerState({
+        summary,
+        sampleMs: lastSpeakerSample.durationMs,
+      });
+      pendingUnknownSpeakerPrompt = "";
+      return [
+        `Remembered voice identity for ${remembered.profile.name}.`,
+        `Person id: ${remembered.profile.id}`,
+        `Reference sample: ${remembered.sample.path}`,
+        `Duration: ${remembered.sample.durationMs}ms`,
+        remembered.indexed
+          ? "Engram index updated."
+          : "Engram index update was skipped or already running.",
+      ].join("\n");
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
   function rememberMicChunk(b64: string, durationMs: number): void {
     micRing.push({ b64, durationMs });
     micRingMs += durationMs;
@@ -523,6 +883,7 @@ export async function runDaemon(opts: {
     (b64, lvl, durationMs) => {
       if (!listening || !client.connected) return;
       rememberMicChunk(b64, durationMs);
+      captureSpeakerChunk(b64, lvl, durationMs);
       const now = Date.now();
       if (now < suppressMicUntil) {
         if (tryInterrupt(lvl)) return;
@@ -542,6 +903,8 @@ export async function runDaemon(opts: {
   let listening = false;
   let levelTimer: ReturnType<typeof setInterval> | null = null;
   let peakTimer: ReturnType<typeof setInterval> | null = null;
+  let visualTimer: ReturnType<typeof setInterval> | null = null;
+  let visualRunning = false;
   const startedAt = Date.now();
 
   function syncState(): void {
@@ -558,10 +921,15 @@ export async function runDaemon(opts: {
       cameraEnabled: cfg.cameraEnabled,
       cameraIndex: cfg.cameraIndex,
       cameraWarmupMs: cfg.cameraWarmupMs,
+      cameraAutoRecognize: cfg.cameraAutoRecognize,
+      cameraAutoIntervalMs: cfg.cameraAutoIntervalMs,
+      speakerRecognitionEnabled: cfg.speakerRecognitionEnabled,
       interruptMinLevel: cfg.interruptMinLevel,
       interruptFrames: cfg.interruptFrames,
       micPeakLevel: lastPeakLevel,
       lastLatency,
+      lastVision,
+      lastSpeaker,
       startedAt,
       updatedAt: Date.now(),
     };
@@ -573,6 +941,7 @@ export async function runDaemon(opts: {
     listening = true;
     if (!client.connected) client.connect();
     mic.start();
+    startAutoVision();
     cue("on");
     hud.set("listening");
     // Drive the HUD waveform from the live voice level at ~25Hz (with decay).
@@ -608,6 +977,7 @@ export async function runDaemon(opts: {
     peakLevel = 0;
     lastPeakLevel = 0;
     hud.pushLevel(0);
+    stopAutoVision();
     mic.stop();
     player.flush();
     if (cfg.wsIdleOff) client.close();
