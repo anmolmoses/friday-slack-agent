@@ -9,10 +9,43 @@ import { MicCapture, Player, cue, rms16 } from "./audio.ts";
 import { RealtimeClient } from "./realtime.ts";
 import { HudServer } from "./hud-server.ts";
 import { spawnOverlay } from "./hud-overlay.ts";
-import { writePid, writeState, clearPid, type DaemonState } from "./control.ts";
+import {
+  writePid,
+  writeState,
+  clearPid,
+  type DaemonState,
+  type VoiceLatencyState,
+} from "./control.ts";
+import { recallContext, engramRecallEnabled } from "../memory/engram-bridge.ts";
+import {
+  captureExchange,
+  engramCaptureEnabled,
+} from "../memory/auto-capture.ts";
 import type { Subprocess } from "bun";
 
 const log = (...a: unknown[]) => console.log("[voice:daemon]", ...a);
+
+interface VoiceTurn {
+  id: string;
+  userText: string;
+  assistantText: string;
+  speechStartedAt: number | null;
+  speechStoppedAt: number | null;
+  transcriptAt: number | null;
+  recallStartedAt: number | null;
+  recallEndedAt: number | null;
+  responseCreateAt: number | null;
+  firstAudioAt: number | null;
+  responseDoneAt: number | null;
+  responseRequested: boolean;
+  responseDone: boolean;
+  sawToolCall: boolean;
+  pendingTools: number;
+  captureAttempts: number;
+  captured: boolean;
+  fallbackTimer: ReturnType<typeof setTimeout> | null;
+  captureTimer: ReturnType<typeof setTimeout> | null;
+}
 
 function engineeringContext(cfg: ReturnType<typeof loadVoiceConfig>): string {
   const repos =
@@ -22,6 +55,7 @@ function engineeringContext(cfg: ReturnType<typeof loadVoiceConfig>): string {
     "## Engineering voice routing",
     "You are a capable Mac agent with explicit tools for local memory, associative engram recall, web search, browser reading/screenshots, current-screen screenshots, mouse control, shell, AppleScript, and engineering dispatch.",
     "For questions involving Anmol's past preferences, previous project context, remembered decisions, or how he likes work done, use memory_search and/or engram_recall before answering. Use remember when Anmol asks you to remember something or states a stable preference/lesson.",
+    "If the injected associative-memory block contains a direct answer to a preference question, use it directly instead of asking Anmol again.",
     "For current or internet-dependent facts, use web_search first, then browser_page_text on the most relevant URLs before making claims.",
     "For browser/UI tasks, use browser_open_url as needed, take browser_screenshot or screen_screenshot before coordinate-based actions, then use mouse_control only when you have clear coordinates. The orange ring means you are controlling the pointer.",
     "For Slack app tasks, control the visible Slack app instead of using Slack API tokens: open_app Slack, use cmd+k to jump to a channel/person such as agent-test, press return, type the message, then press return to send.",
@@ -39,7 +73,25 @@ export async function runDaemon(opts: {
 }): Promise<void> {
   const cfg = loadVoiceConfig();
   const persona = await loadVoicePersona();
-  const instructions = `${persona}\n\n${engineeringContext(cfg)}`;
+  let voiceMemoryPrimer = "";
+  if (engramRecallEnabled()) {
+    try {
+      voiceMemoryPrimer = await recallContext(
+        "Anmol stable preferences favorite song preferred apps voice agent settings",
+        6,
+        5_000,
+      );
+      if (voiceMemoryPrimer) log("loaded voice memory primer");
+    } catch (err) {
+      log(
+        "voice memory primer skipped:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+  const instructions = [persona, engineeringContext(cfg), voiceMemoryPrimer]
+    .filter(Boolean)
+    .join("\n\n");
   const toolDefs = toolDefsForConfig(cfg);
   const tools = new ToolRunner(cfg);
   const player = new Player(cfg.sampleRate, cfg.playbackPrebufferMs);
@@ -56,6 +108,8 @@ export async function runDaemon(opts: {
   let interruptsThisResponse = 0;
   let micRingMs = 0;
   const micRing: Array<{ b64: string; durationMs: number }> = [];
+  let activeTurn: VoiceTurn | null = null;
+  let lastLatency: VoiceLatencyState | undefined;
 
   // On-screen holographic HUD (localhost page + transparent Swift overlay).
   const hud = new HudServer(cfg.hudPort);
@@ -78,6 +132,15 @@ export async function runDaemon(opts: {
         audioResponseStarted = true;
         assistantAudioStartedAt = now;
         interruptsThisResponse = 0;
+        if (activeTurn) {
+          activeTurn.responseDone = false;
+          if (!activeTurn.firstAudioAt) {
+            activeTurn.firstAudioAt = now;
+            lastLatency = computeTurnLatency(activeTurn, now);
+            log(`latency first_audio: ${formatLatency(lastLatency)}`);
+            syncState();
+          }
+        }
       }
       if (itemId) activeAssistantAudioItemId = itemId;
       activeAssistantAudioContentIndex = meta.contentIndex;
@@ -97,10 +160,17 @@ export async function runDaemon(opts: {
         log("ignored speech_started during speaker echo guard");
         return;
       }
+      beginVoiceTurn(now);
       if (listening) hud.set("hearing");
     },
     onSpeechStopped: () => {
       if (listening) hud.set("thinking");
+      const turn = ensureVoiceTurn();
+      turn.speechStoppedAt = Date.now();
+      if (!cfg.backgroundTranscription) scheduleResponseFallback(turn);
+    },
+    onResponseCreated: () => {
+      if (activeTurn) activeTurn.responseCreateAt ??= Date.now();
     },
     onResponseDone: () => {
       if (Date.now() < dropCanceledAudioUntil) {
@@ -126,17 +196,238 @@ export async function runDaemon(opts: {
       activeAssistantAudioItemId = null;
       player.finishSoon();
       if (listening) hud.set("listening");
+      const turn = activeTurn;
+      if (turn) {
+        turn.responseDoneAt = Date.now();
+        turn.responseDone = true;
+        const latency = computeTurnLatency(turn, turn.responseDoneAt);
+        if (hasUsefulLatency(latency)) {
+          lastLatency = latency;
+          log(`latency response_done: ${formatLatency(lastLatency)}`);
+          syncState();
+        }
+        scheduleVoiceCapture(turn);
+      }
     },
-    onUserTranscript: (t) => log("heard:", t),
+    onUserTranscript: (t) => {
+      void handleUserTranscript(t);
+    },
+    onAssistantTranscript: (t) => {
+      const turn = activeTurn;
+      if (!turn) return;
+      turn.assistantText = t.trim();
+      log("said:", turn.assistantText);
+      if (turn.responseDone) scheduleVoiceCapture(turn);
+    },
     onFunctionCall: async ({ callId, name, args }) => {
       log(`tool: ${name}`, JSON.stringify(args).slice(0, 200));
+      const turn = ensureVoiceTurn();
+      turn.sawToolCall = true;
+      turn.pendingTools++;
       if (listening) hud.set("thinking", name.replace(/_/g, " "));
       const result = await tools.exec(name, args);
+      turn.pendingTools = Math.max(0, turn.pendingTools - 1);
+      turn.responseDone = false;
       client.sendFunctionResult(callId, result);
     },
     onOpen: () => syncState(),
     onClose: () => syncState(),
   });
+
+  function newVoiceTurn(speechStartedAt: number | null = null): VoiceTurn {
+    return {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      userText: "",
+      assistantText: "",
+      speechStartedAt,
+      speechStoppedAt: null,
+      transcriptAt: null,
+      recallStartedAt: null,
+      recallEndedAt: null,
+      responseCreateAt: null,
+      firstAudioAt: null,
+      responseDoneAt: null,
+      responseRequested: false,
+      responseDone: false,
+      sawToolCall: false,
+      pendingTools: 0,
+      captureAttempts: 0,
+      captured: false,
+      fallbackTimer: null,
+      captureTimer: null,
+    };
+  }
+
+  function clearVoiceTurnTimers(turn: VoiceTurn): void {
+    if (turn.fallbackTimer) {
+      clearTimeout(turn.fallbackTimer);
+      turn.fallbackTimer = null;
+    }
+    if (turn.captureTimer) {
+      clearTimeout(turn.captureTimer);
+      turn.captureTimer = null;
+    }
+  }
+
+  function beginVoiceTurn(speechStartedAt = Date.now()): VoiceTurn {
+    if (activeTurn && !activeTurn.captured && activeTurn.userText) {
+      scheduleVoiceCapture(activeTurn, 250);
+    }
+    activeTurn = newVoiceTurn(speechStartedAt);
+    return activeTurn;
+  }
+
+  function ensureVoiceTurn(): VoiceTurn {
+    if (!activeTurn || activeTurn.captured) activeTurn = newVoiceTurn();
+    return activeTurn;
+  }
+
+  function scheduleResponseFallback(turn: VoiceTurn): void {
+    if (turn.responseRequested || turn.fallbackTimer) return;
+    turn.fallbackTimer = setTimeout(() => {
+      turn.fallbackTimer = null;
+      if (activeTurn === turn && !turn.responseRequested) {
+        void requestVoiceResponse(turn);
+      }
+    }, 2500);
+  }
+
+  async function handleUserTranscript(transcript: string): Promise<void> {
+    const text = transcript.trim();
+    if (!text) return;
+    const turn = ensureVoiceTurn();
+    turn.userText = text;
+    turn.transcriptAt = Date.now();
+    log("heard:", text);
+    if (turn.fallbackTimer) {
+      clearTimeout(turn.fallbackTimer);
+      turn.fallbackTimer = null;
+    }
+    if (cfg.backgroundTranscription) {
+      if (turn.responseDone) scheduleVoiceCapture(turn);
+      return;
+    }
+    await requestVoiceResponse(turn);
+  }
+
+  async function requestVoiceResponse(turn: VoiceTurn): Promise<void> {
+    if (turn.responseRequested) return;
+    turn.responseRequested = true;
+    turn.responseDone = false;
+    let memoryContext = "";
+    if (engramRecallEnabled() && turn.userText.trim()) {
+      try {
+        turn.recallStartedAt = Date.now();
+        memoryContext = await recallContext(turn.userText, 8);
+        turn.recallEndedAt = Date.now();
+        if (memoryContext) log("engram recall injected for voice turn");
+      } catch (err) {
+        turn.recallEndedAt = Date.now();
+        log(
+          "engram recall skipped:",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+    const responseInstructions = memoryContext
+      ? `${instructions}\n\n${memoryContext}`
+      : undefined;
+    turn.responseCreateAt = Date.now();
+    client.createResponse(responseInstructions);
+  }
+
+  function elapsed(start: number | null, end: number | null): number | undefined {
+    if (start == null || end == null) return undefined;
+    return Math.max(0, end - start);
+  }
+
+  function computeTurnLatency(
+    turn: VoiceTurn,
+    at = Date.now(),
+  ): VoiceLatencyState {
+    return {
+      at,
+      speechMs: elapsed(turn.speechStartedAt, turn.speechStoppedAt),
+      stopToTranscriptMs: elapsed(turn.speechStoppedAt, turn.transcriptAt),
+      memoryRecallMs: elapsed(turn.recallStartedAt, turn.recallEndedAt),
+      transcriptToResponseCreateMs: elapsed(
+        turn.transcriptAt,
+        turn.responseCreateAt,
+      ),
+      responseCreateToFirstAudioMs: elapsed(
+        turn.responseCreateAt,
+        turn.firstAudioAt,
+      ),
+      stopToFirstAudioMs: elapsed(turn.speechStoppedAt, turn.firstAudioAt),
+      stopToDoneMs: elapsed(turn.speechStoppedAt, turn.responseDoneAt),
+      firstAudioToDoneMs: elapsed(turn.firstAudioAt, turn.responseDoneAt),
+    };
+  }
+
+  function formatLatency(lat: VoiceLatencyState): string {
+    const show = (label: string, value: number | undefined) =>
+      value == null ? null : `${label}=${value}ms`;
+    return [
+      show("speech", lat.speechMs),
+      show("stop->transcript", lat.stopToTranscriptMs),
+      show("memory", lat.memoryRecallMs),
+      show("transcript->create", lat.transcriptToResponseCreateMs),
+      show("create->audio", lat.responseCreateToFirstAudioMs),
+      show("stop->audio", lat.stopToFirstAudioMs),
+      show("stop->done", lat.stopToDoneMs),
+      show("audio->done", lat.firstAudioToDoneMs),
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  function hasUsefulLatency(lat: VoiceLatencyState): boolean {
+    return (
+      lat.stopToFirstAudioMs != null ||
+      lat.responseCreateToFirstAudioMs != null ||
+      lat.stopToDoneMs != null
+    );
+  }
+
+  function scheduleVoiceCapture(turn: VoiceTurn, delayMs = 1200): void {
+    if (turn.captureTimer) clearTimeout(turn.captureTimer);
+    turn.captureTimer = setTimeout(() => {
+      turn.captureTimer = null;
+      captureVoiceTurn(turn);
+    }, delayMs);
+  }
+
+  function captureVoiceTurn(turn: VoiceTurn): void {
+    if (turn.captured) return;
+    if (!turn.userText.trim()) {
+      turn.captureAttempts++;
+      if (turn.captureAttempts < 8) scheduleVoiceCapture(turn, 1500);
+      return;
+    }
+    if (!turn.responseDone || turn.pendingTools > 0) {
+      scheduleVoiceCapture(turn, 1500);
+      return;
+    }
+    turn.captureAttempts++;
+    if (!turn.assistantText.trim() && turn.captureAttempts < 8) {
+      scheduleVoiceCapture(turn, 1500);
+      return;
+    }
+    if (engramCaptureEnabled()) {
+      captureExchange({
+        channel: "voice",
+        channelName: "voice",
+        threadId: `voice-${turn.id}`,
+        user: "Anmol",
+        userText: turn.userText,
+        reply: turn.assistantText,
+      });
+      log("captured voice exchange into memory");
+    }
+    turn.captured = true;
+    clearVoiceTurnTimers(turn);
+    if (activeTurn === turn) activeTurn = null;
+  }
 
   function rememberMicChunk(b64: string, durationMs: number): void {
     micRing.push({ b64, durationMs });
@@ -237,9 +528,12 @@ export async function runDaemon(opts: {
       voice: cfg.voice,
       interruptionEnabled: cfg.interruptionEnabled,
       noiseReduction: cfg.inputNoiseReduction,
+      transcriptionModel: cfg.transcriptionModel,
+      backgroundTranscription: cfg.backgroundTranscription,
       interruptMinLevel: cfg.interruptMinLevel,
       interruptFrames: cfg.interruptFrames,
       micPeakLevel: lastPeakLevel,
+      lastLatency,
       startedAt,
       updatedAt: Date.now(),
     };

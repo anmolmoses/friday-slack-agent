@@ -13,11 +13,26 @@ export interface DaemonState {
   voice?: string;
   interruptionEnabled?: boolean;
   noiseReduction?: string;
+  transcriptionModel?: string;
+  backgroundTranscription?: boolean;
   interruptMinLevel?: number;
   interruptFrames?: number;
   micPeakLevel?: number;
+  lastLatency?: VoiceLatencyState;
   startedAt: number;
   updatedAt: number;
+}
+
+export interface VoiceLatencyState {
+  at: number;
+  speechMs?: number;
+  stopToTranscriptMs?: number;
+  memoryRecallMs?: number;
+  transcriptToResponseCreateMs?: number;
+  responseCreateToFirstAudioMs?: number;
+  stopToFirstAudioMs?: number;
+  stopToDoneMs?: number;
+  firstAudioToDoneMs?: number;
 }
 
 const STATE_DIR = "/tmp/friday-voice";

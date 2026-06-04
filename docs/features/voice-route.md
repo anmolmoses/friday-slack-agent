@@ -15,6 +15,8 @@ exactly as before.
   Playwright browser screenshots.
 - Memory tools: search local Friday memory, recall associative engram context, and write
   durable voice memories that trigger incremental engram indexing.
+- Voice turns use Engram without blocking speech: a startup primer and memory tools support
+  recall, while background transcripts capture completed voice exchanges into the index.
 - Hands heavy engineering work to `dispatch_engineering`, which infers the repo and routes to
   Claude+Slack when configured or local Codex in Terminal when Slack is unavailable.
 - Toggle on/off from a keyboard shortcut (skhd) or the CLI.
@@ -91,6 +93,12 @@ A detached daemon logs to `/tmp/friday-voice/daemon.log`.
 | `FRIDAY_VOICE_INTERRUPT_MAX_PER_RESPONSE` | `1` | maximum accepted interruptions during one FRIDAY response |
 | `FRIDAY_VOICE_PLAYBACK_PREBUFFER_MS` | `350` | small output prebuffer for smoother speech playback |
 | `FRIDAY_VOICE_WS_IDLE_OFF` | `true` | drop WS when toggled off |
+| `FRIDAY_VOICE_BACKGROUND_TRANSCRIPTION` | `true` | let Realtime answer immediately while final transcripts feed memory in the background |
+| `FRIDAY_VOICE_TRANSCRIPTION_MODEL` | `gpt-4o-mini-transcribe` | input transcription model used for voice memory capture |
+| `FRIDAY_VOICE_TRANSCRIPTION_LANGUAGE` | `en` | optional language hint for faster/more accurate transcription |
+| `FRIDAY_VOICE_TRANSCRIPTION_PROMPT` | — | optional transcription hint for names/apps/domain terms |
+| `ENGRAM_RECALL` | `0` | when `1`, load a small voice memory primer at daemon startup; blocking per-turn recall is only used when background transcription is disabled |
+| `ENGRAM_CAPTURE` | `0` | when `1`, capture voice transcript pairs under `memory/conversations/` and reindex |
 | `SLACK_VOICE_CHANNEL` | — | channel id for Claude dispatch audit thread; if unset, engineering dispatch falls back to Codex |
 
 Find the mic index with: `ffmpeg -f avfoundation -list_devices true -i ""` (look under
@@ -134,6 +142,27 @@ duration that was actually played. Friday does that only after a local noise gat
 `turn_detection.interrupt_response` intentionally stays `false` even when
 `FRIDAY_VOICE_INTERRUPTION=true`; otherwise OpenAI's VAD would auto-cancel on any detected noise
 before Friday can apply the local threshold/frame/cooldown filters.
+
+## Voice Memory
+
+By default, voice uses background transcription: Realtime's `create_response` stays enabled, so
+FRIDAY starts answering as soon as server VAD closes the turn. Input transcription runs alongside
+the response and is used for memory capture, not as a blocker in the speaking path.
+
+When `ENGRAM_RECALL=1`, the daemon loads a small associative-memory primer at startup so stable
+preferences are available without adding turn latency. The model also has `memory_search`,
+`engram_recall`, and `remember` tools for memory-sensitive turns.
+
+If `FRIDAY_VOICE_BACKGROUND_TRANSCRIPTION=false`, Friday switches back to explicit response
+creation: after VAD commits a turn, it waits for
+`conversation.item.input_audio_transcription.completed`, recalls engram context for that
+transcript, then creates the response with the recalled context appended to the instructions.
+
+After FRIDAY speaks, `response.output_audio_transcript.done` supplies the assistant transcript.
+If `ENGRAM_CAPTURE=1`, Friday writes the pair through `captureExchange()`, which stores a tagged
+file under `memory/conversations/<date>/` and schedules enrichment plus incremental engram
+indexing. This is what makes voice-only facts, like "Numb by Linkin Park is my favorite song",
+recallable in later sessions.
 
 ## Keyboard shortcut (skhd)
 

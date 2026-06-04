@@ -21,6 +21,7 @@ import {
   readState,
   ensureStateDir,
   LOG_FILE,
+  type VoiceLatencyState,
 } from "./control.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -86,6 +87,20 @@ async function runMicTest(ms: number): Promise<void> {
       (peak < 0.01
         ? "\nMic is effectively silent. Check macOS Microphone permission for the app launching Friday voice."
         : ""),
+  );
+}
+
+function fmtMs(ms: number | undefined): string {
+  return ms == null ? "-" : `${ms}ms`;
+}
+
+function formatLatencyStatus(lat: VoiceLatencyState | undefined): string {
+  if (!lat) return "";
+  const ageSec = Math.round((Date.now() - lat.at) / 1000);
+  return (
+    "\n" +
+    `  last latency: stop->audio ${fmtMs(lat.stopToFirstAudioMs)}, stop->done ${fmtMs(lat.stopToDoneMs)} (${ageSec}s ago)\n` +
+    `                speech ${fmtMs(lat.speechMs)}, transcript ${fmtMs(lat.stopToTranscriptMs)}, memory ${fmtMs(lat.memoryRecallMs)}, model ${fmtMs(lat.responseCreateToFirstAudioMs)}`
   );
 }
 
@@ -172,9 +187,11 @@ async function main(): Promise<void> {
           `  voice:        ${state.voice ?? "(unknown)"}\n` +
           `  interruption: ${state.interruptionEnabled ? "on" : "off"}\n` +
           `  noise reduce: ${state.noiseReduction ?? "(unknown)"}\n` +
+          `  transcript:   ${state.backgroundTranscription ? "background" : "blocking"} (${state.transcriptionModel ?? "off"})\n` +
           `  int gate:     ${(state.interruptMinLevel ?? 0).toFixed(2)} x ${state.interruptFrames ?? 0}\n` +
           `  mic peak:     ${(state.micPeakLevel ?? 0).toFixed(3)}\n` +
-          `  uptime:       ${Math.round((Date.now() - state.startedAt) / 1000)}s`,
+          `  uptime:       ${Math.round((Date.now() - state.startedAt) / 1000)}s` +
+          formatLatencyStatus(state.lastLatency),
       );
       break;
     }

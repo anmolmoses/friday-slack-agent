@@ -22,7 +22,12 @@ const EVT = {
   responseCancel: "response.cancel",
   // server → client (audio out — accept both GA + legacy)
   audioDelta: ["response.output_audio.delta", "response.audio.delta"],
+  audioTranscriptDone: [
+    "response.output_audio_transcript.done",
+    "response.audio_transcript.done",
+  ],
   outputItemAdded: "response.output_item.added",
+  responseCreated: "response.created",
   speechStarted: "input_audio_buffer.speech_started",
   speechStopped: "input_audio_buffer.speech_stopped",
   fnArgsDone: "response.function_call_arguments.done",
@@ -39,12 +44,14 @@ export interface RealtimeCallbacks {
   onSpeechStarted: () => void;
   onSpeechStopped?: () => void;
   onResponseDone?: () => void;
+  onResponseCreated?: () => void;
   onFunctionCall: (call: {
     callId: string;
     name: string;
     args: Record<string, unknown>;
   }) => void;
   onUserTranscript?: (text: string) => void;
+  onAssistantTranscript?: (text: string) => void;
   onOpen?: () => void;
   onClose?: () => void;
 }
@@ -118,6 +125,18 @@ export class RealtimeClient {
       this.cfg.inputNoiseReduction === "off"
         ? null
         : { type: this.cfg.inputNoiseReduction };
+    const inputTranscription =
+      this.cfg.transcriptionModel === "off"
+        ? null
+        : {
+            model: this.cfg.transcriptionModel,
+            ...(this.cfg.transcriptionLanguage
+              ? { language: this.cfg.transcriptionLanguage }
+              : {}),
+            ...(this.cfg.transcriptionPrompt
+              ? { prompt: this.cfg.transcriptionPrompt }
+              : {}),
+          };
     this.send({
       type: EVT.sessionUpdate,
       session: {
@@ -128,15 +147,16 @@ export class RealtimeClient {
           input: {
             format: fmt,
             noise_reduction: inputNoiseReduction,
-            // Lower threshold (built-in mic is quiet even with gain); 700ms trailing
-            // silence ends the turn. Server auto-interrupt stays off: the daemon
-            // gates noisy barge-in locally, then cancels/truncates explicitly.
+            transcription: inputTranscription,
+            // Lower threshold (built-in mic is quiet even with gain); trailing
+            // silence ends the turn. In background-transcription mode Realtime
+            // starts speaking immediately while final transcripts feed Engram.
             turn_detection: {
               type: this.cfg.vad,
               threshold: this.cfg.vadThreshold,
               prefix_padding_ms: 300,
               silence_duration_ms: this.cfg.vadSilenceMs,
-              create_response: true,
+              create_response: this.cfg.backgroundTranscription,
               interrupt_response: false,
             },
           },
@@ -167,7 +187,17 @@ export class RealtimeClient {
       type: EVT.itemCreate,
       item: { type: "function_call_output", call_id: callId, output },
     });
-    this.send({ type: EVT.responseCreate });
+    this.createResponse();
+  }
+
+  /** Ask the model to respond, optionally with per-turn memory context. */
+  createResponse(instructions?: string): void {
+    this.send({
+      type: EVT.responseCreate,
+      response: instructions
+        ? { output_modalities: ["audio"], instructions }
+        : { output_modalities: ["audio"] },
+    });
   }
 
   /** One-shot text prompt, useful for testing output audio without the mic. */
@@ -180,10 +210,7 @@ export class RealtimeClient {
         content: [{ type: "input_text", text }],
       },
     });
-    this.send({
-      type: EVT.responseCreate,
-      response: { output_modalities: ["audio"] },
-    });
+    this.createResponse();
   }
 
   /** Stop the in-flight spoken response. */
@@ -234,6 +261,12 @@ export class RealtimeClient {
       return;
     }
 
+    if ((EVT.audioTranscriptDone as readonly string[]).includes(type)) {
+      if (msg.transcript)
+        this.cb.onAssistantTranscript?.(String(msg.transcript));
+      return;
+    }
+
     // Log every non-audio event so we can see the conversation flow.
     log("evt:", type);
     if (type === "session.updated" || type === "session.created") {
@@ -251,6 +284,9 @@ export class RealtimeClient {
         }
         break;
       }
+      case EVT.responseCreated:
+        this.cb.onResponseCreated?.();
+        break;
       case EVT.speechStarted:
         this.cb.onSpeechStarted();
         break;

@@ -29,6 +29,14 @@ export interface VoiceConfig {
   micGain: number;
   /** OpenAI input noise reduction before VAD/model. */
   inputNoiseReduction: VoiceNoiseReduction;
+  /** Input audio transcription model for voice memory/latency traces. */
+  transcriptionModel: string;
+  /** Optional language hint for faster/more accurate input transcription. */
+  transcriptionLanguage?: string;
+  /** Optional prompt hint for domain words/names in input transcription. */
+  transcriptionPrompt?: string;
+  /** Let Realtime answer immediately while transcription finishes in the background. */
+  backgroundTranscription: boolean;
   /** Drop mic frames briefly after speaker audio so Friday does not hear herself. */
   echoSuppressionMs: number;
   /** Local, noise-gated interruption toggle. Server auto-interrupt stays off. */
@@ -110,6 +118,12 @@ export function loadVoiceConfig(): VoiceConfig {
       "FRIDAY_VOICE_NOISE_REDUCTION",
       "far_field",
     ),
+    transcriptionModel:
+      process.env.FRIDAY_VOICE_TRANSCRIPTION_MODEL ??
+      "gpt-4o-mini-transcribe",
+    transcriptionLanguage: process.env.FRIDAY_VOICE_TRANSCRIPTION_LANGUAGE ?? "en",
+    transcriptionPrompt: process.env.FRIDAY_VOICE_TRANSCRIPTION_PROMPT,
+    backgroundTranscription: bool("FRIDAY_VOICE_BACKGROUND_TRANSCRIPTION", true),
     echoSuppressionMs: Number(
       process.env.FRIDAY_VOICE_ECHO_SUPPRESSION_MS ?? "1200",
     ),
