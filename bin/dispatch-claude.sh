@@ -176,6 +176,31 @@ LOG_FILE="$LOG_DIR/$JOB_ID.log"
 PROMPT_FILE="$STATE_DIR/$THREAD_SAFE-$(date -u +%H%M%S%N || date -u +%H%M%S).prompt"
 printf "%s" "$PROMPT" > "$PROMPT_FILE"
 
+# Resolve to a per-thread worktree up front so BOTH the interactive TUI and the
+# headless fallback run isolated (CLAUDE.md rule #5). Previously this happened
+# only inside the new-tmux-session branch, so the headless fallback (when the
+# TUI won't boot) ran straight in the clone root — no isolation. Idempotent:
+# returns the existing worktree if present, the input cwd when opted out or not
+# a clone root.
+ORIG_CWD="$CWD"
+CWD="$(_resolve_worktree_cwd "$CWD")"
+if [ "$CWD" != "$ORIG_CWD" ]; then
+  echo "dispatch: isolated worktree -> $CWD (from $ORIG_CWD)" >&2
+fi
+# Export the resolved cwd as the spawn cwd so the self-edit guard (rule #4)
+# evaluates against the actual worktree, not the Friday root inherited from the
+# parent process. Fixes the redirect false-positive that blocked `>`/`2>&1` on
+# dispatched repo work (feedback_dispatch-no-redirects). When CWD is the Friday
+# root itself (generic Mongo/CSV dispatches), this is unchanged, so the guard
+# still protects Friday's own source.
+export FRIDAY_SPAWN_CWD="$CWD"
+
+# Claude binary for the headless fallback (mirrors hooks/dispatch-followup.sh).
+CLAUDE_BIN="${CLAUDE_BIN:-/Users/anmol/.local/bin/claude}"
+if [ ! -x "$CLAUDE_BIN" ]; then
+  CLAUDE_BIN="$(command -v claude || true)"
+fi
+
 wait_for_claude_ready() {
   # Poll the pane until Claude's REPL has finished booting. The
   # "bypass permissions on" footer is the last thing rendered, so its
@@ -193,6 +218,27 @@ wait_for_claude_ready() {
   return 1
 }
 
+wait_for_shell_prompt() {
+  # Wait until the pane's shell is sitting idle at a prompt, ready to accept the
+  # launch command. The env-export block above is ~10 rapid `send-keys ... Enter`
+  # pairs; if we fire the `claude ...` launch before zsh has finished processing
+  # them, the launch keystrokes interleave with the shell's redraw and arrive
+  # GARBLED — claude never boots, wait_for_claude_ready times out at 20s, and we
+  # needlessly fall back to headless (2026-06-04 diag: pane stuck at zsh with a
+  # mangled `ccc…yp…95` command line). Polls ~8s for a trailing prompt char.
+  local deadline=$(( $(date +%s) + 8 ))
+  while [ $(date +%s) -lt $deadline ]; do
+    local last
+    last="$("$TMUX_BIN" capture-pane -t "$TMUX_SESSION" -p 2>/dev/null \
+            | grep -vE '^[[:space:]]*$' | tail -1)"
+    case "$last" in
+      *'%'|*'$'|*'#') return 0 ;;
+    esac
+    sleep 0.2
+  done
+  return 0  # never block the launch forever — proceed and let the retry cover it
+}
+
 start_claude_in_pane() {
   # If we have a saved Claude session id from a prior tmux life (rare —
   # only if tmux was killed externally but state file survived), --resume
@@ -201,12 +247,30 @@ start_claude_in_pane() {
   if [ -s "$SESSION_ID_FILE" ]; then
     resume_arg=" --resume $(cat "$SESSION_ID_FILE")"
   fi
-  "$TMUX_BIN" send-keys -t "$TMUX_SESSION" \
-    "claude --permission-mode bypassPermissions${MCP_ARG}${resume_arg}" Enter
-  if ! wait_for_claude_ready; then
-    echo "Error: Claude REPL did not become ready within 20s in tmux session $TMUX_SESSION" >&2
-    return 1
-  fi
+  local launch="claude --permission-mode bypassPermissions${MCP_ARG}${resume_arg}"
+
+  # Launch with a retry loop. Each attempt: wait for an idle prompt, wipe any
+  # partial/garbled input on the line (C-u), type the command LITERALLY
+  # (send-keys -l, so no key-name interpretation), then submit Enter SEPARATELY
+  # after a beat — a combined "<cmd> Enter" can have its Enter swallowed by zsh
+  # autosuggest/syntax-highlight mid-render, leaving the command un-submitted.
+  local attempt
+  for attempt in 1 2 3; do
+    wait_for_shell_prompt
+    "$TMUX_BIN" send-keys -t "$TMUX_SESSION" C-u 2>/dev/null || true
+    "$TMUX_BIN" send-keys -t "$TMUX_SESSION" -l "$launch"
+    sleep 0.3
+    "$TMUX_BIN" send-keys -t "$TMUX_SESSION" C-m
+    if wait_for_claude_ready; then
+      return 0
+    fi
+    echo "Warning: Claude REPL launch attempt $attempt did not become ready in $TMUX_SESSION; retrying" >&2
+    # Ctrl-C clears any half-typed/garbled line before the next attempt.
+    "$TMUX_BIN" send-keys -t "$TMUX_SESSION" C-c 2>/dev/null || true
+    sleep 0.5
+  done
+  echo "Error: Claude REPL did not become ready after 3 attempts in tmux session $TMUX_SESSION" >&2
+  return 1
 }
 
 paste_prompt() {
@@ -261,16 +325,51 @@ ensure_claude_alive() {
   esac
 }
 
-if ! "$TMUX_BIN" has-session -t "$TMUX_SESSION" 2>/dev/null; then
-  # Resolve to a per-thread worktree at session birth only (an existing session
-  # keeps whatever cwd it was created with, so live dispatches are undisturbed).
-  ORIG_CWD="$CWD"
-  CWD="$(_resolve_worktree_cwd "$CWD")"
-  if [ "$CWD" != "$ORIG_CWD" ]; then
-    echo "dispatch: isolated worktree -> $CWD (from $ORIG_CWD)" >&2
+# Headless fallback — used when the interactive TUI won't boot in this nested
+# spawn (the recurring `claude --permission-mode bypassPermissions` "An unknown
+# error occurred (Unexpected)" crash; feedback_dispatch-tui-fails-use-headless)
+# or when the prompt paste keeps failing. Runs the SAME work as `claude -p` in
+# the resolved worktree, with the full FRIDAY_DISPATCHED env exported so the
+# dispatch-followup.sh Stop hook fires exactly as it does for the TUI path —
+# posting the result + PR URLs back to Slack, routing <ask-anmol>, and running
+# memory extraction. Fully detached via setsid (macOS has no `setsid` binary, so
+# we use perl's POSIX::setsid) so it survives Friday's per-turn process recycle
+# (feedback_dispatch-must-fully-detach). Returns immediately; the hook handles
+# the rest.
+dispatch_headless() {
+  local -a hl_args=(-p "$PROMPT" --permission-mode bypassPermissions)
+  [ -f "$MCP_CONFIG" ] && hl_args+=(--mcp-config "$MCP_CONFIG")
+  if [ -s "$SESSION_ID_FILE" ]; then
+    hl_args+=(--resume "$(cat "$SESSION_ID_FILE")")
   fi
+  if [ -z "$CLAUDE_BIN" ] || [ ! -x "$CLAUDE_BIN" ]; then
+    echo "Error: claude binary not found for headless fallback" >&2
+    return 1
+  fi
+  echo "dispatch: TUI unavailable — running headless claude -p in $CWD" >&2
+  (
+    cd "$CWD" || exit 1
+    exec env \
+      FRIDAY_DISPATCHED=1 \
+      FRIDAY_DISPATCH_JOB_ID="$JOB_ID" \
+      FRIDAY_DISPATCH_LOG="$LOG_FILE" \
+      FRIDAY_DISPATCH_THREAD_SAFE="$THREAD_SAFE" \
+      FRIDAY_DISPATCH_SESSION_ID_FILE="$SESSION_ID_FILE" \
+      FRIDAY_SPAWN_CWD="$CWD" \
+      SLACK_BOT_TOKEN="$SLACK_BOT_TOKEN" \
+      SLACK_CHANNEL="$SLACK_CHANNEL" \
+      SLACK_THREAD_TS="$SLACK_THREAD_TS" \
+      SLACK_USER_ID="${SLACK_USER_ID:-}" \
+      perl -e 'use POSIX; POSIX::setsid(); exec @ARGV or die $!' \
+        "$CLAUDE_BIN" "${hl_args[@]}"
+  ) </dev/null >>"$LOG_FILE" 2>&1 &
+  disown 2>/dev/null || true
+}
 
-  # First-time setup: create session + export env in the shell + open Terminal
+TUI_OK=1
+if ! "$TMUX_BIN" has-session -t "$TMUX_SESSION" 2>/dev/null; then
+  # First-time setup: create session (CWD already resolved to the per-thread
+  # worktree above) + export env in the shell + open Terminal.
   "$TMUX_BIN" new-session -d -s "$TMUX_SESSION" -c "$CWD" -x 220 -y 60
 
   "$TMUX_BIN" send-keys -t "$TMUX_SESSION" \
@@ -279,6 +378,7 @@ if ! "$TMUX_BIN" has-session -t "$TMUX_SESSION" 2>/dev/null; then
     "export FRIDAY_DISPATCH_LOG=$(printf %q "$LOG_FILE")" Enter \
     "export FRIDAY_DISPATCH_THREAD_SAFE=$(printf %q "$THREAD_SAFE")" Enter \
     "export FRIDAY_DISPATCH_SESSION_ID_FILE=$(printf %q "$SESSION_ID_FILE")" Enter \
+    "export FRIDAY_SPAWN_CWD=$(printf %q "$CWD")" Enter \
     "export SLACK_BOT_TOKEN=$(printf %q "$SLACK_BOT_TOKEN")" Enter \
     "export SLACK_CHANNEL=$(printf %q "$SLACK_CHANNEL")" Enter \
     "export SLACK_THREAD_TS=$(printf %q "$SLACK_THREAD_TS")" Enter \
@@ -288,19 +388,63 @@ if ! "$TMUX_BIN" has-session -t "$TMUX_SESSION" 2>/dev/null; then
     "printf 'Repo: %s\\n' $(printf %q "$CWD")" Enter \
     "printf '\\033[1;35m═══════════════════════════════════════════\\033[0m\\n\\n'" Enter
 
-  start_claude_in_pane
-
-  /usr/bin/osascript >/dev/null 2>&1 <<APPLESCRIPT || true
+  if start_claude_in_pane; then
+    /usr/bin/osascript >/dev/null 2>&1 <<APPLESCRIPT || true
 tell application "Terminal"
   activate
   do script "$TMUX_BIN attach-session -t $TMUX_SESSION"
 end tell
 APPLESCRIPT
+  else
+    TUI_OK=0
+  fi
 else
   # Reuse existing session — just make sure claude REPL is still alive.
-  ensure_claude_alive
+  if ! ensure_claude_alive; then
+    TUI_OK=0
+  fi
 fi
 
-paste_prompt "$PROMPT_FILE"
+# Paste into the live REPL when the TUI is healthy; otherwise (TUI won't boot,
+# or the paste itself keeps failing) tear the half-born session down and run the
+# job headless in the same worktree. The headless path posts back via the same
+# Stop hook, so the caller's behaviour is unchanged — only the visible Terminal
+# window is missing.
+if [ "$TUI_OK" = 1 ] && paste_prompt "$PROMPT_FILE"; then
+  echo "dispatched job=$JOB_ID tmux=$TMUX_SESSION mode=$([ -f "$SESSION_ID_FILE" ] && echo continued || echo new)"
+  exit 0
+fi
 
-echo "dispatched job=$JOB_ID tmux=$TMUX_SESSION mode=$([ -f "$SESSION_ID_FILE" ] && echo continued || echo new)"
+echo "dispatch: interactive TUI path failed — falling back to headless" >&2
+
+# --- DIAGNOSTIC CAPTURE (debug nested-TUI "An unknown error occurred (Unexpected)"
+# crash; feedback_dispatch-tui-fails-use-headless). Read-only tmux queries dumped
+# to a diag file BEFORE the session is torn down, so the crash text + the pane's
+# leaked env survive for inspection. Remove once root-caused. ---
+DIAG_LOG="$LOG_DIR/${JOB_ID}.tui-fail.diag"
+{
+  echo "=== dispatch TUI fallback diag ==="
+  echo "when:    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "job:     $JOB_ID"
+  echo "session: $TMUX_SESSION"
+  echo "cwd:     $CWD"
+  echo
+  echo "--- pane_current_command (is claude still alive, or did it crash to a shell?) ---"
+  "$TMUX_BIN" list-panes -t "$TMUX_SESSION" -F '#{pane_current_command} pid=#{pane_pid}' 2>&1
+  echo
+  echo "--- tmux session environment (CLAUDE*/ANTHROPIC*/SSE — tests the env-leak theory) ---"
+  "$TMUX_BIN" show-environment -t "$TMUX_SESSION" 2>&1 | grep -iE 'CLAUDE|ANTHROPIC|SSE|^TERM=' || echo "(none)"
+  echo
+  echo "--- caller env (what dispatch-claude.sh inherited from Friday's nested claude) ---"
+  env | grep -iE '^CLAUDE|^ANTHROPIC|SSE_PORT' || echo "(none)"
+  echo
+  echo "--- FULL PANE CAPTURE incl scrollback (the crash message should be here) ---"
+  "$TMUX_BIN" capture-pane -t "$TMUX_SESSION" -p -S -300 2>&1
+  echo "=== end diag ==="
+} > "$DIAG_LOG" 2>&1
+echo "dispatch: captured TUI-failure diagnostics -> $DIAG_LOG" >&2
+# --- end diagnostic capture ---
+
+"$TMUX_BIN" kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+dispatch_headless
+echo "dispatched job=$JOB_ID mode=headless-fallback cwd=$CWD"

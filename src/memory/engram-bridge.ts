@@ -25,6 +25,12 @@ const ENGRAM_DIR = path.join(REPO_ROOT, "engram");
 const ENGRAM_CLI = path.join(ENGRAM_DIR, "dist", "cli.js");
 const DB = path.join(REPO_ROOT, ".engram", "dashboard.db");
 const MEMORY_DIR = path.join(REPO_ROOT, "memory");
+const NODE_BIN =
+  process.env.NODE_BIN ||
+  ["/usr/local/bin/node", "/opt/homebrew/bin/node", "/usr/bin/node"].find((p) =>
+    existsSync(p),
+  ) ||
+  "node";
 
 export function engramRecallEnabled(): boolean {
   return process.env.ENGRAM_RECALL === "1";
@@ -45,7 +51,20 @@ export async function recallContext(query: string, k = 5, timeoutMs = 8_000): Pr
   if (!engramRecallEnabled() || !ready() || !query.trim()) return "";
   try {
     const proc = Bun.spawn(
-      ["node", ENGRAM_CLI, "recall", query, "--db", DB, "--associative", "--reinforce", "--mark-used", "-k", String(k), "--json"],
+      [
+        NODE_BIN,
+        ENGRAM_CLI,
+        "recall",
+        query,
+        "--db",
+        DB,
+        "--associative",
+        "--reinforce",
+        "--mark-used",
+        "-k",
+        String(k),
+        "--json",
+      ],
       { cwd: ENGRAM_DIR, stdout: "pipe", stderr: "pipe" },
     );
     const timer = setTimeout(() => { try { proc.kill(); } catch { /* gone */ } }, timeoutMs);
@@ -147,7 +166,7 @@ export interface MemoryTag {
 export async function tagExchanges(texts: string[], timeoutMs = 90_000): Promise<MemoryTag[] | null> {
   if (!existsSync(ENGRAM_CLI) || texts.length === 0) return null;
   try {
-    const proc = Bun.spawn(["node", ENGRAM_CLI, "tag"], {
+    const proc = Bun.spawn([NODE_BIN, ENGRAM_CLI, "tag"], {
       cwd: ENGRAM_DIR, stdin: "pipe", stdout: "pipe", stderr: "pipe",
     });
     proc.stdin.write(JSON.stringify(texts));
@@ -168,9 +187,14 @@ async function runIndex(extraArgs: string[], timeoutMs: number, label: string): 
   if (!existsSync(ENGRAM_CLI) || !existsSync(MEMORY_DIR)) return false;
   try {
     mkdirSync(path.dirname(DB), { recursive: true });
-    const proc = Bun.spawn(["node", ENGRAM_CLI, "index", MEMORY_DIR, "--db", DB, ...extraArgs], {
-      cwd: ENGRAM_DIR, stdout: "pipe", stderr: "pipe",
-    });
+    const proc = Bun.spawn(
+      [NODE_BIN, ENGRAM_CLI, "index", MEMORY_DIR, "--db", DB, ...extraArgs],
+      {
+        cwd: ENGRAM_DIR,
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
     const timer = setTimeout(() => { try { proc.kill(); } catch { /* gone */ } }, timeoutMs);
     const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
     clearTimeout(timer);

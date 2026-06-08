@@ -1,18 +1,21 @@
 // Tools Friday can call from the voice route. Full Mac control, no guardrails
 // (per Anmol's decision): arbitrary shell + AppleScript run without confirmation.
 //
-// `dispatch_to_claude` hands heavy engineering work to the EXISTING
-// bin/dispatch-claude.sh, which needs a Slack thread to report back into. On
-// first use we seed a thread in SLACK_VOICE_CHANNEL and reuse it for the session,
-// so dispatched work streams back to Slack and the existing Stop-hook fires
-// unchanged — full audit trail.
+// `dispatch_engineering` hands heavy engineering work to local Codex by default
+// and returns immediately. `dispatch_to_claude` remains available only when
+// Anmol explicitly asks for the Slack/Claude route.
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  accessSync,
   appendFileSync,
+  chmodSync,
+  constants,
   existsSync,
   mkdirSync,
+  readFileSync,
+  readdirSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -24,13 +27,18 @@ import {
   lookupVisualPerson,
   rememberVisualPerson,
 } from "../memory/vision.ts";
-import { inferRepoFromText } from "../slack/routing.ts";
+import {
+  buildCodexDispatchCommand,
+  resolveEngineeringEngine,
+  resolveVoiceRepo,
+} from "./engineering-routing.ts";
 import type { VoiceConfig } from "./config.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../..");
 const DISPATCH_SH = path.join(REPO_ROOT, "bin", "dispatch-claude.sh");
 const VOICE_DISPATCH_DIR = "/tmp/friday-voice/dispatch";
+const VOICE_BACKGROUND_DIR = "/tmp/friday-voice/background";
 const VOICE_SCREENSHOT_DIR = "/tmp/friday-voice/screenshots";
 const VOICE_HELPER_DIR = path.join(
   process.env.HOME ?? "/tmp",
@@ -42,8 +50,79 @@ const MOUSE_BIN = path.join(VOICE_HELPER_DIR, "friday-mouse");
 const ENGRAM_DIR = path.join(REPO_ROOT, "engram");
 const ENGRAM_CLI = path.join(ENGRAM_DIR, "dist", "cli.js");
 const ENGRAM_DB = path.join(REPO_ROOT, ".engram", "dashboard.db");
+const NODE_BIN =
+  process.env.NODE_BIN ||
+  ["/usr/local/bin/node", "/opt/homebrew/bin/node", "/usr/bin/node"].find((p) =>
+    existsSync(p),
+  ) ||
+  "node";
 
 const MAX_OUTPUT = 4000; // chars of tool output handed back to the model
+function envNumber(name: string, fallback: number, min: number, max: number): number {
+  const value = Number(process.env[name] ?? fallback);
+  const n = Number.isFinite(value) ? value : fallback;
+  return Math.max(min, Math.min(max, Math.trunc(n)));
+}
+
+const REALTIME_IMAGE_MAX_PX = envNumber(
+  "FRIDAY_VOICE_REALTIME_IMAGE_MAX_PX",
+  768,
+  640,
+  1600,
+);
+const REALTIME_IMAGE_FAST_MAX_PX = envNumber(
+  "FRIDAY_VOICE_REALTIME_IMAGE_FAST_MAX_PX",
+  640,
+  480,
+  REALTIME_IMAGE_MAX_PX,
+);
+const REALTIME_IMAGE_FORMAT =
+  process.env.FRIDAY_VOICE_REALTIME_IMAGE_FORMAT?.toLowerCase() === "png"
+    ? "png"
+    : "jpeg";
+const REALTIME_IMAGE_QUALITY = envNumber(
+  "FRIDAY_VOICE_REALTIME_IMAGE_QUALITY",
+  70,
+  35,
+  95,
+);
+const REALTIME_IMAGE_FAST_QUALITY = envNumber(
+  "FRIDAY_VOICE_REALTIME_IMAGE_FAST_QUALITY",
+  60,
+  35,
+  95,
+);
+interface BackgroundProcessOptions {
+  label?: string;
+  args: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  commandForDisplay: string;
+}
+
+interface BackgroundProcessStart {
+  id: string;
+  label: string;
+  pid?: number;
+  tmuxSession: string;
+  launcher: "tmux" | "nohup" | "daemon";
+  cwd: string;
+  command: string;
+  logFile: string;
+  doneFile: string;
+  scriptFile: string;
+  metaFile: string;
+  startedAt: string;
+  status: "running" | "failed";
+  exitCode?: number;
+  endedAt?: string;
+  launchOut?: string;
+  launchErr?: string;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export interface RealtimeTool {
   type: "function";
@@ -63,6 +142,13 @@ export interface ToolExecutionResult {
 }
 
 export type ToolRunResult = string | ToolExecutionResult;
+
+interface DesktopBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 export interface ToolRunnerHooks {
   currentPerception?: () => string;
@@ -92,7 +178,7 @@ export function toolDefsForConfig(cfg?: VoiceConfig): RealtimeTool[] {
       type: "function",
       name: "run_shell",
       description:
-        "Run a shell command on Anmol's Mac (zsh login shell) and return stdout/stderr. Use for anything on the command line — file ops, querying system state, launching things, git, etc.",
+        "Run a shell command on Anmol's Mac (zsh login shell). If it finishes within the short voice grace, return stdout/stderr; otherwise keep it running as a managed background job and return the job id/log path so FRIDAY can speak immediately.",
       parameters: {
         type: "object",
         properties: {
@@ -102,6 +188,51 @@ export function toolDefsForConfig(cfg?: VoiceConfig): RealtimeTool[] {
           },
         },
         required: ["command"],
+      },
+    },
+    {
+      type: "function",
+      name: "run_shell_background",
+      description:
+        "Start a longer shell command in the background and return immediately with a job id and log path. Use for installs, tests, builds, file scans, downloads, or anything that should not delay FRIDAY speaking.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: {
+            type: "string",
+            description: "The shell command to start.",
+          },
+          cwd: {
+            type: "string",
+            description:
+              "Optional working directory. Defaults to the Friday repo.",
+          },
+          label: {
+            type: "string",
+            description:
+              "Short human-readable job label, e.g. 'typecheck' or 'browser task'.",
+          },
+        },
+        required: ["command"],
+      },
+    },
+    {
+      type: "function",
+      name: "background_job_status",
+      description:
+        "Check one background job or list recent background jobs started by FRIDAY voice. Use this when Anmol asks for progress on background work.",
+      parameters: {
+        type: "object",
+        properties: {
+          job_id: {
+            type: "string",
+            description: "Optional job id returned by run_shell_background.",
+          },
+          tail_lines: {
+            type: "number",
+            description: "How many log lines to include, 5-80.",
+          },
+        },
       },
     },
     {
@@ -124,7 +255,7 @@ export function toolDefsForConfig(cfg?: VoiceConfig): RealtimeTool[] {
       type: "function",
       name: "open_app",
       description:
-        "Open / launch / focus a macOS application by name (e.g. 'Spotify', 'Visual Studio Code', 'Safari').",
+        "Open / launch / focus a macOS application by name (e.g. 'Visual Studio Code', 'Safari', 'Slack').",
       parameters: {
         type: "object",
         properties: {
@@ -147,6 +278,112 @@ export function toolDefsForConfig(cfg?: VoiceConfig): RealtimeTool[] {
           },
         },
         required: ["text"],
+      },
+    },
+    {
+      type: "function",
+      name: "app_quick_switch",
+      description:
+        "Open/focus a Mac app and use its quick switcher/command palette to jump to a channel, person, file, or destination. For Slack channel/person navigation this uses the visible app with Cmd+K, not Slack API tokens. Do not use this to send messages.",
+      parameters: {
+        type: "object",
+        properties: {
+          app: {
+            type: "string",
+            description: "Application name, e.g. Slack, Cursor, Google Chrome.",
+          },
+          query: {
+            type: "string",
+            description:
+              "Destination to type into the app switcher, e.g. agent-test or tech-support.",
+          },
+          shortcut: {
+            type: "string",
+            description:
+              "Optional shortcut to open the switcher. Defaults to cmd+k.",
+          },
+        },
+        required: ["app", "query"],
+      },
+    },
+    {
+      type: "function",
+      name: "app_send_text",
+      description:
+        "Open/focus a Mac app, jump to a destination through its quick switcher/command palette, type text, and optionally submit it. For Slack this uses the visible app with Cmd+K and keyboard typing, not Slack API tokens. Use only when the destination and exact text are explicit.",
+      parameters: {
+        type: "object",
+        properties: {
+          app: {
+            type: "string",
+            description: "Application name, e.g. Slack.",
+          },
+          destination: {
+            type: "string",
+            description:
+              "Destination to type into the app switcher, e.g. agent-test or a person name.",
+          },
+          text: {
+            type: "string",
+            description: "Exact text to type into the destination.",
+          },
+          shortcut: {
+            type: "string",
+            description:
+              "Optional shortcut to open the destination switcher. Defaults to cmd+k.",
+          },
+          submit: {
+            type: "boolean",
+            description:
+              "Whether to press Return after typing. Defaults true. Set false for drafts/tests.",
+          },
+        },
+        required: ["app", "destination", "text"],
+      },
+    },
+    {
+      type: "function",
+      name: "app_search_text",
+      description:
+        "Open/focus any Mac app, focus its search/location/command field with a keyboard shortcut, type exact text, and optionally press Return. This ONLY searches/navigates — it does NOT start media playback. In Spotify/Apple Music/YouTube it just shows search results; to actually PLAY a result you must then click it with find_and_click. Keyboard-driven, not tied to one specific app.",
+      parameters: {
+        type: "object",
+        properties: {
+          app: {
+            type: "string",
+            description: "Application name, e.g. Music, Chrome, Notes.",
+          },
+          text: {
+            type: "string",
+            description: "Exact search/query text to type.",
+          },
+          shortcut: {
+            type: "string",
+            description:
+              "Shortcut to focus search/location. Defaults to cmd+l; use cmd+k for command palettes.",
+          },
+          submit: {
+            type: "boolean",
+            description:
+              "Whether to press Return after typing. Defaults true.",
+          },
+          mode: {
+            type: "string",
+            description:
+              "Optional intent label. Cosmetic only — it does NOT cause playback. Searching is not playing.",
+          },
+          dry_run: {
+            type: "boolean",
+            description:
+              "When true, validate and return the planned keyboard action without opening or typing.",
+          },
+          async: {
+            type: "boolean",
+            description:
+              "When true, start the keyboard automation as a managed background job and return immediately. Defaults true for responsiveness.",
+          },
+        },
+        required: ["app", "text"],
       },
     },
     {
@@ -205,6 +442,42 @@ export function toolDefsForConfig(cfg?: VoiceConfig): RealtimeTool[] {
     },
     {
       type: "function",
+      name: "browser_submit_text",
+      description:
+        "Open/focus a known browser search surface and submit text without coordinate clicking. Use for tasks like opening ChatGPT, Google, GitHub, YouTube, Bing, or DuckDuckGo and searching for a phrase.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            description:
+              "Site URL or domain to open, e.g. chatgpt.com, google.com, github.com.",
+          },
+          text: {
+            type: "string",
+            description: "Text/search query to submit.",
+          },
+          app: {
+            type: "string",
+            description:
+              "Optional macOS browser app name, e.g. Google Chrome, Safari.",
+          },
+          submit: {
+            type: "boolean",
+            description:
+              "Whether to submit immediately. Defaults true for known search URLs.",
+          },
+          verify: {
+            type: "boolean",
+            description:
+              "Whether to attach a screen image after opening/submitting so Friday can verify the visible state.",
+          },
+        },
+        required: ["url", "text"],
+      },
+    },
+    {
+      type: "function",
       name: "browser_page_text",
       description:
         "Fetch a web page and return readable extracted text plus title/status. Use after search results or URL mentions when you need page content, not just the result snippet.",
@@ -258,6 +531,37 @@ export function toolDefsForConfig(cfg?: VoiceConfig): RealtimeTool[] {
           note: {
             type: "string",
             description: "Optional reason for the screenshot.",
+          },
+        },
+      },
+    },
+    {
+      type: "function",
+      name: "screen_brief",
+      description:
+        "Quickly identify the frontmost Mac app and window title without taking a screenshot. Use for simple 'what is on my screen' questions when visual details or coordinates are not needed.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+    {
+      type: "function",
+      name: "screen_see",
+      description:
+        "Capture the current Mac screen and attach it to the live Realtime conversation as vision input so Friday can inspect the visible UI. Use this before mouse_control for desktop/app tasks. Pass `app` with the app you are controlling so the screenshot shows that window and not the editor.",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: {
+            type: "string",
+            description:
+              "Short instruction for what to inspect or which coordinates/actions to find.",
+          },
+          app: {
+            type: "string",
+            description:
+              "App to bring to the front before capturing, e.g. 'Google Chrome'. Strongly recommended whenever you just opened or are controlling a specific app, so vision matches what you act on.",
           },
         },
       },
@@ -383,9 +687,36 @@ export function toolDefsForConfig(cfg?: VoiceConfig): RealtimeTool[] {
     },
     {
       type: "function",
+      name: "find_and_click",
+      description:
+        "PREFERRED way to click something on screen. Describe a UI element in plain words (e.g. 'the Compose button', 'the search box', 'the first email row') and Claude vision locates its exact pixel and clicks it. Far more reliable than guessing mouse_control coordinates. Pass `app` to focus the right window first.",
+      parameters: {
+        type: "object",
+        properties: {
+          target: {
+            type: "string",
+            description:
+              "Plain-language description of the on-screen element to click, e.g. 'the blue Send button'.",
+          },
+          action: {
+            type: "string",
+            enum: ["click", "double_click", "move"],
+            description: "What to do at the located element. Defaults to click.",
+          },
+          app: {
+            type: "string",
+            description:
+              "App to bring to the front before locating, e.g. 'Google Chrome'. Strongly recommended.",
+          },
+        },
+        required: ["target"],
+      },
+    },
+    {
+      type: "function",
       name: "mouse_control",
       description:
-        "Move/click/drag the Mac mouse using screen coordinates. It flashes an orange ring while controlling the pointer. Take a screenshot first unless coordinates are already known.",
+        "Low-level mouse move/click/drag using exact screen coordinates. Prefer find_and_click for clicking UI elements; use this only when you already know precise coordinates or need drag. It flashes an orange ring while controlling the pointer.",
       parameters: {
         type: "object",
         properties: {
@@ -398,12 +729,12 @@ export function toolDefsForConfig(cfg?: VoiceConfig): RealtimeTool[] {
           x: {
             type: "number",
             description:
-              "Start/target X coordinate in screen pixels from the top-left.",
+              "Start/target X coordinate in macOS display coordinates from the top-left. Use the screen_see coordinate scale, not raw Retina screenshot pixels.",
           },
           y: {
             type: "number",
             description:
-              "Start/target Y coordinate in screen pixels from the top-left.",
+              "Start/target Y coordinate in macOS display coordinates from the top-left. Use the screen_see coordinate scale, not raw Retina screenshot pixels.",
           },
           to_x: {
             type: "number",
@@ -474,7 +805,7 @@ export function toolDefsForConfig(cfg?: VoiceConfig): RealtimeTool[] {
       type: "function",
       name: "dispatch_engineering",
       description:
-        "Preferred tool for substantial engineering work. It infers the target repo from the prompt, GitHub URL, PR URL, or keywords; then dispatches to Claude+Slack when Slack is configured, otherwise local Codex in a Terminal. Use this instead of asking Anmol which repo unless the task is truly ambiguous and dangerous.",
+        "Preferred tool for substantial engineering work. It infers the target repo from the prompt, GitHub URL, PR URL, or keywords; then starts a local Codex session and returns immediately. Use this instead of asking Anmol which repo unless the task is truly ambiguous and dangerous.",
       parameters: {
         type: "object",
         properties: {
@@ -490,7 +821,12 @@ export function toolDefsForConfig(cfg?: VoiceConfig): RealtimeTool[] {
             type: "string",
             enum: ["auto", "codex", "claude"],
             description:
-              "auto chooses Claude+Slack when available, otherwise local Codex. Use codex for local terminal work; claude for Slack-audited dispatch.",
+              "auto uses local Codex. Use claude only when Anmol explicitly asks for Slack/Claude/cloud dispatch.",
+          },
+          dry_run: {
+            type: "boolean",
+            description:
+              "Readiness/probe mode only: prepare the local Codex command without launching Terminal.",
           },
         },
         required: ["prompt"],
@@ -500,7 +836,7 @@ export function toolDefsForConfig(cfg?: VoiceConfig): RealtimeTool[] {
       type: "function",
       name: "dispatch_to_codex",
       description:
-        "Start a local Codex engineering session in Terminal. Use when Slack dispatch is unavailable, when Anmol says Codex, or for local repo work that should not depend on Slack.",
+        "Start a local Codex engineering session in Terminal and return immediately. Use when Slack dispatch is unavailable, when Anmol says Codex, or for local repo work that should not depend on Slack.",
       parameters: {
         type: "object",
         properties: {
@@ -520,7 +856,7 @@ export function toolDefsForConfig(cfg?: VoiceConfig): RealtimeTool[] {
       type: "function",
       name: "dispatch_to_claude",
       description:
-        "Hand a substantial engineering task to a full Claude Code session in a terminal (building a feature, fixing a bug, reviewing a PR, running a release). It runs asynchronously and reports back in Slack. Use this instead of doing big coding work yourself.",
+        "Hand a substantial engineering task to a Claude/Slack worker in the background. It returns immediately and reports back in Slack. Use only when Anmol explicitly asks for Slack, Claude, or cloud dispatch.",
       parameters: {
         type: "object",
         properties: {
@@ -563,6 +899,19 @@ function clampInt(
 
 function artifactName(prefix: string, ext: string): string {
   return `${prefix}-${new Date().toISOString().replace(/[:.]/g, "-")}.${ext}`;
+}
+
+function jobId(label?: string): string {
+  const safe = (label?.trim() || "job")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 36);
+  return `${new Date().toISOString().replace(/[:.]/g, "-")}-${safe || "job"}`;
+}
+
+function tmuxBin(): string {
+  return existsSync("/opt/homebrew/bin/tmux") ? "/opt/homebrew/bin/tmux" : "tmux";
 }
 
 function localDate(): string {
@@ -630,6 +979,84 @@ function normalizeSearchUrl(raw: string): string {
   }
 }
 
+function browserSubmitUrl(
+  rawUrl: string,
+  query: string,
+  submit: boolean,
+): { url: string; label: string; verifyDelayMs: number } | null {
+  try {
+    const url = new URL(normalizeUrlInput(rawUrl));
+    const host = url.hostname.replace(/^www\./i, "").toLowerCase();
+    const setQ = (param = "q") => {
+      url.searchParams.set(param, query);
+      return url.href;
+    };
+
+    if (host === "chatgpt.com" || host.endsWith(".chatgpt.com")) {
+      url.protocol = "https:";
+      url.hostname = "chatgpt.com";
+      url.pathname = "/";
+      url.search = "";
+      if (submit) url.searchParams.set("q", query);
+      url.searchParams.set("model", "auto");
+      return {
+        url: url.href,
+        label: "ChatGPT",
+        verifyDelayMs: submit ? 3200 : 1800,
+      };
+    }
+    if (host === "google.com" || host.endsWith(".google.com")) {
+      url.protocol = "https:";
+      url.hostname = "www.google.com";
+      url.pathname = "/search";
+      url.search = "";
+      return { url: setQ(), label: "Google", verifyDelayMs: 1800 };
+    }
+    if (host === "duckduckgo.com" || host.endsWith(".duckduckgo.com")) {
+      url.protocol = "https:";
+      url.hostname = "duckduckgo.com";
+      url.pathname = "/";
+      url.search = "";
+      return { url: setQ(), label: "DuckDuckGo", verifyDelayMs: 1800 };
+    }
+    if (host === "bing.com" || host.endsWith(".bing.com")) {
+      url.protocol = "https:";
+      url.hostname = "www.bing.com";
+      url.pathname = "/search";
+      url.search = "";
+      return { url: setQ(), label: "Bing", verifyDelayMs: 1800 };
+    }
+    if (host === "youtube.com" || host.endsWith(".youtube.com")) {
+      url.protocol = "https:";
+      url.hostname = "www.youtube.com";
+      url.pathname = "/results";
+      url.search = "";
+      return {
+        url: setQ("search_query"),
+        label: "YouTube",
+        verifyDelayMs: 2200,
+      };
+    }
+    if (host === "github.com" || host.endsWith(".github.com")) {
+      url.protocol = "https:";
+      url.hostname = "github.com";
+      url.pathname = "/search";
+      url.search = "";
+      return { url: setQ(), label: "GitHub", verifyDelayMs: 2200 };
+    }
+    if (host === "npmjs.com" || host.endsWith(".npmjs.com")) {
+      url.protocol = "https:";
+      url.hostname = "www.npmjs.com";
+      url.pathname = "/search";
+      url.search = "";
+      return { url: setQ(), label: "npm", verifyDelayMs: 2200 };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function ensureMouseBinary(): string | null {
   if (!existsSync(MOUSE_SRC)) return null;
   try {
@@ -670,26 +1097,69 @@ function accessibilityHelp(extra = ""): string {
   ].join("\n");
 }
 
-async function run(cmd: string[], input?: string): Promise<string> {
+function parseDesktopBounds(output: string): DesktopBounds | undefined {
+  const nums = output.match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+  if (nums.length < 4) return undefined;
+  const [left, top, right, bottom] = nums;
+  const width = right - left;
+  const height = bottom - top;
+  if (
+    !Number.isFinite(left) ||
+    !Number.isFinite(top) ||
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    return undefined;
+  }
+  return { x: left, y: top, width, height };
+}
+
+async function run(
+  cmd: string[],
+  input?: string,
+  opts: { timeoutMs?: number; cwd?: string } = {},
+): Promise<string> {
   const proc = Bun.spawn(cmd, {
-    cwd: REPO_ROOT,
+    cwd: opts.cwd ?? REPO_ROOT,
     stdin: input != null ? "pipe" : "ignore",
     stdout: "pipe",
     stderr: "pipe",
     env: process.env as Record<string, string>,
   });
+  let timedOut = false;
+  const timer =
+    opts.timeoutMs && opts.timeoutMs > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          try {
+            proc.kill();
+          } catch {
+            /* ignore */
+          }
+        }, opts.timeoutMs)
+      : null;
   if (input != null && proc.stdin) {
     proc.stdin.write(input);
     proc.stdin.end();
   }
-  const [out, err, code] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  const body = [out.trim(), err.trim()].filter(Boolean).join("\n");
-  if (code !== 0) return truncate(`[exit ${code}] ${body || "(no output)"}`);
-  return truncate(body || "(ok, no output)");
+  try {
+    const [out, err, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    const body = [out.trim(), err.trim()].filter(Boolean).join("\n");
+    if (timedOut)
+      return truncate(
+        `[timeout ${opts.timeoutMs}ms] ${body || "(no output before timeout)"}`,
+      );
+    if (code !== 0) return truncate(`[exit ${code}] ${body || "(no output)"}`);
+    return truncate(body || "(ok, no output)");
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 // Map "cmd+shift+4" → AppleScript `keystroke "4" using {command down, shift down}`.
@@ -753,14 +1223,50 @@ export class ToolRunner {
     try {
       switch (name) {
         case "run_shell":
-          return await run(["/bin/zsh", "-lc", String(args.command ?? "")]);
+          return await this.runShellSmart(String(args.command ?? ""));
+        case "run_shell_background":
+          return this.runShellBackground(
+            String(args.command ?? ""),
+            args.cwd ? String(args.cwd) : undefined,
+            args.label ? String(args.label) : undefined,
+          );
+        case "background_job_status":
+          return this.backgroundJobStatus(
+            args.job_id ? String(args.job_id) : undefined,
+            args.tail_lines,
+          );
         case "run_applescript":
           return await run(
             ["/usr/bin/osascript", "-"],
             String(args.script ?? ""),
           );
         case "open_app":
-          return await run(["/usr/bin/open", "-a", String(args.name ?? "")]);
+          return await this.openApp(String(args.name ?? ""));
+        case "app_quick_switch":
+          return await this.appQuickSwitch(
+            String(args.app ?? ""),
+            String(args.query ?? ""),
+            args.shortcut ? String(args.shortcut) : undefined,
+          );
+        case "app_send_text":
+          return await this.appSendText(
+            String(args.app ?? ""),
+            String(args.destination ?? ""),
+            String(args.text ?? ""),
+            args.shortcut ? String(args.shortcut) : undefined,
+            args.submit,
+            args.dry_run,
+          );
+        case "app_search_text":
+          return await this.appSearchText(
+            String(args.app ?? ""),
+            String(args.text ?? ""),
+            args.shortcut ? String(args.shortcut) : undefined,
+            args.submit,
+            args.mode ? String(args.mode) : undefined,
+            args.dry_run,
+            args.async,
+          );
         case "type_text":
           return await run(
             ["/usr/bin/osascript", "-"],
@@ -778,6 +1284,14 @@ export class ToolRunner {
             String(args.url ?? ""),
             args.app ? String(args.app) : undefined,
           );
+        case "browser_submit_text":
+          return await this.browserSubmitText(
+            String(args.url ?? ""),
+            String(args.text ?? ""),
+            args.app ? String(args.app) : undefined,
+            args.submit,
+            args.verify,
+          );
         case "browser_page_text":
           return await this.browserPageText(
             String(args.url ?? ""),
@@ -792,6 +1306,13 @@ export class ToolRunner {
         case "screen_screenshot":
           return await this.screenScreenshot(
             args.note ? String(args.note) : undefined,
+          );
+        case "screen_brief":
+          return await this.screenBrief();
+        case "screen_see":
+          return await this.screenSee(
+            args.prompt ? String(args.prompt) : undefined,
+            args.app ? String(args.app) : undefined,
           );
         case "camera_snapshot":
           return await this.cameraSnapshot(
@@ -822,6 +1343,12 @@ export class ToolRunner {
             args.relationship ? String(args.relationship) : undefined,
             args.notes ? String(args.notes) : undefined,
           );
+        case "find_and_click":
+          return await this.findAndClick(
+            args.target ? String(args.target) : "",
+            args.action ? String(args.action) : undefined,
+            args.app ? String(args.app) : undefined,
+          );
         case "mouse_control":
           return await this.mouseControl(
             String(args.action ?? ""),
@@ -846,6 +1373,7 @@ export class ToolRunner {
             String(args.prompt ?? ""),
             args.repo ? String(args.repo) : undefined,
             args.engine ? String(args.engine) : "auto",
+            args.dry_run === true || args.dry_run === "true",
           );
         case "dispatch_to_codex":
           return await this.dispatchCodex(
@@ -865,13 +1393,664 @@ export class ToolRunner {
     }
   }
 
+  private startBackgroundProcess(
+    opts: BackgroundProcessOptions,
+  ): BackgroundProcessStart {
+    mkdirSync(VOICE_BACKGROUND_DIR, { recursive: true });
+    const id = jobId(opts.label);
+    const logFile = path.join(VOICE_BACKGROUND_DIR, `${id}.log`);
+    const metaFile = path.join(VOICE_BACKGROUND_DIR, `${id}.json`);
+    const doneFile = path.join(VOICE_BACKGROUND_DIR, `${id}.done.json`);
+    const scriptFile = path.join(VOICE_BACKGROUND_DIR, `${id}.zsh`);
+    const cwd = opts.cwd?.trim() || REPO_ROOT;
+    const startedAt = new Date().toISOString();
+    appendFileSync(
+      logFile,
+      [
+        `[friday background job ${id}]`,
+        `started: ${startedAt}`,
+        `cwd: ${cwd}`,
+        `command: ${opts.commandForDisplay}`,
+        "",
+      ].join("\n"),
+    );
+    const commandLine = opts.args.map(shellQuote).join(" ");
+    const envExports = opts.env
+      ? Object.entries(opts.env)
+          .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
+          .map(([key, value]) => `export ${key}=${shellQuote(String(value))}`)
+      : [];
+    const wrapper = [
+      "set +e",
+      ...envExports,
+      `printf '[friday background job ${id} wrapper pid %s]\\n' "$$" >> ${shellQuote(logFile)}`,
+      `${commandLine} >> ${shellQuote(logFile)} 2>&1`,
+      "code=$?",
+      'ended_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
+      `printf '\\n[friday background job ${id} exited %s at %s]\\n' "$code" "$ended_at" >> ${shellQuote(logFile)}`,
+      'job_status="failed"',
+      '[ "$code" -eq 0 ] && job_status="complete"',
+      `printf '{"status":"%s","exitCode":%s,"endedAt":"%s"}\\n' "$job_status" "$code" "$ended_at" > ${shellQuote(doneFile)}`,
+      "done_code=$?",
+      `printf '[friday background job ${id} wrote done marker %s]\\n' "$done_code" >> ${shellQuote(logFile)}`,
+      'exit "$code"',
+    ].join("\n");
+    writeFileSync(scriptFile, `${wrapper}\n`);
+    chmodSync(scriptFile, 0o700);
+    const tmuxSession = `friday-bg-${id
+      .replace(/[^a-zA-Z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 120)}`;
+    let pid: number | undefined;
+    let launcherKind: "tmux" | "nohup" = "tmux";
+    const tmuxCommand = `${shellQuote("/bin/zsh")} ${shellQuote(scriptFile)}`;
+    const tmuxLaunch = Bun.spawnSync(
+      [tmuxBin(), "new-session", "-d", "-s", tmuxSession, "-c", cwd, tmuxCommand],
+      {
+        cwd,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        env: opts.env ?? (process.env as Record<string, string>),
+      },
+    );
+    const tmuxErr = Buffer.from(tmuxLaunch.stderr).toString().trim();
+    const tmuxOut = Buffer.from(tmuxLaunch.stdout).toString().trim();
+    if (tmuxLaunch.exitCode !== 0) {
+      appendFileSync(
+        logFile,
+        `[tmux launch failed ${tmuxLaunch.exitCode}] ${tmuxErr || tmuxOut || "(no output)"}\n`,
+      );
+      launcherKind = "nohup";
+    }
+
+    if (launcherKind === "nohup") {
+      const launcher = [
+        "nohup",
+        "/bin/zsh",
+        shellQuote(scriptFile),
+        `>> ${shellQuote(logFile)} 2>&1 &`,
+        "echo $!",
+      ].join(" ");
+      const launched = Bun.spawnSync(["/bin/zsh", "-lc", launcher], {
+        cwd,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        env: opts.env ?? (process.env as Record<string, string>),
+      });
+      const launchOut = Buffer.from(launched.stdout).toString().trim();
+      const launchErr = Buffer.from(launched.stderr).toString().trim();
+      pid = Number(launchOut.split(/\s+/)[0]);
+      if (launched.exitCode !== 0 || !Number.isFinite(pid) || pid <= 0) {
+        const failed = {
+          id,
+          label: opts.label?.trim() || "background job",
+          cwd,
+          command: opts.commandForDisplay,
+          logFile,
+          doneFile,
+          scriptFile,
+          tmuxSession,
+          launcher: launcherKind,
+          startedAt,
+          status: "failed",
+          exitCode: launched.exitCode,
+          endedAt: new Date().toISOString(),
+        };
+        writeFileSync(metaFile, JSON.stringify(failed, null, 2));
+        return {
+          ...failed,
+          label: failed.label,
+          launcher: failed.launcher,
+          status: "failed",
+          metaFile,
+          launchOut,
+          launchErr,
+        };
+      }
+    }
+    const meta: BackgroundProcessStart = {
+      id,
+      label: opts.label?.trim() || "background job",
+      ...(pid ? { pid } : {}),
+      tmuxSession,
+      launcher: launcherKind,
+      cwd,
+      command: opts.commandForDisplay,
+      logFile,
+      doneFile,
+      scriptFile,
+      metaFile,
+      startedAt,
+      status: "running",
+    };
+    const { metaFile: _metaFile, ...storedMeta } = meta;
+    writeFileSync(metaFile, JSON.stringify(storedMeta, null, 2));
+    return meta;
+  }
+
+  private backgroundStartMessage(start: BackgroundProcessStart): string {
+    if (start.status === "failed") {
+      return truncate(
+        [
+          `Failed to start background job ${start.id}.`,
+          start.launchErr ? `stderr: ${start.launchErr}` : "",
+          start.launchOut ? `stdout: ${start.launchOut}` : "",
+          `Log: ${start.logFile}`,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+    }
+    return [
+      `Started background job ${start.id}.`,
+      start.pid ? `PID: ${start.pid}` : `Session: ${start.tmuxSession}`,
+      `Log: ${start.logFile}`,
+      `Working directory: ${start.cwd}`,
+    ].join("\n");
+  }
+
+  private startDaemonAppleScriptJob(opts: {
+    label: string;
+    commandForDisplay: string;
+    script: string;
+    timeoutMs?: number;
+  }): BackgroundProcessStart {
+    mkdirSync(VOICE_BACKGROUND_DIR, { recursive: true });
+    const id = jobId(opts.label);
+    const logFile = path.join(VOICE_BACKGROUND_DIR, `${id}.log`);
+    const metaFile = path.join(VOICE_BACKGROUND_DIR, `${id}.json`);
+    const doneFile = path.join(VOICE_BACKGROUND_DIR, `${id}.done.json`);
+    const scriptFile = path.join(VOICE_BACKGROUND_DIR, `${id}.applescript`);
+    const cwd = REPO_ROOT;
+    const startedAt = new Date().toISOString();
+    writeFileSync(scriptFile, `${opts.script}\n`);
+    appendFileSync(
+      logFile,
+      [
+        `[friday background job ${id}]`,
+        `started: ${startedAt}`,
+        `cwd: ${cwd}`,
+        `command: ${opts.commandForDisplay}`,
+        "launcher: daemon",
+        "",
+      ].join("\n"),
+    );
+    const start: BackgroundProcessStart = {
+      id,
+      label: opts.label,
+      pid: process.pid,
+      tmuxSession: "",
+      launcher: "daemon",
+      cwd,
+      command: opts.commandForDisplay,
+      logFile,
+      doneFile,
+      scriptFile,
+      metaFile,
+      startedAt,
+      status: "running",
+    };
+    const { metaFile: _metaFile, ...storedMeta } = start;
+    writeFileSync(metaFile, JSON.stringify(storedMeta, null, 2));
+    void (async () => {
+      appendFileSync(
+        logFile,
+        `[friday background job ${id} daemon pid ${process.pid}]\n`,
+      );
+      const out = await run(["/usr/bin/osascript", "-"], opts.script, {
+        timeoutMs: opts.timeoutMs ?? 5_000,
+      });
+      if (out.trim()) appendFileSync(logFile, `${out.trim()}\n`);
+      const exitCode = out.startsWith("[timeout ")
+        ? 124
+        : Number(out.match(/^\[exit\s+(\d+)\]/i)?.[1] ?? 0);
+      const endedAt = new Date().toISOString();
+      const status = exitCode === 0 ? "complete" : "failed";
+      appendFileSync(
+        logFile,
+        `\n[friday background job ${id} exited ${exitCode} at ${endedAt}]\n`,
+      );
+      writeFileSync(
+        doneFile,
+        JSON.stringify({ status, exitCode, endedAt }, null, 2),
+      );
+      try {
+        writeFileSync(
+          metaFile,
+          JSON.stringify({ ...storedMeta, status, exitCode, endedAt }, null, 2),
+        );
+      } catch {
+        /* best effort */
+      }
+    })();
+    return start;
+  }
+
+  private spawnBackgroundProcess(opts: BackgroundProcessOptions): string {
+    return this.backgroundStartMessage(this.startBackgroundProcess(opts));
+  }
+
+  private cleanBackgroundCommandOutput(
+    logText: string,
+    start: BackgroundProcessStart,
+  ): string {
+    const skipPrefixes = [
+      `[friday background job ${start.id}]`,
+      `started:`,
+      `cwd:`,
+      `command:`,
+      `[friday background job ${start.id} wrapper pid`,
+      `[friday background job ${start.id} exited`,
+      `[friday background job ${start.id} wrote done marker`,
+      `[tmux launch failed`,
+    ];
+    return logText
+      .split(/\r?\n/)
+      .filter((line) => !skipPrefixes.some((prefix) => line.startsWith(prefix)))
+      .join("\n")
+      .trim();
+  }
+
+  private completedBackgroundOutput(start: BackgroundProcessStart): string {
+    let exitCode = 0;
+    try {
+      const done = JSON.parse(readFileSync(start.doneFile, "utf8")) as {
+        exitCode?: number;
+      };
+      exitCode = Number.isFinite(done.exitCode) ? Number(done.exitCode) : 0;
+    } catch {
+      /* best effort */
+    }
+    const body = existsSync(start.logFile)
+      ? this.cleanBackgroundCommandOutput(readFileSync(start.logFile, "utf8"), start)
+      : "";
+    if (exitCode !== 0)
+      return truncate(`[exit ${exitCode}] ${body || "(no output)"}`);
+    return truncate(body || "(ok, no output)");
+  }
+
+  private async runShellSmart(command: string): Promise<string> {
+    const cmd = command.trim();
+    if (!cmd) return "run_shell needs a non-empty command.";
+    const start = this.startBackgroundProcess({
+      label: "shell",
+      args: ["/bin/zsh", "-lc", cmd],
+      cwd: REPO_ROOT,
+      commandForDisplay: cmd,
+    });
+    if (start.status === "failed") return this.backgroundStartMessage(start);
+    if (this.shouldBackgroundImmediately(cmd)) {
+      return this.backgroundStartMessage(start);
+    }
+
+    const fastWaitMs = Math.max(80, this.cfg.runShellFastWaitMs);
+    const deadline = Date.now() + fastWaitMs;
+    while (Date.now() < deadline) {
+      if (existsSync(start.doneFile)) return this.completedBackgroundOutput(start);
+      await sleep(80);
+    }
+
+    return truncate(
+      [
+        `Still running after ${Math.round(fastWaitMs / 100) / 10}s, so I kept it in the background.`,
+        this.backgroundStartMessage(start),
+        "Use background_job_status with this job id for progress.",
+      ].join("\n"),
+    );
+  }
+
+  private shouldBackgroundImmediately(command: string): boolean {
+    return /\b(sleep|codex|claude)\b|(?:^|[;&|]\s*)(bun|npm|pnpm|yarn)\s+(run\s+)?(dev|start|build|test|install|add|ci)\b|(?:^|[;&|]\s*)(make|xcodebuild|pytest|cargo|go|gradle|mvn)\b/i.test(
+      command,
+    );
+  }
+
+  private async openApp(name: string): Promise<string> {
+    const app = name.trim();
+    if (!app) return "open_app needs an application name.";
+    const out = await run(["/usr/bin/open", "-a", app]);
+    return out.startsWith("[exit ")
+      ? `Open app failed for ${app}: ${out}`
+      : `Opened ${app}.\n${out}`;
+  }
+
+  // Bring an app to the front of the CURRENT Space and raise its window, so a
+  // following screenshot shows what Friday is controlling instead of whatever
+  // editor/terminal happened to be frontmost. Best-effort; never throws.
+  private async focusApp(name: string): Promise<void> {
+    const app = name.trim();
+    if (!app) return;
+    const script = [
+      `tell application ${JSON.stringify(app)} to activate`,
+      "delay 0.35",
+      `tell application "System Events"`,
+      `  try`,
+      `    tell process ${JSON.stringify(app)}`,
+      `      set frontmost to true`,
+      `      try`,
+      `        perform action "AXRaise" of front window`,
+      `      end try`,
+      `    end tell`,
+      `  end try`,
+      `end tell`,
+    ].join("\n");
+    await run(["/usr/bin/osascript", "-"], script, { timeoutMs: 3_000 });
+  }
+
+  private async appQuickSwitch(
+    appValue: string,
+    queryValue: string,
+    shortcutValue?: string,
+  ): Promise<string> {
+    const app = appValue.trim();
+    const query = queryValue.replace(/^#+/, "").trim();
+    if (!app) return "app_quick_switch needs an app name.";
+    if (!query) return "app_quick_switch needs a destination query.";
+    const opened = await this.openApp(app);
+    if (/^Open app failed/i.test(opened)) return opened;
+    const shortcutScript = comboToAppleScript(shortcutValue?.trim() || "cmd+k");
+    const script = [
+      `tell application ${JSON.stringify(app)} to activate`,
+      "delay 0.6",
+      shortcutScript,
+      "delay 0.25",
+      `tell application "System Events" to keystroke ${JSON.stringify(query)}`,
+      "delay 0.15",
+      `tell application "System Events" to key code 36`,
+    ].join("\n");
+    const out = await run(["/usr/bin/osascript", "-"], script, {
+      timeoutMs: 4_000,
+    });
+    return out.startsWith("[exit ") || out.startsWith("[timeout ")
+      ? `App quick switch failed for ${app} to ${query}: ${out}`
+      : `Quick switched ${app} to ${query} using ${shortcutValue?.trim() || "cmd+k"}.\n${out}`;
+  }
+
+  private async appSendText(
+    appValue: string,
+    destinationValue: string,
+    textValue: string,
+    shortcutValue?: string,
+    submitValue: unknown = true,
+    dryRunValue: unknown = false,
+  ): Promise<string> {
+    const app = appValue.trim();
+    const destination = destinationValue.replace(/^#+/, "").trim();
+    const text = textValue.trim();
+    const shortcut = shortcutValue?.trim() || "cmd+k";
+    const submit = submitValue !== false;
+    const dryRun = dryRunValue === true || dryRunValue === "true";
+    if (!app) return "app_send_text needs an app name.";
+    if (!destination) return "app_send_text needs a destination.";
+    if (!text) return "app_send_text needs text to send.";
+    if (dryRun) {
+      return submit
+        ? `Sent app text dry run in ${app} to ${destination}: ${text}`
+        : `Prepared app text dry run in ${app} to ${destination} without sending: ${text}`;
+    }
+    const opened = await this.openApp(app);
+    if (/^Open app failed/i.test(opened)) return opened;
+    const script = [
+      `tell application ${JSON.stringify(app)} to activate`,
+      "delay 0.6",
+      comboToAppleScript(shortcut),
+      "delay 0.25",
+      `tell application "System Events" to keystroke ${JSON.stringify(destination)}`,
+      "delay 0.15",
+      `tell application "System Events" to key code 36`,
+      "delay 0.55",
+      `tell application "System Events" to keystroke ${JSON.stringify(text)}`,
+      ...(submit ? ["delay 0.12", `tell application "System Events" to key code 36`] : []),
+    ].join("\n");
+    const out = await run(["/usr/bin/osascript", "-"], script, {
+      timeoutMs: 5_000,
+    });
+    if (out.startsWith("[exit ") || out.startsWith("[timeout ")) {
+      return `App send text failed for ${app} to ${destination}: ${out}`;
+    }
+    return submit
+      ? `Sent app text in ${app} to ${destination}: ${text}\n${out}`
+      : `Prepared app text in ${app} to ${destination} without sending: ${text}\n${out}`;
+  }
+
+  private async appSearchText(
+    appValue: string,
+    textValue: string,
+    shortcutValue?: string,
+    submitValue: unknown = true,
+    modeValue?: string,
+    dryRunValue: unknown = false,
+    asyncValue: unknown = true,
+  ): Promise<string> {
+    const app = appValue.trim();
+    const text = textValue.trim();
+    const shortcut = shortcutValue?.trim() || "cmd+l";
+    const submit = submitValue !== false;
+    const dryRun = dryRunValue === true || dryRunValue === "true";
+    const asyncMode = asyncValue !== false && asyncValue !== "false";
+    const mode = /play/i.test(modeValue ?? "") ? "play" : "search";
+    if (!app) return "app_search_text needs an app name.";
+    if (!text) return "app_search_text needs text to type.";
+    if (dryRun) {
+      return submit
+        ? `App ${mode} text submitted dry run in ${app}: ${text} using ${shortcut}.`
+        : `App ${mode} text typed dry run in ${app} without submitting: ${text} using ${shortcut}.`;
+    }
+    const script = [
+      `tell application ${JSON.stringify(app)} to activate`,
+      "delay 0.6",
+      comboToAppleScript(shortcut),
+      "delay 0.25",
+      `tell application "System Events" to key code 0 using {command down}`,
+      "delay 0.08",
+      `tell application "System Events" to keystroke ${JSON.stringify(text)}`,
+      ...(submit ? ["delay 0.15", `tell application "System Events" to key code 36`] : []),
+    ].join("\n");
+    if (asyncMode) {
+      const start = this.startDaemonAppleScriptJob({
+        label: `app-${mode}`,
+        commandForDisplay: `app ${mode} in ${app}: ${text}`,
+        script,
+        timeoutMs: 5_000,
+      });
+      return truncate(
+        [
+          submit
+            ? `App ${mode} text submitted in ${app}: ${text} using ${shortcut}.`
+            : `App ${mode} text typed in ${app} without submitting: ${text} using ${shortcut}.`,
+          this.backgroundStartMessage(start),
+        ].join("\n"),
+      );
+    }
+    const opened = await this.openApp(app);
+    if (/^Open app failed/i.test(opened)) return opened;
+    const out = await run(["/usr/bin/osascript", "-"], script, {
+      timeoutMs: 5_000,
+    });
+    if (out.startsWith("[exit ") || out.startsWith("[timeout ")) {
+      return `App ${mode} text failed in ${app}: ${out}`;
+    }
+    return submit
+      ? `App ${mode} text submitted in ${app}: ${text} using ${shortcut}.\n${out}`
+      : `App ${mode} text typed in ${app} without submitting: ${text} using ${shortcut}.\n${out}`;
+  }
+
+  private runShellBackground(
+    command: string,
+    cwd?: string,
+    label?: string,
+  ): string {
+    const cmd = command.trim();
+    if (!cmd) return "run_shell_background needs a non-empty command.";
+    return this.spawnBackgroundProcess({
+      label: label || "shell",
+      args: ["/bin/zsh", "-lc", cmd],
+      cwd: cwd?.trim() || REPO_ROOT,
+      commandForDisplay: cmd,
+    });
+  }
+
+  private backgroundJobStatus(jobIdValue?: string, tailLinesValue?: unknown): string {
+    if (!existsSync(VOICE_BACKGROUND_DIR)) {
+      return "No background jobs have been started yet.";
+    }
+    const tailLines = clampInt(tailLinesValue, 20, 5, 80);
+    const files = readdirSync(VOICE_BACKGROUND_DIR)
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => path.join(VOICE_BACKGROUND_DIR, f))
+      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+    if (files.length === 0) return "No background jobs have been started yet.";
+
+    const wanted = jobIdValue?.trim();
+    const metaFile = wanted
+      ? files.find((f) => path.basename(f, ".json") === wanted)
+      : undefined;
+    if (wanted && !metaFile) return `No background job found with id ${wanted}.`;
+
+    const describe = (file: string): string => {
+      try {
+        const meta = JSON.parse(readFileSync(file, "utf8")) as {
+          id?: string;
+          label?: string;
+          pid?: number;
+          status?: string;
+          exitCode?: number;
+          startedAt?: string;
+          endedAt?: string;
+          logFile?: string;
+          doneFile?: string;
+          tmuxSession?: string;
+          launcher?: string;
+          cwd?: string;
+        };
+        const doneFile = meta.doneFile || `${file.replace(/\.json$/, "")}.done.json`;
+        if (existsSync(doneFile)) {
+          try {
+            const done = JSON.parse(readFileSync(doneFile, "utf8")) as {
+              status?: string;
+              exitCode?: number;
+              endedAt?: string;
+            };
+            Object.assign(meta, done);
+          } catch {
+            /* best effort */
+          }
+        } else if (meta.logFile && existsSync(meta.logFile)) {
+          const logText = readFileSync(meta.logFile, "utf8");
+          const matches = Array.from(
+            logText.matchAll(
+              /\[friday background job .* exited (\d+) at ([^\]]+)\]/g,
+            ),
+          );
+          const last = matches.at(-1);
+          if (last) {
+            const exitCode = Number(last[1]);
+            Object.assign(meta, {
+              status: exitCode === 0 ? "complete" : "failed",
+              exitCode,
+              endedAt: last[2],
+            });
+          }
+        }
+        const alive =
+          meta.status === "running" &&
+          (typeof meta.pid === "number"
+            ? this.pidAlive(meta.pid)
+            : meta.tmuxSession
+              ? this.tmuxAlive(meta.tmuxSession)
+              : false)
+            ? "alive"
+            : "not running";
+        const status =
+          meta.status === "running" && alive === "not running"
+            ? "lost"
+            : (meta.status ?? "unknown");
+        if (status !== meta.status || existsSync(doneFile)) {
+          try {
+            const endedAt =
+              meta.endedAt ??
+              (status !== "running" ? new Date().toISOString() : undefined);
+            writeFileSync(
+              file,
+              JSON.stringify({ ...meta, status, ...(endedAt ? { endedAt } : {}) }, null, 2),
+            );
+          } catch {
+            /* best effort */
+          }
+        }
+        return [
+          `${meta.id ?? path.basename(file, ".json")} — ${status} (${alive})`,
+          meta.label ? `label: ${meta.label}` : "",
+          meta.launcher ? `launcher: ${meta.launcher}` : "",
+          meta.tmuxSession ? `session: ${meta.tmuxSession}` : "",
+          meta.pid ? `pid: ${meta.pid}` : "",
+          typeof meta.exitCode === "number" ? `exit: ${meta.exitCode}` : "",
+          meta.startedAt ? `started: ${meta.startedAt}` : "",
+          meta.endedAt ? `ended: ${meta.endedAt}` : "",
+          meta.cwd ? `cwd: ${meta.cwd}` : "",
+          meta.logFile ? `log: ${meta.logFile}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n");
+      } catch (err) {
+        return `${path.basename(file, ".json")} — metadata unreadable: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    };
+
+    if (!metaFile) {
+      return truncate(
+        ["Recent background jobs:", ...files.slice(0, 6).map(describe)].join(
+          "\n\n",
+        ),
+      );
+    }
+
+    const summary = describe(metaFile);
+    let tail = "";
+    try {
+      const meta = JSON.parse(readFileSync(metaFile, "utf8")) as {
+        logFile?: string;
+      };
+      if (meta.logFile && existsSync(meta.logFile)) {
+        const lines = readFileSync(meta.logFile, "utf8")
+          .split(/\r?\n/)
+          .slice(-tailLines)
+          .join("\n");
+        tail = `\n\nLast ${tailLines} log lines:\n${lines}`;
+      }
+    } catch {
+      /* best effort */
+    }
+    return truncate(`${summary}${tail}`);
+  }
+
+  private pidAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private tmuxAlive(session: string): boolean {
+    const res = Bun.spawnSync([tmuxBin(), "has-session", "-t", session], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    return res.exitCode === 0;
+  }
+
   private async webSearch(query: string, limitValue: unknown): Promise<string> {
     const q = query.trim();
     if (!q) return "web_search needs a non-empty query.";
     const limit = clampInt(limitValue, 5, 1, 8);
     const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15_000);
+    const timeoutMs = Math.max(1000, this.cfg.webFetchTimeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetch(url, {
         headers: { "User-Agent": "Mozilla/5.0 FridayVoice/1.0" },
@@ -909,6 +2088,10 @@ export class ToolRunner {
           )
           .join("\n\n"),
       );
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError")
+        return `web_search timed out after ${timeoutMs}ms. Say that the live search is slow, or use browser_open_url / run_shell_background for a deeper search.`;
+      return `web_search failed: ${err instanceof Error ? err.message : String(err)}`;
     } finally {
       clearTimeout(timer);
     }
@@ -924,6 +2107,75 @@ export class ToolRunner {
     return `Opened ${normalized}${app ? ` in ${app}` : ""}.\n${out}`;
   }
 
+  private async browserSubmitText(
+    url: string,
+    text: string,
+    app?: string,
+    submitValue: unknown = true,
+    verifyValue: unknown = true,
+  ): Promise<ToolExecutionResult | string> {
+    const normalized = normalizeUrlInput(url);
+    const query = text.trim();
+    if (!normalized) return "browser_submit_text needs a URL.";
+    if (!query) return "browser_submit_text needs text to submit.";
+
+    const target = browserSubmitUrl(normalized, query, submitValue !== false);
+    if (!target) {
+      return `browser_submit_text does not know a reliable non-coordinate search URL for ${normalized}. Use browser_open_url followed by screen_see for visual control.`;
+    }
+
+    const openOut = await this.browserOpenUrl(target.url, app);
+    if (verifyValue === false) {
+      return truncate(
+        [
+          `Submitted browser text to ${target.label}: ${query}`,
+          `URL: ${target.url}`,
+          openOut,
+        ].join("\n"),
+      );
+    }
+
+    await sleep(target.verifyDelayMs);
+    try {
+      const shot = await this.captureScreen();
+      const image = await this.realtimeImageCopy(shot.file, "screen");
+      return {
+        output: truncate(
+          [
+            `Submitted browser text to ${target.label}: ${query}`,
+            `URL: ${target.url}`,
+            `Screen captured for verification: ${shot.file}`,
+            shot.dims,
+            image.resized
+              ? `Realtime vision attachment: ${image.file}\n${image.dims}`
+              : "",
+            openOut,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        ),
+        realtimeImages: [
+          {
+            path: image.file,
+            prompt:
+              "Verify the browser search/chat submission state. Say whether the requested query, results, login prompt, or blocker is visible.",
+          },
+        ],
+      };
+    } catch (err) {
+      return truncate(
+        [
+          `Submitted browser text to ${target.label}: ${query}`,
+          `URL: ${target.url}`,
+          `Verification screenshot failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          openOut,
+        ].join("\n"),
+      );
+    }
+  }
+
   private async browserPageText(
     url: string,
     maxCharsValue: unknown,
@@ -932,7 +2184,8 @@ export class ToolRunner {
     if (!normalized) return "browser_page_text needs a URL.";
     const maxChars = clampInt(maxCharsValue, 6000, 1000, 12000);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20_000);
+    const timeoutMs = Math.max(1000, this.cfg.webFetchTimeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetch(normalized, {
         headers: { "User-Agent": "Mozilla/5.0 FridayVoice/1.0" },
@@ -952,22 +2205,42 @@ export class ToolRunner {
           .filter(Boolean)
           .join("\n"),
       );
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError")
+        return `browser_page_text timed out after ${timeoutMs}ms for ${normalized}. Say the page is slow, or open it in the browser and use screen_see.`;
+      return `browser_page_text failed for ${normalized}: ${err instanceof Error ? err.message : String(err)}`;
     } finally {
       clearTimeout(timer);
     }
   }
 
-  private async screenScreenshot(note?: string): Promise<string> {
+  private async captureScreen(): Promise<{ file: string; dims: string }> {
     mkdirSync(VOICE_SCREENSHOT_DIR, { recursive: true });
+    try {
+      chmodSync(VOICE_SCREENSHOT_DIR, 0o777);
+    } catch {
+      /* best effort; accessSync below gives the actionable error */
+    }
+    try {
+      accessSync(VOICE_SCREENSHOT_DIR, constants.W_OK);
+    } catch {
+      throw new Error(
+        `Screen screenshot failed because ${VOICE_SCREENSHOT_DIR} is not writable by the Friday daemon. Run: sudo chown -R "$USER":wheel /tmp/friday-voice && chmod -R u+rwX,go+rwX /tmp/friday-voice`,
+      );
+    }
     const file = path.join(VOICE_SCREENSHOT_DIR, artifactName("screen", "png"));
     const shot = await run(["/usr/sbin/screencapture", "-x", file]);
-    if (shot.startsWith("[exit ")) return `Screenshot failed: ${shot}`;
+    if (shot.startsWith("[exit ")) throw new Error(`Screenshot failed: ${shot}`);
+    for (let i = 0; i < 10; i++) {
+      if (existsSync(file) && statSync(file).size >= 1000) break;
+      await sleep(120);
+    }
     if (!existsSync(file) || statSync(file).size < 1000) {
       await run([
         "/usr/bin/open",
         "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
       ]);
-      return screenRecordingHelp();
+      throw new Error(screenRecordingHelp());
     }
     const dims = await run([
       "/usr/bin/sips",
@@ -982,13 +2255,350 @@ export class ToolRunner {
         "/usr/bin/open",
         "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
       ]);
-      return `${screenRecordingHelp()}\n\nsips output:\n${dims}`;
+      throw new Error(`${screenRecordingHelp()}\n\nsips output:\n${dims}`);
     }
-    return truncate(
-      [`Screenshot saved: ${file}`, note ? `Reason: ${note}` : "", dims]
-        .filter(Boolean)
-        .join("\n"),
+    return { file, dims };
+  }
+
+  private async realtimeImageCopy(
+    file: string,
+    label: string,
+    opts: { maxPx?: number; quality?: number } = {},
+  ): Promise<{ file: string; dims: string; resized: boolean }> {
+    const ext = REALTIME_IMAGE_FORMAT === "png" ? "png" : "jpg";
+    const out = path.join(
+      VOICE_SCREENSHOT_DIR,
+      artifactName(`${label}-rt`, ext),
     );
+    const args = [
+      "/usr/bin/sips",
+      "-Z",
+      String(opts.maxPx ?? REALTIME_IMAGE_MAX_PX),
+      "-s",
+      "format",
+      REALTIME_IMAGE_FORMAT,
+      ...(REALTIME_IMAGE_FORMAT === "jpeg"
+        ? ["-s", "formatOptions", String(opts.quality ?? REALTIME_IMAGE_QUALITY)]
+        : []),
+      file,
+      "--out",
+      out,
+    ];
+    const resized = await run(args);
+    if (
+      resized.startsWith("[exit ") ||
+      /Warning:|Error:/i.test(resized) ||
+      !existsSync(out) ||
+      statSync(out).size < 1000
+    ) {
+      return { file, dims: "", resized: false };
+    }
+    const dims = await run([
+      "/usr/bin/sips",
+      "-g",
+      "pixelWidth",
+      "-g",
+      "pixelHeight",
+      out,
+    ]);
+    return { file: out, dims, resized: true };
+  }
+
+  private pixelDimensions(
+    dims: string,
+  ): { width: number; height: number } | undefined {
+    const width = Number(dims.match(/pixelWidth:\s*(\d+)/)?.[1]);
+    const height = Number(dims.match(/pixelHeight:\s*(\d+)/)?.[1]);
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return undefined;
+    return { width, height };
+  }
+
+  private async desktopBounds(): Promise<DesktopBounds | undefined> {
+    const out = await run(
+      [
+        "/usr/bin/osascript",
+        "-e",
+        'tell application "Finder" to get bounds of window of desktop',
+      ],
+      undefined,
+      { timeoutMs: 1500 },
+    );
+    if (/^\[(exit|timeout)\s+/i.test(out)) return undefined;
+    return parseDesktopBounds(out);
+  }
+
+  private async screenCoordinateContext(args: {
+    fullDims: string;
+    imageDims: string;
+  }): Promise<string | undefined> {
+    const full = this.pixelDimensions(args.fullDims);
+    const image = this.pixelDimensions(args.imageDims);
+    if (!full || !image || full.width <= 0 || full.height <= 0) return undefined;
+    const desktop = await this.desktopBounds();
+    const targetWidth = desktop?.width ?? full.width;
+    const targetHeight = desktop?.height ?? full.height;
+    const scaleX = targetWidth / image.width;
+    const scaleY = targetHeight / image.height;
+    const originNote =
+      desktop && (desktop.x !== 0 || desktop.y !== 0)
+        ? `After scaling, add desktop origin offset x=${desktop.x}, y=${desktop.y}.`
+        : "The current desktop origin is x=0, y=0.";
+    return [
+      `Coordinate mapping: the attached image is ${image.width}x${image.height}, scaled from a ${full.width}x${full.height} screenshot bitmap.`,
+      desktop
+        ? `mouse_control expects macOS display coordinates in the ${targetWidth}x${targetHeight} top-left coordinate space, not raw Retina screenshot pixels. Scale image x by ${scaleX.toFixed(3)} and image y by ${scaleY.toFixed(3)} before clicking. ${originNote}`
+        : `mouse_control expects full-screen coordinates. Scale image x by ${scaleX.toFixed(3)} and image y by ${scaleY.toFixed(3)} before clicking.`,
+    ].join(" ");
+  }
+
+  private screenVisionNeedsDetail(prompt?: string): boolean {
+    const text = prompt?.trim();
+    if (!text) return true;
+    return /\b(click|press|type|move|scroll|drag|coordinate|coordinates|button|field|input|read|locate|verify|confirm|choose|target|mouse|control|form|menu|link|checkbox|where|x,y|x y)\b/i.test(
+      text,
+    );
+  }
+
+  private async screenScreenshot(note?: string): Promise<string> {
+    try {
+      const shot = await this.captureScreen();
+      return truncate(
+        [`Screenshot saved: ${shot.file}`, note ? `Reason: ${note}` : "", shot.dims]
+          .filter(Boolean)
+          .join("\n"),
+      );
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  private async screenBrief(): Promise<string> {
+    const script = `
+tell application "System Events"
+  set frontApp to first application process whose frontmost is true
+  set appName to name of frontApp
+  set windowName to ""
+  try
+    set windowName to name of front window of frontApp
+  end try
+  return appName & linefeed & windowName
+end tell
+`;
+    const out = await run(["/usr/bin/osascript", "-"], script, {
+      timeoutMs: 1500,
+    });
+    if (/^\[exit\s+\d+\]/i.test(out) || /^\[timeout/i.test(out)) {
+      return accessibilityHelp(
+        "Accessibility permission required for fast screen brief.",
+      ) + `\n${out}`;
+    }
+    const [appRaw, windowRaw] = out.split(/\r?\n/);
+    const app = appRaw?.trim();
+    const windowTitle = windowRaw?.trim();
+    if (!app) return "Fast screen brief could not identify the frontmost app.";
+    return truncate(
+      [
+        `Frontmost app: ${app}`,
+        windowTitle ? `Window title: ${windowTitle}` : "Window title: unavailable",
+        "Use screen_see if visual details or coordinates are needed.",
+      ].join("\n"),
+    );
+  }
+
+  private async screenSee(
+    prompt?: string,
+    app?: string,
+  ): Promise<ToolExecutionResult | string> {
+    try {
+      if (app?.trim()) {
+        await this.focusApp(app);
+        await sleep(250);
+      }
+      const shot = await this.captureScreen();
+      const detailed = this.screenVisionNeedsDetail(prompt);
+      const image = await this.realtimeImageCopy(
+        shot.file,
+        "screen",
+        detailed
+          ? {}
+          : { maxPx: REALTIME_IMAGE_FAST_MAX_PX, quality: REALTIME_IMAGE_FAST_QUALITY },
+      );
+      const coordinateContext = detailed
+        ? await this.screenCoordinateContext({
+            fullDims: shot.dims,
+            imageDims: image.dims,
+          })
+        : undefined;
+      const visionPrompt =
+        [
+          prompt?.trim() ||
+            "Inspect this Mac screen screenshot. Identify visible UI state, relevant coordinates, and the safest next action. For coordinate clicks, give exact full-screen x,y targets.",
+          coordinateContext,
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+      return {
+        output: truncate(
+          [
+            `Screen captured and attached for vision: ${shot.file}`,
+            shot.dims,
+            image.resized
+              ? `Realtime vision attachment: ${image.file}\n${image.dims}`
+              : "",
+            "Use mouse_control only after inspecting this image and choosing clear coordinates.",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        ),
+        realtimeImages: [{ path: image.file, prompt: visionPrompt }],
+      };
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  // Ask Claude to find a UI element in the current screen and return its center
+  // in macOS display points (the space mouse_control expects). Returns undefined
+  // when the element is not visible or Claude/key is unavailable.
+  private async groundOnScreen(
+    target: string,
+  ): Promise<
+    | { x: number; y: number; label: string }
+    | { error: string }
+  > {
+    if (!this.cfg.anthropicApiKey) {
+      return {
+        error:
+          "Claude vision grounding is unavailable: set ANTHROPIC_API_KEY in .env to enable find_and_click.",
+      };
+    }
+    const shot = await this.captureScreen();
+    // Resize to a Claude-friendly size; grounding is proportional so exact px is fine.
+    const image = await this.realtimeImageCopy(shot.file, "ground", {
+      maxPx: 1280,
+      quality: 80,
+    });
+    const imgPath = image.resized ? image.file : shot.file;
+    const imgDims =
+      this.pixelDimensions(image.resized ? image.dims : shot.dims) ??
+      this.pixelDimensions(shot.dims);
+    if (!imgDims) return { error: "Could not measure the screenshot dimensions." };
+    const b64 = readFileSync(imgPath).toString("base64");
+    const mediaType = imgPath.endsWith(".png") ? "image/png" : "image/jpeg";
+    const instruction = [
+      `This is a ${imgDims.width}x${imgDims.height} screenshot of a Mac screen.`,
+      `Find this UI element: "${target}".`,
+      `Respond with ONLY compact JSON and nothing else.`,
+      `If found: {"found":true,"x":<int>,"y":<int>,"label":"<short name of what you found>"}`,
+      `where x,y is the CENTER of that element in PIXEL coordinates of THIS image (0..${imgDims.width}, 0..${imgDims.height}).`,
+      `If it is not visible: {"found":false,"reason":"<short reason>"}.`,
+    ].join(" ");
+    let text: string;
+    try {
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": this.cfg.anthropicApiKey,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: this.cfg.visionGroundingModel,
+          max_tokens: 200,
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "image",
+                  source: { type: "base64", media_type: mediaType, data: b64 },
+                },
+                { type: "text", text: instruction },
+              ],
+            },
+          ],
+        }),
+      });
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        return {
+          error: `Claude vision request failed (${resp.status}): ${body.slice(0, 200) || resp.statusText}`,
+        };
+      }
+      const data = (await resp.json()) as {
+        content?: Array<{ type: string; text?: string }>;
+      };
+      text = (data.content ?? [])
+        .map((part) => (part.type === "text" ? (part.text ?? "") : ""))
+        .join("")
+        .trim();
+    } catch (err) {
+      return {
+        error: `Claude vision request errored: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    const json = text.match(/\{[\s\S]*\}/)?.[0];
+    if (!json) return { error: `Claude returned no coordinates: ${text.slice(0, 120)}` };
+    let parsed: {
+      found?: boolean;
+      x?: number;
+      y?: number;
+      label?: string;
+      reason?: string;
+    };
+    try {
+      parsed = JSON.parse(json);
+    } catch {
+      return { error: `Could not parse grounding JSON: ${json.slice(0, 120)}` };
+    }
+    if (!parsed.found || !Number.isFinite(parsed.x) || !Number.isFinite(parsed.y)) {
+      return {
+        error: `Not found on screen${parsed.reason ? `: ${parsed.reason}` : ""}.`,
+      };
+    }
+    // Map image-pixel coords proportionally into the display-point space that
+    // mouse_control expects (desktop bounds when available, else screenshot px).
+    const desktop = await this.desktopBounds();
+    const targetW = desktop?.width ?? imgDims.width;
+    const targetH = desktop?.height ?? imgDims.height;
+    const originX = desktop?.x ?? 0;
+    const originY = desktop?.y ?? 0;
+    const px = originX + (parsed.x! / imgDims.width) * targetW;
+    const py = originY + (parsed.y! / imgDims.height) * targetH;
+    return { x: Math.round(px), y: Math.round(py), label: parsed.label ?? target };
+  }
+
+  private async findAndClick(
+    target: string,
+    actionRaw: string | undefined,
+    app: string | undefined,
+  ): Promise<string> {
+    const description = target.trim();
+    if (!description) return "find_and_click needs a target description.";
+    const action = ["click", "double_click", "move"].includes(
+      (actionRaw ?? "click").trim(),
+    )
+      ? (actionRaw ?? "click").trim()
+      : "click";
+    if (app?.trim()) {
+      await this.focusApp(app);
+      await sleep(250);
+    }
+    const ground = await this.groundOnScreen(description);
+    if ("error" in ground) {
+      return `Could not click "${description}" — ${ground.error}`;
+    }
+    const result = await this.mouseControl(
+      action,
+      ground.x,
+      ground.y,
+      undefined,
+      undefined,
+      undefined,
+    );
+    const verb =
+      action === "move" ? "Moved pointer to" : action === "double_click" ? "Double-clicked" : "Clicked";
+    return `${verb} "${ground.label}" at ${ground.x},${ground.y} (Claude-grounded).\n${result}`;
   }
 
   private async browserScreenshot(
@@ -1021,8 +2631,11 @@ export class ToolRunner {
     }
     if (fullPage) args.push("--full-page");
     args.push(normalized, file);
-    const shot = await run(args);
-    if (shot.startsWith("[exit ")) return `Browser screenshot failed: ${shot}`;
+    const shot = await run(args, undefined, {
+      timeoutMs: Math.max(1000, this.cfg.browserScreenshotTimeoutMs),
+    });
+    if (shot.startsWith("[exit ") || shot.startsWith("[timeout "))
+      return `Browser screenshot failed: ${shot}`;
     if (!existsSync(file) || statSync(file).size < 1000) {
       return `Browser screenshot failed: Playwright did not produce a valid image at ${file}.`;
     }
@@ -1235,10 +2848,10 @@ export class ToolRunner {
     if (!["check", "move", "click", "double_click", "drag"].includes(action)) {
       return "mouse_control action must be check, move, click, double_click, or drag.";
     }
-    const bin = ensureMouseBinary();
-    if (!bin)
-      return "Mouse helper unavailable: could not compile src/voice/mouse-control.swift with /usr/bin/swiftc.";
     if (action === "check") {
+      const bin = ensureMouseBinary();
+      if (!bin)
+        return "Mouse helper unavailable: could not compile src/voice/mouse-control.swift with /usr/bin/swiftc.";
       const out = await run([bin, "check"]);
       if (out.startsWith("[exit 77]")) {
         await run([
@@ -1255,6 +2868,18 @@ export class ToolRunner {
     const y = Number(yValue);
     if (!Number.isFinite(x) || !Number.isFinite(y))
       return "mouse_control needs finite x and y screen coordinates.";
+    const fallback = async (reason: string) => {
+      const fallbackOut = await this.appleScriptMouseFallback(action, x, y);
+      if (fallbackOut)
+        return `Mouse ${action} at ${Math.round(x)},${Math.round(y)} via Terminal Accessibility fallback.\nReason helper was not used: ${reason}\n${fallbackOut}`;
+      return reason;
+    };
+    const bin = ensureMouseBinary();
+    if (!bin) {
+      return await fallback(
+        "Mouse helper unavailable: could not compile src/voice/mouse-control.swift with /usr/bin/swiftc.",
+      );
+    }
     const args = [bin, action, String(Math.round(x)), String(Math.round(y))];
     if (action === "drag") {
       const toX = Number(toXValue);
@@ -1269,6 +2894,8 @@ export class ToolRunner {
     }
     const out = await run(args);
     if (out.startsWith("[exit 77]")) {
+      const fallbackOut = await fallback(out);
+      if (!fallbackOut.startsWith("[exit 77]")) return fallbackOut;
       await run([
         "/usr/bin/open",
         "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
@@ -1276,6 +2903,22 @@ export class ToolRunner {
       return accessibilityHelp(out);
     }
     return `Mouse ${action} at ${Math.round(x)},${Math.round(y)} with orange control glow.\n${out}`;
+  }
+
+  private async appleScriptMouseFallback(
+    action: string,
+    x: number,
+    y: number,
+  ): Promise<string | null> {
+    if (action !== "click" && action !== "double_click") return null;
+    const point = `{${Math.round(x)}, ${Math.round(y)}}`;
+    const script =
+      action === "double_click"
+        ? `tell application "System Events"\nclick at ${point}\ndelay 0.08\nclick at ${point}\nend tell`
+        : `tell application "System Events" to click at ${point}`;
+    const out = await run(["/usr/bin/osascript", "-"], script);
+    if (out.startsWith("[exit ")) return null;
+    return out;
   }
 
   private memorySearch(query: string, limitValue: unknown): string {
@@ -1310,7 +2953,7 @@ export class ToolRunner {
     const limit = clampInt(limitValue, 5, 1, 8);
     const proc = Bun.spawn(
       [
-        "node",
+        NODE_BIN,
         ENGRAM_CLI,
         "recall",
         q,
@@ -1406,86 +3049,23 @@ export class ToolRunner {
     prompt: string,
     repo?: string,
   ): { name: string; path: string; reason: string } {
-    const configured = this.cfg.repos;
-    const names = configured.map((r) => r.name);
-    const lower = (s: string) => s.toLowerCase();
-
-    if (repo) {
-      const explicit = configured.find((r) => lower(r.name) === lower(repo));
-      if (explicit)
-        return {
-          name: explicit.name,
-          path: explicit.path,
-          reason: `explicit repo "${repo}"`,
-        };
-    }
-
-    const fromUrl = inferRepoFromText(prompt, names);
-    if (fromUrl) {
-      const match = configured.find((r) => r.name === fromUrl)!;
-      return { name: match.name, path: match.path, reason: "GitHub URL" };
-    }
-
-    for (const r of configured) {
-      const escaped = r.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      if (
-        new RegExp(`(^|[^a-z0-9_-])${escaped}([^a-z0-9_-]|$)`, "i").test(prompt)
-      ) {
-        return {
-          name: r.name,
-          path: r.path,
-          reason: `repo name "${r.name}" mentioned`,
-        };
-      }
-    }
-
-    const aliases: Array<[RegExp, string]> = [
-      [/\b(api|backend|server|cron|mongo|database|payments?)\b/i, "gx-backend"],
-      [
-        /\b(mobile|app|expo|react native|ios|android|ota|eas)\b/i,
-        "gx-client-expo",
-      ],
-      [
-        /\b(web|website|next|landing|frontend|client next)\b/i,
-        "gx-client-next",
-      ],
-      [/\b(admin|dashboard|internal tool)\b/i, "gx-admin-client"],
-      [/\b(talent|candidate|recruit)\b/i, "gx-talent-client"],
-      [/\b(slack lookup|slack-lookup)\b/i, "slack-lookup"],
-      [
-        /\b(built at growthx|built-at-growthx|portfolio)\b/i,
-        "Built-at-GrowthX",
-      ],
-    ];
-    for (const [pattern, name] of aliases) {
-      if (!pattern.test(prompt)) continue;
-      const match = configured.find((r) => r.name === name);
-      if (match)
-        return {
-          name: match.name,
-          path: match.path,
-          reason: `keyword alias → ${name}`,
-        };
-    }
-
-    return {
-      name: "friday",
-      path: REPO_ROOT,
-      reason: "no repo inferred; using Friday repo",
-    };
+    return resolveVoiceRepo({
+      prompt,
+      repo,
+      configured: this.cfg.repos,
+      fallbackPath: REPO_ROOT,
+    });
   }
 
   private async dispatchEngineering(
     prompt: string,
     repo?: string,
     engine = "auto",
+    dryRun = false,
   ): Promise<string> {
-    const wantsClaude =
-      engine === "claude" ||
-      (engine === "auto" &&
-        Boolean(this.cfg.slackBotToken && this.cfg.slackVoiceChannel));
-    if (wantsClaude) return await this.dispatchClaude(prompt, repo);
-    return await this.dispatchCodex(prompt, repo);
+    if (resolveEngineeringEngine(engine) === "claude")
+      return await this.dispatchClaude(prompt, repo);
+    return await this.dispatchCodex(prompt, repo, dryRun);
   }
 
   private async dispatchClaude(prompt: string, repo?: string): Promise<string> {
@@ -1507,10 +3087,11 @@ export class ToolRunner {
       this.dispatchThreadTs = seed;
     }
 
-    const proc = Bun.spawn(["/bin/bash", DISPATCH_SH, cwd, prompt], {
+    return this.spawnBackgroundProcess({
+      label: `claude-${resolved.name}`,
+      args: ["/bin/bash", DISPATCH_SH, cwd, prompt],
       cwd: REPO_ROOT,
-      stdout: "pipe",
-      stderr: "pipe",
+      commandForDisplay: `${DISPATCH_SH} ${cwd} <voice prompt>`,
       env: {
         ...process.env,
         SLACK_BOT_TOKEN: slackBotToken,
@@ -1519,18 +3100,13 @@ export class ToolRunner {
         SLACK_USER_ID: this.cfg.slackUserId ?? "",
       } as Record<string, string>,
     });
-    const [out, err, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    if (code !== 0) {
-      return `Dispatch failed (exit ${code}): ${truncate((err || out).trim())}`;
-    }
-    return `Kicked off a Claude session on ${resolved.name} (${resolved.reason}) — it's running in a terminal and will report back in the Slack thread. ${out.trim()}`;
   }
 
-  private async dispatchCodex(prompt: string, repo?: string): Promise<string> {
+  private async dispatchCodex(
+    prompt: string,
+    repo?: string,
+    dryRun = false,
+  ): Promise<string> {
     const resolved = this.resolveRepo(prompt, repo);
     mkdirSync(VOICE_DISPATCH_DIR, { recursive: true });
     const id = `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`;
@@ -1545,18 +3121,20 @@ export class ToolRunner {
     ].join("\n");
     writeFileSync(promptPath, fullPrompt);
 
-    const command = [
-      `cd ${shellQuote(resolved.path)}`,
-      [
-        "codex exec",
-        "--ask-for-approval never",
-        "--sandbox danger-full-access",
-        "--search",
-        `--cd ${shellQuote(resolved.path)}`,
-        `< ${shellQuote(promptPath)}`,
-      ].join(" "),
-      "printf '\\n[Friday voice Codex dispatch complete]\\n'",
-    ].join(" && ");
+    const command = buildCodexDispatchCommand({
+      repoPath: resolved.path,
+      promptPath,
+    });
+
+    if (dryRun || process.env.FRIDAY_VOICE_DISPATCH_DRY_RUN === "1") {
+      return truncate(
+        [
+          `Dry run: local Codex dispatch prepared for ${resolved.name} (${resolved.reason}).`,
+          `Prompt: ${promptPath}`,
+          `Command: ${command}`,
+        ].join("\n"),
+      );
+    }
 
     const script = [
       `tell application "Terminal"`,
@@ -1564,13 +3142,19 @@ export class ToolRunner {
       `do script ${JSON.stringify(command)}`,
       `end tell`,
     ].join("\n");
-    const res = await run(["/usr/bin/osascript", "-"], script);
-    if (res.startsWith("[exit ")) return `Codex dispatch failed: ${res}`;
+    const res = await run(["/usr/bin/osascript", "-"], script, {
+      timeoutMs: Math.max(1000, this.cfg.dispatchLaunchTimeoutMs),
+    });
+    if (res.startsWith("[exit ") || res.startsWith("[timeout "))
+      return `Codex dispatch failed: ${res}`;
     return `Started a local Codex session on ${resolved.name} (${resolved.reason}). It is running in Terminal.`;
   }
 
   /** Post to SLACK_VOICE_CHANNEL via Web API; returns the message ts (thread root). */
   private async postSlack(text: string): Promise<string | null> {
+    const controller = new AbortController();
+    const timeoutMs = Math.max(1000, this.cfg.webFetchTimeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetch("https://slack.com/api/chat.postMessage", {
         method: "POST",
@@ -1579,6 +3163,7 @@ export class ToolRunner {
           "Content-Type": "application/json; charset=utf-8",
         },
         body: JSON.stringify({ channel: this.cfg.slackVoiceChannel, text }),
+        signal: controller.signal,
       });
       const data = (await res.json()) as {
         ok: boolean;
@@ -1588,6 +3173,8 @@ export class ToolRunner {
       return data.ok && data.ts ? data.ts : null;
     } catch {
       return null;
+    } finally {
+      clearTimeout(timer);
     }
   }
 }

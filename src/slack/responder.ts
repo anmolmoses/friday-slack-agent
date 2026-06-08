@@ -102,18 +102,7 @@ export class SlackResponder {
           text,
         });
         if (result.ts) {
-          this.statusMessages.set(threadTs, {
-            messageTs: result.ts,
-            lastUpdateTime: Date.now(),
-            lastSentText: text,
-            pendingText: null,
-            flushTimer: null,
-            heartbeatTimer: null,
-            heartbeatActive: false,
-            heartbeatStartedAt: 0,
-            heartbeatVerb: "",
-            heartbeatVerbPickedAt: 0,
-          });
+          this.statusMessages.set(threadTs, this.freshEntry(result.ts, text));
           recordSlackPost(threadTs, channel, result.ts, "create", text);
         }
       } catch (err) {
@@ -159,6 +148,22 @@ export class SlackResponder {
     }
   }
 
+  // Build a fresh idle StatusEntry for a just-posted status message.
+  private freshEntry(messageTs: string, text: string): StatusEntry {
+    return {
+      messageTs,
+      lastUpdateTime: Date.now(),
+      lastSentText: text,
+      pendingText: null,
+      flushTimer: null,
+      heartbeatTimer: null,
+      heartbeatActive: false,
+      heartbeatStartedAt: 0,
+      heartbeatVerb: "",
+      heartbeatVerbPickedAt: 0,
+    };
+  }
+
   private async sendUpdate(channel: string, threadTs: string, text: string): Promise<void> {
     const entry = this.statusMessages.get(threadTs);
     if (!entry) return;
@@ -172,6 +177,33 @@ export class SlackResponder {
       entry.lastSentText = text;
       recordSlackPost(threadTs, channel, entry.messageTs, "edit", text);
     } catch (err) {
+      // The cached status message is gone — it was deleted, or a prior turn
+      // ended without deleteStatus() and left a stale entry pointing at a ts
+      // Slack no longer accepts edits for. Editing a dead ts fails on EVERY
+      // subsequent tool/text event, which is the `message_not_found` flood we
+      // saw spam the dashboard 5000+ times (#bugs-backlog, 2026-06-04). Drop
+      // the stale entry and re-post a fresh status message so updates keep
+      // flowing instead of looping on a corpse.
+      const slackErr =
+        (err as { data?: { error?: string } } | undefined)?.data?.error;
+      if (slackErr === "message_not_found" || slackErr === "cant_update_message") {
+        this.statusMessages.delete(threadTs);
+        try {
+          const result = await this.app.client.chat.postMessage({
+            channel,
+            thread_ts: threadTs,
+            text,
+          });
+          if (result.ts) {
+            this.statusMessages.set(threadTs, this.freshEntry(result.ts, text));
+            recordSlackPost(threadTs, channel, result.ts, "create", text);
+          }
+        } catch (repostErr) {
+          console.error("[responder] Failed to re-post status after message_not_found:", repostErr);
+          recordSlackPostFailed(threadTs, channel, "create", repostErr instanceof Error ? repostErr.message : String(repostErr));
+        }
+        return;
+      }
       console.error("[responder] Failed to update status:", err);
       recordSlackPostFailed(threadTs, channel, "edit", err instanceof Error ? err.message : String(err));
     }

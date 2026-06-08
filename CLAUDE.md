@@ -174,10 +174,10 @@ bun run cleanup                 # Clean stale worktrees and sessions
 
 # Voice route — talk to Friday, she controls the Mac (separate from Slack; OpenAI Realtime)
 bun run voice                   # Start the voice daemon (foreground, starts idle)
-bin/friday-voice toggle         # Toggle listening on/off (what the skhd hotkey calls)
+bin/friday-voice toggle         # Toggle listening on/off (what the HUD hotkey calls)
 bin/friday-voice status         # Running? listening? ws connected? uptime
 bin/friday-voice stop           # Stop the daemon
-#   Full setup (skhd hotkey, mic/Accessibility perms, env): docs/features/voice-route.md
+#   Full setup (HUD hotkey, mic/Accessibility perms, env): docs/features/voice-route.md
 
 # Memory — Wayback-style snapshot of an external source (provenance for things that drift)
 bun run src/memory/cli.ts snapshot <url> [--note "why"]      # fetch + archive.org Save Page Now + store

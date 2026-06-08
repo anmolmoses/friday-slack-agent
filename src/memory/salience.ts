@@ -31,9 +31,29 @@ export const DEFAULT_SALIENCE: SalienceThresholds = {
 const REMEMBER_RE =
   /\b(remember (this|that|to|when)|don'?t forget|make a note|note that|keep in mind|for the record|pin this|take note)\b/i;
 
+const STABLE_PREFERENCE_RE =
+  /\b(my favorite|favourite)\s+(song|artist|band|album|movie|show|book|app|browser|editor|tool|language|framework|place|restaurant|food|drink|color|colour)\s+(is|['’]s|=)\b/i;
+
+const INVERSE_FAVORITE_RE =
+  /\b(is|['’]s)\s+my\s+(favorite|favourite)\s+(song|artist|band|album|movie|show|book|app|browser|editor|tool|language|framework|place|restaurant|food|drink|color|colour)\b/i;
+
+const PREFERENCE_RE =
+  /\b(i\s+(prefer|usually use|always use|default to|work best with|want you to use)|my\s+preferred)\b/i;
+
 /** Did the user explicitly ask Friday to remember this? */
 export function detectExplicitRemember(text: string): boolean {
   return REMEMBER_RE.test(text ?? "");
+}
+
+/** Did the user state a durable preference/identity fact worth keeping? */
+export function detectStablePreference(text: string): boolean {
+  const t = text ?? "";
+  if (!t.trim()) return false;
+  return (
+    STABLE_PREFERENCE_RE.test(t) ||
+    INVERSE_FAVORITE_RE.test(t) ||
+    PREFERENCE_RE.test(t)
+  );
 }
 
 /**

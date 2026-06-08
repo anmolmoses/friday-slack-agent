@@ -21,7 +21,11 @@ import path from "node:path";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { log } from "../logger.ts";
 import { reindexIncremental, tagExchanges } from "./engram-bridge.ts";
-import { isSalient, detectExplicitRemember } from "./salience.ts";
+import {
+  isSalient,
+  detectExplicitRemember,
+  detectStablePreference,
+} from "./salience.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../..");
 const CONV_ROOT = path.join(REPO_ROOT, "memory", "conversations");
@@ -106,12 +110,15 @@ export function captureExchange(args: {
     // Target path is computed at capture time (so filenames keep capture order)
     // but the file is only written if the exchange clears the gate.
     const file = path.join(dayDir(), `${stamp}-${args.threadId.replace(/\./g, "_")}.md`);
-    const body = `**Them:** ${clip(userText, 1500)}\n\n**Friday:** ${clip(args.reply ?? "", 1500)}`;
+    const replyText = args.reply ?? "";
+    const body = `**Them:** ${clip(userText, 1500)}\n\n**Friday:** ${clip(replyText, 1500)}`;
 
     pending.push({
       file,
       body,
-      explicit: detectExplicitRemember(userText),
+      explicit:
+        detectExplicitRemember(userText) ||
+        detectStablePreference(`${userText}\n${replyText}`),
       base: {
         date: now.toISOString(), author: args.user,
         channel: args.channelName ? `#${args.channelName}` : args.channel, thread: args.threadId,

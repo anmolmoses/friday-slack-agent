@@ -12,6 +12,15 @@ Triage and fix the bug described below.
 
 $ARGUMENTS
 
+## STOP FIRST: did a human already claim this bug?
+
+Before doing ANY investigation, read the thread. If the **tagged owner or Anmol (`U09SZ4DM8TH`) has said they're taking it** — "i will check", "i'll take this", "on it", "looking into it", "I've got this", "leave it to me" — then **STAND DOWN**. React 👀 if you haven't, and do nothing else. Do not investigate, do not dispatch, do not race them. They own it.
+
+- This is exactly the #bugs-backlog miss on 2026-06-04: UD (`U01AG6F9W69`) tagged **Anmol** (`U09SZ4DM8TH`), Anmol replied **"i will check"**, and Friday barreled into a solo inline investigation anyway — even misquoting it as "UD said he'll check". Both wrong: Anmol said it, and his saying it means HANDS OFF.
+- Attribute quotes correctly. `U09SZ4DM8TH` = Anmol. `U01AG6F9W69` = UD. Don't put words in the wrong person's mouth to justify continuing.
+- A UD @-mention of a *specific human* (not Friday/the bot) is that human's to claim. Only treat it as yours if no human has, AND it matches a trigger in "When you do NOT need to ask Anmol" below.
+- If unsure whether a human owns it, default to standing down and (if warranted) `<ask-anmol>` rather than racing.
+
 ## When you do NOT need to ask Anmol
 
 **Anmol has pre-authorized the following — work directly, do not "loop Anmol" or wait:**
@@ -54,11 +63,24 @@ Triggers for this routing:
 - A question the *thread* itself needs answered (e.g. UD asks "what was the root cause?" — reply in-thread).
 - Reporting tooling problems with a workaround already in motion — log to the dispatch log, keep working.
 
-## Available repos (LOCAL — never clone)
+## How you execute: DISPATCH, never inline
 
-All product repos live under `/Users/anmol/Documents/GitHub/`. Pick the right one:
+**You are the orchestrator. You do NOT investigate, edit, or fix in your own turn.** The actual work — grep, read, trace, reproduce, fix, typecheck, commit, PR — is done by a sub-Claude you dispatch via `bin/dispatch-claude.sh`, which runs in an **isolated per-thread worktree** ([[feedback_dispatch_default]], CLAUDE.md rule #5). Doing the investigation in your own session (the `Read`/`Bash`/`grep`/`mongodb` spree seen on 2026-06-04) is the mistake this skill exists to prevent.
 
-!`ls -1 /Users/anmol/Documents/GitHub/ | grep -E '^(gx-|GrowthX-)' | sed 's|^|/Users/anmol/Documents/GitHub/|'`
+Your job is steps 1–2 (read the bug, classify/route — read-only, light) and then **compose one self-contained dispatch prompt** that tells the sub-Claude to run steps 3–10. Then dispatch and stop.
+
+```bash
+bin/dispatch-claude.sh /Users/anmol/Documents/GitHub/friday-workspace/<repo> < /tmp/friday-bug-<slug>.md
+```
+- **cwd = the repo CLONE ROOT under `friday-workspace/`** (e.g. `.../friday-workspace/gx-backend`). `dispatch-claude.sh` auto-isolates it into a fresh per-thread worktree off origin/main (env + node_modules ready). **NEVER** pass `/Users/anmol/Documents/GitHub/<repo>` — those are Anmol's personal checkouts and are off-limits (rule #5 / `assertInsideWorktreeDir`).
+- In the dispatch PROMPT, do NOT tell the sub-Claude to `git checkout main` / `git pull` — it's already in a clean worktree off origin/main; just `git checkout -b fix/<slug>` ([[repos/_workflow.md]]).
+- The dispatch-followup Stop hook posts the PR links back to the thread automatically (TUI and headless-fallback paths both).
+
+## Available repos (Friday's workspace clones — never clone, never personal checkouts)
+
+The clone roots you dispatch against live under `/Users/anmol/Documents/GitHub/friday-workspace/`. Pick the right one:
+
+!`ls -1 /Users/anmol/Documents/GitHub/friday-workspace/ | grep -E '^(gx-|GrowthX-|Built-)' | sed 's|^|/Users/anmol/Documents/GitHub/friday-workspace/|'`
 
 Typical mapping (verify by reading the bug, never assume):
 - **gx-admin-client** — admin panel / internal tools UI
@@ -119,21 +141,21 @@ When the repo has a `/raise-pr` command, prefer it over hand-rolling the PR via 
 
    State your routing reasoning in ONE sentence before moving on.
 
-3. **Check for prior work**
+> **Steps 1–2 are YOURS** (read the bug, classify/route — read-only, in your turn).
+> **Steps 3–10 are the DISPATCH PROMPT's content** — write them as instructions for the sub-Claude and pass via `bin/dispatch-claude.sh <clone-root> < /tmp/friday-bug-<slug>.md`. Do NOT run steps 3–10 yourself.
+
+3. **Check for prior work** (dispatched Claude, inside its worktree)
    ```bash
-   cd /Users/anmol/Documents/GitHub/<repo>
    git fetch origin --prune
    git branch -a | grep -iE 'fix/.*<keyword>'
-   git status
    ```
-   If a `fix/` branch already exists for this bug (local or remote) or the working tree has uncommitted changes related to it, **resume that branch** instead of starting a new one. Never silently discard in-progress work.
+   If a `fix/` branch already exists for this bug (local or remote), **resume that branch** (`git checkout <branch>`) instead of starting a new one. Never silently discard in-progress work. (Don't `git status` for a "dirty tree" check — the worktree is freshly cut and clean.)
 
 4. **Fresh branch (only if no prior work)**
    ```bash
-   cd /Users/anmol/Documents/GitHub/<repo>
-   git checkout main && git pull origin main
    git checkout -b fix/<short-kebab-slug>
    ```
+   Do NOT `git checkout main` / `git pull` — the worktree is already a clean branch cut from origin/main; switching to `main` fails (it's checked out in the clone root). See [[repos/_workflow.md]].
 
 5. **Investigate — escalation ladder. Don't bail on grep alone.**
 
@@ -179,8 +201,10 @@ When the repo has a `/raise-pr` command, prefer it over hand-rolling the PR via 
 
 ## Rules
 
-- Repos are LOCAL. NEVER clone. Use `/Users/anmol/Documents/GitHub/<repo>`.
-- Always branch from `main`, fresh from `origin/main`.
+- **Dispatch, never inline.** You orchestrate (read bug, route, compose prompt, dispatch); the sub-Claude does all investigation + fixing in its worktree. If you catch yourself running `grep`/`Read`/`Edit`/`mongodb` on a target repo to "just check," STOP and dispatch.
+- **Stand down if a human already claimed the bug** (see "STOP FIRST" above). Don't race the tagged owner or Anmol.
+- Dispatch against the **`friday-workspace/<repo>` clone root** — `dispatch-claude.sh` auto-isolates it into a worktree. NEVER Anmol's personal `/Users/anmol/Documents/GitHub/<repo>` checkouts, and NEVER clone.
+- The worktree is already a fresh branch off origin/main — the dispatched Claude just `git checkout -b fix/<slug>`; it must NOT `git checkout main` / `git pull`.
 - TWO PRs per fix: one targeting `dev`, one targeting `main`. No exceptions.
 - If you can't reproduce or locate the bug after a real investigation, say so in the Slack thread with what you tried — don't guess-fix.
 - Never bypass hooks (`--no-verify`), never force-push, never amend pushed commits.

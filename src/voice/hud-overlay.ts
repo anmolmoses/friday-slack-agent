@@ -35,10 +35,30 @@ async function ensureBinary(): Promise<boolean> {
   }
 }
 
+function stopExistingOverlays(): void {
+  const proc = Bun.spawnSync(["/usr/bin/pgrep", "-f", BIN], {
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const pids = new TextDecoder()
+    .decode(proc.stdout)
+    .split(/\s+/)
+    .map((pid) => Number(pid))
+    .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      /* stale process */
+    }
+  }
+}
+
 /** Build (if needed) and launch the overlay pointed at the HUD url. Null on failure. */
 export async function spawnOverlay(url: string): Promise<Subprocess | null> {
   if (!(await ensureBinary())) return null;
   try {
+    stopExistingOverlays();
     // argv[2] = path to the friday-voice shim; the overlay's ⌃⌥F hotkey runs it.
     const proc = Bun.spawn([BIN, url, TOGGLE_CMD], { stdout: "ignore", stderr: "ignore" });
     log("overlay launched");

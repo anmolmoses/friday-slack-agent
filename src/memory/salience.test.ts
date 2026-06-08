@@ -1,5 +1,10 @@
 import { describe, it, expect } from "bun:test";
-import { isSalient, detectExplicitRemember, DEFAULT_SALIENCE } from "./salience.ts";
+import {
+  isSalient,
+  detectExplicitRemember,
+  detectStablePreference,
+  DEFAULT_SALIENCE,
+} from "./salience.ts";
 
 const base = { emotionIntensity: 0, importance: 0, tier: "episodic", explicit: false };
 
@@ -20,6 +25,21 @@ describe("detectExplicitRemember", () => {
   it("does not fire on ordinary chatter", () => {
     expect(detectExplicitRemember("how's the build going?")).toBe(false);
     expect(detectExplicitRemember("")).toBe(false);
+  });
+});
+
+describe("detectStablePreference", () => {
+  it("catches durable favorites and preferences", () => {
+    expect(detectStablePreference("My favorite song is Numb by Linkin Park.")).toBe(true);
+    expect(detectStablePreference("Numb by Linkin Park is my favorite song.")).toBe(true);
+    expect(detectStablePreference("I prefer Bun for JavaScript scripts.")).toBe(true);
+    expect(detectStablePreference("My preferred browser is Chrome.")).toBe(true);
+  });
+
+  it("does not fire on vague ordinary chatter", () => {
+    expect(detectStablePreference("I like this.")).toBe(false);
+    expect(detectStablePreference("That song is good.")).toBe(false);
+    expect(detectStablePreference("")).toBe(false);
   });
 });
 

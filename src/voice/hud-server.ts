@@ -31,15 +31,25 @@ export class HudServer {
     this.port = port;
   }
 
-  start(): void {
-    if (this.server) return;
-    this.server = Bun.serve({
-      port: this.port,
-      hostname: "127.0.0.1",
-      idleTimeout: 0,
-      fetch: (req) => this.handle(req),
-    });
-    console.log(`[voice:hud] serving on http://127.0.0.1:${this.port}`);
+  start(): boolean {
+    if (this.server) return true;
+    try {
+      this.server = Bun.serve({
+        port: this.port,
+        hostname: "127.0.0.1",
+        idleTimeout: 0,
+        fetch: (req) => this.handle(req),
+      });
+      console.log(`[voice:hud] serving on http://127.0.0.1:${this.port}`);
+      return true;
+    } catch (err) {
+      this.server = null;
+      const message = err instanceof Error ? err.message : String(err);
+      console.log(
+        `[voice:hud] disabled: could not bind http://127.0.0.1:${this.port} (${message})`,
+      );
+      return false;
+    }
   }
 
   stop(): void {

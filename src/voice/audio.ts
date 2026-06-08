@@ -191,6 +191,8 @@ export class Player {
   private rate: number;
   private prebufferMs: number;
   private prebufferBytes: number;
+  private backend: "auto" | "native" | "ffplay";
+  private gain: number;
   private queue: Buffer[] = [];
   private queuedBytes = 0;
   private started = false;
@@ -198,10 +200,24 @@ export class Player {
   private finishTimer: ReturnType<typeof setTimeout> | null = null;
   private playbackStartedAt = 0;
   private writtenMs = 0;
+  private writtenBytes = 0;
+  private writtenChunks = 0;
+  private activeBackend = "";
+  private closing = false;
+  private onIdle?: () => void;
 
-  constructor(rate: number, prebufferMs = 350) {
+  constructor(
+    rate: number,
+    prebufferMs = 350,
+    backend: "auto" | "native" | "ffplay" = "auto",
+    gain = 1,
+    onIdle?: () => void,
+  ) {
     this.rate = rate;
     this.prebufferMs = prebufferMs;
+    this.backend = backend;
+    this.gain = Number.isFinite(gain) ? Math.max(0.05, Math.min(2, gain)) : 1;
+    this.onIdle = onIdle;
     this.prebufferBytes = Math.max(
       1,
       Math.round((rate * 2 * prebufferMs) / 1000),
@@ -209,7 +225,10 @@ export class Player {
   }
 
   private spawn(): void {
-    const nativePlayer = ensureNativePlayer();
+    const nativePlayer =
+      this.backend === "ffplay" ? null : ensureNativePlayer();
+    if (this.backend === "native" && !nativePlayer)
+      log("native player requested but unavailable; falling back to ffplay");
     const args = nativePlayer
       ? [nativePlayer, String(this.rate)]
       : [
@@ -228,16 +247,31 @@ export class Player {
           "-i",
           "-",
         ];
+    this.activeBackend = nativePlayer ? "native" : "ffplay";
+    log(`player spawn: ${this.activeBackend} rate=${this.rate}`);
+    this.closing = false;
     this.proc = Bun.spawn(args, {
       stdin: "pipe",
       stdout: "ignore",
       stderr: "pipe",
     });
     const proc = this.proc;
+    const backend = this.activeBackend;
     void this.drainStderr(proc);
     void proc.exited
-      .then(() => {
-        if (this.proc === proc) this.proc = null;
+      .then((code) => {
+        log(`player exit: ${backend || "unknown"} code=${code}`);
+        if (this.proc === proc) {
+          this.proc = null;
+          this.started = false;
+          this.closing = false;
+          this.playbackStartedAt = 0;
+          this.writtenMs = 0;
+          this.writtenBytes = 0;
+          this.writtenChunks = 0;
+          this.activeBackend = "";
+          this.onIdle?.();
+        }
       })
       .catch(() => {});
   }
@@ -248,23 +282,42 @@ export class Player {
     try {
       const err = await new Response(proc.stderr).text();
       const t = err.trim();
-      if (t) log("ffplay:", t.slice(0, 400));
+      if (t) log(`${this.activeBackend || "player"}:`, t.slice(0, 400));
     } catch {
       /* ignore */
     }
   }
 
   private writeNow(pcm: Buffer): void {
+    if (this.closing) {
+      try {
+        this.proc?.kill();
+      } catch {
+        /* ignore */
+      }
+      this.proc = null;
+      this.started = false;
+      this.closing = false;
+      this.playbackStartedAt = 0;
+      this.writtenMs = 0;
+      this.writtenBytes = 0;
+      this.writtenChunks = 0;
+    }
     if (!this.proc) this.spawn();
     if (!this.playbackStartedAt) this.playbackStartedAt = Date.now();
     this.writtenMs += Math.ceil((pcm.byteLength / (this.rate * 2)) * 1000);
+    this.writtenBytes += pcm.byteLength;
+    this.writtenChunks++;
+    const output = this.gain === 1 ? pcm : Buffer.from(pcm);
+    if (this.gain !== 1) amplify16(output, this.gain);
     try {
-      this.proc!.stdin.write(pcm);
+      this.proc!.stdin.write(output);
       this.proc!.stdin.flush();
     } catch {
+      log("player write failed; respawning");
       this.spawn();
       try {
-        this.proc!.stdin.write(pcm);
+        this.proc!.stdin.write(output);
         this.proc!.stdin.flush();
       } catch {
         /* drop */
@@ -311,6 +364,8 @@ export class Player {
   beginResponse(): void {
     this.playbackStartedAt = 0;
     this.writtenMs = 0;
+    this.writtenBytes = 0;
+    this.writtenChunks = 0;
   }
 
   /** Approximate how much assistant audio actually reached the speakers. */
@@ -327,15 +382,24 @@ export class Player {
     if (this.finishTimer) clearTimeout(this.finishTimer);
     this.finishTimer = setTimeout(() => {
       this.startQueued();
+      const hadProc = Boolean(this.proc);
       try {
+        log(
+          `player finish: backend=${this.activeBackend || "unknown"} chunks=${this.writtenChunks} bytes=${this.writtenBytes} ms=${this.writtenMs}`,
+        );
         this.proc?.stdin.end();
       } catch {
         /* ignore */
       }
-      this.proc = null;
-      this.started = false;
-      this.playbackStartedAt = 0;
-      this.writtenMs = 0;
+      this.closing = hadProc;
+      if (!hadProc) {
+        this.started = false;
+        this.playbackStartedAt = 0;
+        this.writtenMs = 0;
+        this.writtenBytes = 0;
+        this.writtenChunks = 0;
+        this.onIdle?.();
+      }
       this.finishTimer = null;
     }, delayMs);
   }
@@ -353,8 +417,11 @@ export class Player {
     this.queue = [];
     this.queuedBytes = 0;
     this.started = false;
+    this.closing = false;
     this.playbackStartedAt = 0;
     this.writtenMs = 0;
+    this.writtenBytes = 0;
+    this.writtenChunks = 0;
     try {
       this.proc?.stdin.end();
     } catch {

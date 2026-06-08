@@ -13,6 +13,25 @@ import type { RealtimeTool } from "./tools.ts";
 
 const log = (...a: unknown[]) => console.log("[voice:rt]", ...a);
 
+type OutputTokenCap = number | "inf" | null;
+const PRE_READY_AUDIO_BUFFER_MS = 4000;
+type RealtimeOutputModality = "audio" | "text";
+
+export type RealtimeToolChoice =
+  | "auto"
+  | "none"
+  | "required"
+  | { type: "function"; name: string }
+  | { type: "mcp"; server_label: string; name?: string };
+
+export interface ResponseOptions {
+  instructions?: string;
+  queueIfActive?: boolean;
+  maxOutputTokens?: OutputTokenCap;
+  toolChoice?: RealtimeToolChoice;
+  outputModalities?: RealtimeOutputModality[];
+}
+
 function imageMime(file: string): string {
   const ext = path.extname(file).toLowerCase();
   if (ext === ".png") return "image/png";
@@ -25,21 +44,27 @@ const EVT = {
   // client → server
   sessionUpdate: "session.update",
   audioAppend: "input_audio_buffer.append",
-  itemCreate: "conversation.item.create",
-  itemTruncate: "conversation.item.truncate",
-  responseCreate: "response.create",
-  responseCancel: "response.cancel",
+  audioCommit: "input_audio_buffer.commit",
+    itemCreate: "conversation.item.create",
+    itemTruncate: "conversation.item.truncate",
+    audioClear: "input_audio_buffer.clear",
+    responseCreate: "response.create",
+    responseCancel: "response.cancel",
   // server → client (audio out — accept both GA + legacy)
   audioDelta: ["response.output_audio.delta", "response.audio.delta"],
   audioTranscriptDone: [
     "response.output_audio_transcript.done",
     "response.audio_transcript.done",
   ],
+  textDelta: ["response.output_text.delta", "response.text.delta"],
+  textDone: ["response.output_text.done", "response.text.done"],
   outputItemAdded: "response.output_item.added",
   responseCreated: "response.created",
   speechStarted: "input_audio_buffer.speech_started",
   speechStopped: "input_audio_buffer.speech_stopped",
+  audioCommitted: "input_audio_buffer.committed",
   fnArgsDone: "response.function_call_arguments.done",
+  transcriptDelta: "conversation.item.input_audio_transcription.delta",
   transcriptDone: "conversation.item.input_audio_transcription.completed",
   responseDone: "response.done",
   error: "error",
@@ -52,15 +77,28 @@ export interface RealtimeCallbacks {
   ) => void;
   onSpeechStarted: () => void;
   onSpeechStopped?: () => void;
-  onResponseDone?: () => void;
+  onInputCommitted?: () => void;
+  onResponseDone?: (meta: {
+    audioChunks: number;
+    expectedAudio: boolean;
+  }) => void;
   onResponseCreated?: () => void;
   onFunctionCall: (call: {
     callId: string;
     name: string;
     args: Record<string, unknown>;
   }) => void;
+  onFunctionCallStarted?: (call: {
+    itemId?: string;
+    name?: string;
+    responseId?: string;
+  }) => void;
   onUserTranscript?: (text: string) => void;
+  onUserTranscriptDelta?: (delta: string) => void;
+  onUserTranscriptCompleted?: (text: string) => void;
   onAssistantTranscript?: (text: string) => void;
+  onAssistantText?: (text: string) => void;
+  onError?: (error: unknown) => void;
   onOpen?: () => void;
   onClose?: () => void;
 }
@@ -72,10 +110,28 @@ export class RealtimeClient {
   private cb: RealtimeCallbacks;
   private ws: WebSocket | null = null;
   private audioDeltas = 0;
+  private textDeltas = "";
   private sent = 0;
   private currentAssistantItemId: string | null = null;
   private responseActive = false;
-  private queuedResponseInstructions: string | undefined | null = null;
+  private sessionReady = false;
+  private queuedResponse:
+    | {
+        instructions?: string;
+        maxOutputTokens: OutputTokenCap;
+        toolChoice?: RealtimeToolChoice;
+        outputModalities?: RealtimeOutputModality[];
+      }
+    | undefined = undefined;
+  private droppedAudioBeforeReady = 0;
+  private pendingInputAudioMs = 0;
+  private preReadyAudio: Array<{ audio: string; durationMs: number }> = [];
+  private preReadyAudioMs = 0;
+  private preReadyCommit = false;
+  private activeResponseExpectedAudio = false;
+  private activeResponseHadFunctionCall = false;
+  private activeResponseAssistantItemId: string | null = null;
+  private suppressedAssistantItemIds = new Set<string>();
 
   constructor(
     cfg: VoiceConfig,
@@ -91,6 +147,10 @@ export class RealtimeClient {
 
   get connected(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  get ready(): boolean {
+    return this.connected && this.sessionReady;
   }
 
   connect(): void {
@@ -113,6 +173,10 @@ export class RealtimeClient {
     this.ws.addEventListener("close", (e) => {
       log(`closed (${(e as CloseEvent).code})`);
       this.ws = null;
+      this.sessionReady = false;
+      this.preReadyAudio = [];
+      this.preReadyAudioMs = 0;
+      this.preReadyCommit = false;
       this.cb.onClose?.();
     });
   }
@@ -125,7 +189,15 @@ export class RealtimeClient {
     }
     this.ws = null;
     this.responseActive = false;
-    this.queuedResponseInstructions = undefined;
+    this.sessionReady = false;
+    this.queuedResponse = undefined;
+    this.activeResponseExpectedAudio = false;
+    this.activeResponseHadFunctionCall = false;
+    this.activeResponseAssistantItemId = null;
+    this.suppressedAssistantItemIds.clear();
+    this.preReadyAudio = [];
+    this.preReadyAudioMs = 0;
+    this.preReadyCommit = false;
   }
 
   private send(obj: unknown): void {
@@ -161,17 +233,19 @@ export class RealtimeClient {
             format: fmt,
             noise_reduction: inputNoiseReduction,
             transcription: inputTranscription,
-            // Lower threshold (built-in mic is quiet even with gain); trailing
-            // silence ends the turn. In background-transcription mode Realtime
-            // starts speaking immediately while final transcripts feed Engram.
-            turn_detection: {
-              type: this.cfg.vad,
-              threshold: this.cfg.vadThreshold,
-              prefix_padding_ms: 300,
-              silence_duration_ms: this.cfg.vadSilenceMs,
-              create_response: this.cfg.backgroundTranscription,
-              interrupt_response: false,
-            },
+            // When the local RMS gate is enabled, the daemon owns endpointing and
+            // commits the audio buffer manually. Keeping server VAD active here can
+            // race with session.update and produce empty-buffer commits.
+            turn_detection: this.cfg.localVadEnabled
+              ? null
+              : {
+                  type: this.cfg.vad,
+                  threshold: this.cfg.vadThreshold,
+                  prefix_padding_ms: 300,
+                  silence_duration_ms: this.cfg.vadSilenceMs,
+                  create_response: false,
+                  interrupt_response: false,
+                },
           },
           output: { format: fmt, voice: this.cfg.voice },
         },
@@ -187,12 +261,15 @@ export class RealtimeClient {
     if (this.connected) this.sendSessionUpdate();
   }
 
-  /** Stream a base64 PCM chunk from the mic. With server VAD, no manual commit. */
-  appendAudio(base64: string): void {
-    if (!this.connected) {
+  /** Stream a base64 PCM chunk from the mic. */
+  appendAudio(base64: string, durationMs?: number): void {
+    const estimatedMs = durationMs ?? this.estimatePcmDurationMs(base64);
+    if (!this.sessionReady) {
+      this.queuePreReadyAudio(base64, estimatedMs);
       return;
     }
     this.send({ type: EVT.audioAppend, audio: base64 });
+    this.pendingInputAudioMs += estimatedMs;
     this.sent++;
     if (this.sent % 100 === 0)
       log(
@@ -200,17 +277,100 @@ export class RealtimeClient {
       );
   }
 
+  /** Manually close the current input audio turn after local endpointing. */
+  commitAudio(): boolean {
+    if (!this.ready) {
+      if (this.preReadyAudioMs < 120) return false;
+      this.preReadyCommit = true;
+      log(
+        `queued input commit until configured session.updated is accepted (${Math.round(this.preReadyAudioMs)}ms buffered)`,
+      );
+      return true;
+    }
+    if (this.pendingInputAudioMs < 120) {
+      log(
+        `skipping input commit: only ${Math.round(this.pendingInputAudioMs)}ms buffered`,
+      );
+      this.clearAudio();
+      return false;
+    }
+    this.send({ type: EVT.audioCommit });
+    this.pendingInputAudioMs = 0;
+    return true;
+  }
+
+  clearAudio(): void {
+    this.preReadyAudio = [];
+    this.preReadyAudioMs = 0;
+    this.preReadyCommit = false;
+    if (!this.ready) return;
+    this.send({ type: EVT.audioClear });
+    this.pendingInputAudioMs = 0;
+  }
+
+  private queuePreReadyAudio(audio: string, durationMs: number): void {
+    this.preReadyAudio.push({ audio, durationMs });
+    this.preReadyAudioMs += durationMs;
+    this.droppedAudioBeforeReady++;
+    let droppedMs = 0;
+    while (
+      this.preReadyAudioMs > PRE_READY_AUDIO_BUFFER_MS &&
+      this.preReadyAudio.length > 1
+    ) {
+      const dropped = this.preReadyAudio.shift()!;
+      this.preReadyAudioMs -= dropped.durationMs;
+      droppedMs += dropped.durationMs;
+    }
+    if (this.droppedAudioBeforeReady % 50 === 1) {
+      log(
+        `buffering mic audio until configured session.updated is accepted (${Math.round(this.preReadyAudioMs)}ms buffered${droppedMs > 0 ? `, dropped oldest ${Math.round(droppedMs)}ms` : ""})`,
+      );
+    }
+  }
+
+  private flushPreReadyAudio(): void {
+    if (this.preReadyAudio.length === 0) return;
+    const queued = this.preReadyAudio;
+    const queuedMs = this.preReadyAudioMs;
+    const commit = this.preReadyCommit;
+    this.preReadyAudio = [];
+    this.preReadyAudioMs = 0;
+    this.preReadyCommit = false;
+    log(
+      `flushing ${queued.length} buffered mic chunks after session.updated (${Math.round(queuedMs)}ms${commit ? ", commit queued" : ""})`,
+    );
+    for (const chunk of queued) {
+      this.send({ type: EVT.audioAppend, audio: chunk.audio });
+      this.pendingInputAudioMs += chunk.durationMs;
+      this.sent++;
+    }
+    if (commit && this.pendingInputAudioMs >= 120) {
+      this.send({ type: EVT.audioCommit });
+      this.pendingInputAudioMs = 0;
+    }
+  }
+
   /** Return a tool result, then ask the model to continue (speak the outcome). */
   sendFunctionResult(
     callId: string,
     output: string,
     createResponse = true,
+    responseOpts: ResponseOptions = {},
   ): void {
     this.send({
       type: EVT.itemCreate,
       item: { type: "function_call_output", call_id: callId, output },
     });
-    if (createResponse) this.createResponse();
+    if (createResponse)
+      this.createResponse(responseOpts.instructions, {
+        queueIfActive: true,
+        maxOutputTokens:
+          responseOpts.maxOutputTokens === undefined
+            ? this.cfg.maxOutputTokens
+            : responseOpts.maxOutputTokens,
+        toolChoice: responseOpts.toolChoice,
+        outputModalities: responseOpts.outputModalities,
+      });
   }
 
   /** Attach a local image file as a user input item in the Realtime conversation. */
@@ -231,32 +391,75 @@ export class RealtimeClient {
   }
 
   /** Ask the model to respond, optionally with per-turn memory context. */
-  createResponse(instructions?: string): void {
+  createResponse(
+    instructions?: string,
+    opts: ResponseOptions = {},
+  ): void {
+    const maxOutputTokens =
+      opts.maxOutputTokens === undefined
+        ? this.cfg.maxOutputTokens
+        : opts.maxOutputTokens;
     if (!this.connected) return;
+    if (!this.sessionReady) {
+      this.queuedResponse = {
+        instructions,
+        maxOutputTokens,
+        toolChoice: opts.toolChoice,
+        outputModalities: opts.outputModalities,
+      };
+      log("queued response.create until configured session.updated is accepted");
+      return;
+    }
     if (this.responseActive) {
-      this.queuedResponseInstructions = instructions ?? null;
+      if (!opts.queueIfActive) {
+        log("ignored duplicate response.create while another response is active");
+        return;
+      }
+      this.queuedResponse = {
+        instructions,
+        maxOutputTokens,
+        toolChoice: opts.toolChoice,
+        outputModalities: opts.outputModalities,
+      };
       log("queued response.create while another response is active");
       return;
     }
     this.responseActive = true;
+    this.activeResponseExpectedAudio = this.responseExpectsAudio(opts);
+    this.activeResponseHadFunctionCall = false;
+    log(
+      `sending response.create (instructions=${instructions ? `${instructions.length} chars` : "session"}, max=${maxOutputTokens ?? "uncapped"}, modalities=${JSON.stringify(opts.outputModalities ?? ["audio"])}, toolChoice=${opts.toolChoice ? JSON.stringify(opts.toolChoice) : "session"}, queueIfActive=${Boolean(opts.queueIfActive)})`,
+    );
+    const response = {
+      output_modalities: opts.outputModalities ?? ["audio"],
+      ...(maxOutputTokens == null ? {} : { max_output_tokens: maxOutputTokens }),
+      ...(instructions ? { instructions } : {}),
+      ...(opts.toolChoice ? { tool_choice: opts.toolChoice } : {}),
+    };
     this.send({
       type: EVT.responseCreate,
-      response: instructions
-        ? { output_modalities: ["audio"], instructions }
-        : { output_modalities: ["audio"] },
+      response,
     });
   }
 
-  private flushQueuedResponse(): void {
-    if (this.queuedResponseInstructions === undefined || this.responseActive)
-      return;
-    const instructions = this.queuedResponseInstructions ?? undefined;
-    this.queuedResponseInstructions = undefined;
-    this.createResponse(instructions);
+  private responseExpectsAudio(opts: ResponseOptions): boolean {
+    const modalities = opts.outputModalities ?? ["audio"];
+    return modalities.includes("audio");
   }
 
-  /** One-shot text prompt, useful for testing output audio without the mic. */
-  sendText(text: string): void {
+  private flushQueuedResponse(): void {
+    if (!this.queuedResponse || this.responseActive) return;
+    const queued = this.queuedResponse;
+    this.queuedResponse = undefined;
+    this.createResponse(queued.instructions, {
+      maxOutputTokens: queued.maxOutputTokens,
+      toolChoice: queued.toolChoice,
+      outputModalities: queued.outputModalities,
+    });
+  }
+
+  /** Add a text user item to the conversation without starting a response. */
+  addUserText(text: string): void {
     this.send({
       type: EVT.itemCreate,
       item: {
@@ -265,7 +468,15 @@ export class RealtimeClient {
         content: [{ type: "input_text", text }],
       },
     });
-    this.createResponse();
+  }
+
+  /** One-shot text prompt, useful for testing output audio without the mic. */
+  sendText(
+    text: string,
+    opts: ResponseOptions = {},
+  ): void {
+    this.addUserText(text);
+    this.createResponse(opts.instructions, opts);
   }
 
   /** Stop the in-flight spoken response. */
@@ -287,6 +498,12 @@ export class RealtimeClient {
     });
   }
 
+  private estimatePcmDurationMs(base64: string): number {
+    const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+    const bytes = Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
+    return Math.ceil((bytes / (this.cfg.sampleRate * 2)) * 1000);
+  }
+
   private onMessage(e: MessageEvent): void {
     let msg: Record<string, unknown>;
     try {
@@ -304,6 +521,14 @@ export class RealtimeClient {
           : (this.currentAssistantItemId ?? undefined);
       const contentIndex =
         typeof msg.content_index === "number" ? msg.content_index : 0;
+      if (
+        (itemId && this.suppressedAssistantItemIds.has(itemId)) ||
+        (!itemId &&
+          this.currentAssistantItemId &&
+          this.suppressedAssistantItemIds.has(this.currentAssistantItemId))
+      ) {
+        return;
+      }
       if (b64) {
         this.audioDeltas++;
         this.cb.onAudioDelta(Buffer.from(b64, "base64"), {
@@ -317,8 +542,28 @@ export class RealtimeClient {
     }
 
     if ((EVT.audioTranscriptDone as readonly string[]).includes(type)) {
+      const itemId =
+        typeof msg.item_id === "string"
+          ? msg.item_id
+          : this.currentAssistantItemId;
+      if (itemId && this.suppressedAssistantItemIds.has(itemId)) return;
       if (msg.transcript)
         this.cb.onAssistantTranscript?.(String(msg.transcript));
+      return;
+    }
+
+    if ((EVT.textDelta as readonly string[]).includes(type)) {
+      if (typeof msg.delta === "string") this.textDeltas += msg.delta;
+      return;
+    }
+
+    if ((EVT.textDone as readonly string[]).includes(type)) {
+      const text =
+        (typeof msg.text === "string" && msg.text) ||
+        (typeof msg.delta === "string" && msg.delta) ||
+        this.textDeltas;
+      this.textDeltas = "";
+      if (text.trim()) this.cb.onAssistantText?.(text);
       return;
     }
 
@@ -332,16 +577,40 @@ export class RealtimeClient {
     switch (type) {
       case EVT.outputItemAdded: {
         const item = msg.item as
-          | { id?: unknown; type?: unknown; role?: unknown }
+          | { id?: unknown; type?: unknown; role?: unknown; name?: unknown }
           | undefined;
         if (item?.role === "assistant" && typeof item.id === "string") {
+          if (!this.activeResponseAssistantItemId) {
+            this.activeResponseAssistantItemId = item.id;
+          } else if (item.id !== this.activeResponseAssistantItemId) {
+            this.suppressedAssistantItemIds.add(item.id);
+            log(`suppressing extra assistant audio item ${item.id}`);
+          }
           this.currentAssistantItemId = item.id;
+        }
+        if (item?.type === "function_call") {
+          this.activeResponseHadFunctionCall = true;
+          this.cb.onFunctionCallStarted?.({
+            itemId: typeof item.id === "string" ? item.id : undefined,
+            name: typeof item.name === "string" ? item.name : undefined,
+            responseId:
+              typeof msg.response_id === "string" ? msg.response_id : undefined,
+          });
         }
         break;
       }
       case EVT.responseCreated:
         this.responseActive = true;
+        this.activeResponseAssistantItemId = null;
+        this.suppressedAssistantItemIds.clear();
+        this.textDeltas = "";
         this.cb.onResponseCreated?.();
+        break;
+      case "session.updated":
+        this.sessionReady = true;
+        this.droppedAudioBeforeReady = 0;
+        this.flushPreReadyAudio();
+        this.flushQueuedResponse();
         break;
       case EVT.speechStarted:
         this.cb.onSpeechStarted();
@@ -349,12 +618,24 @@ export class RealtimeClient {
       case EVT.speechStopped:
         this.cb.onSpeechStopped?.();
         break;
+      case EVT.audioCommitted:
+        this.pendingInputAudioMs = 0;
+        this.cb.onInputCommitted?.();
+        break;
       case EVT.responseDone:
-        log(`response done (${this.audioDeltas} audio chunks sent to speaker)`);
+        const audioChunks = this.audioDeltas;
+        const expectedAudio =
+          this.activeResponseExpectedAudio && !this.activeResponseHadFunctionCall;
+        log(`response done (${audioChunks} audio chunks sent to speaker)`);
         this.audioDeltas = 0;
+        this.textDeltas = "";
+        this.activeResponseExpectedAudio = false;
+        this.activeResponseHadFunctionCall = false;
+        this.activeResponseAssistantItemId = null;
+        this.suppressedAssistantItemIds.clear();
         this.currentAssistantItemId = null;
         this.responseActive = false;
-        this.cb.onResponseDone?.();
+        this.cb.onResponseDone?.({ audioChunks, expectedAudio });
         this.flushQueuedResponse();
         break;
       case EVT.fnArgsDone: {
@@ -371,11 +652,17 @@ export class RealtimeClient {
         });
         break;
       }
+      case EVT.transcriptDelta:
+        if (msg.delta) this.cb.onUserTranscriptDelta?.(String(msg.delta));
+        break;
       case EVT.transcriptDone:
         if (msg.transcript) this.cb.onUserTranscript?.(String(msg.transcript));
+        this.cb.onUserTranscriptCompleted?.(String(msg.transcript ?? ""));
         break;
       case EVT.error:
         log("server error:", JSON.stringify(msg.error ?? msg));
+        this.pendingInputAudioMs = 0;
+        this.cb.onError?.(msg.error ?? msg);
         break;
       default:
         // ignore the many lifecycle events we don't act on

@@ -1,6 +1,6 @@
 // Daemon pid + state files under /tmp/friday-voice. The CLI (`toggle`/`stop`/
 // `status`) talks to a running daemon purely through these files + signals —
-// no socket, no port. Keeps the toggle path dead simple for skhd to call.
+// no socket, no port. Keeps the toggle path dead simple for the HUD hotkey.
 
 import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -15,16 +15,44 @@ export interface DaemonState {
   noiseReduction?: string;
   transcriptionModel?: string;
   backgroundTranscription?: boolean;
+  localVadEnabled?: boolean;
+  localVadMinLevel?: number;
+  audioPlayer?: string;
+  maxOutputTokens?: number | "inf";
+  shortReplyTokens?: number | "inf";
+  maxToolCallTokens?: number | "inf";
+  toolAudioHoldMs?: number;
+  playbackGain?: number;
+  toolLocalAckEnabled?: boolean;
+  toolLocalAckText?: string;
+  toolLocalAckModel?: string;
+  toolProgressAckEnabled?: boolean;
+  toolProgressAckText?: string;
+  toolProgressAckAfterMs?: number;
+  actionClassifyWaitMs?: number;
+  toolLoopMaxCalls?: number;
+  toolLoopMaxMs?: number;
+  runShellFastWaitMs?: number;
+  webFetchTimeoutMs?: number;
+  browserScreenshotTimeoutMs?: number;
+  dispatchLaunchTimeoutMs?: number;
+  autoIdleAfterTurn?: boolean;
   cameraEnabled?: boolean;
   cameraIndex?: string;
   cameraWarmupMs?: number;
   cameraAutoRecognize?: boolean;
   cameraAutoIntervalMs?: number;
   speakerRecognitionEnabled?: boolean;
+  speakerProactiveIdentify?: boolean;
   interruptMinLevel?: number;
   interruptFrames?: number;
   micPeakLevel?: number;
+  micLastSignalAt?: number;
+  micObservedAt?: number;
+  micChunkCount?: number;
   lastLatency?: VoiceLatencyState;
+  lastAction?: VoiceActionState;
+  lastProbe?: VoiceProbeState;
   lastVision?: VoiceVisionState;
   lastSpeaker?: VoiceSpeakerState;
   startedAt: number;
@@ -41,6 +69,35 @@ export interface VoiceLatencyState {
   stopToFirstAudioMs?: number;
   stopToDoneMs?: number;
   firstAudioToDoneMs?: number;
+}
+
+export interface VoiceActionState {
+  at: number;
+  tool: string;
+  direct?: boolean;
+  ms?: number;
+  toolCallCount?: number;
+  summary: string;
+  backgroundJobId?: string;
+}
+
+export interface VoiceInjectRequest {
+  id: string;
+  text: string;
+  at: number;
+}
+
+export interface VoiceProbeState {
+  id: string;
+  text: string;
+  at: number;
+  status: "queued" | "running" | "done" | "rejected" | "error";
+  turnStartMs?: number;
+  firstAudioMs?: number;
+  doneMs?: number;
+  responseCount?: number;
+  transcript?: string;
+  message?: string;
 }
 
 export interface VoiceVisionState {
@@ -63,7 +120,10 @@ export interface VoiceSpeakerState {
 const STATE_DIR = "/tmp/friday-voice";
 const PID_FILE = path.join(STATE_DIR, "daemon.pid");
 const STATE_FILE = path.join(STATE_DIR, "state.json");
+const INJECT_FILE = path.join(STATE_DIR, "inject.json");
 export const LOG_FILE = path.join(STATE_DIR, "daemon.log");
+export const SHORTCUT_LOG_FILE = path.join(STATE_DIR, "shortcut.log");
+export const READINESS_FILE = path.join(STATE_DIR, "readiness.json");
 
 export function ensureStateDir(): void {
   mkdirSync(STATE_DIR, { recursive: true });
@@ -123,4 +183,34 @@ export function readState(): DaemonState | null {
   }
 }
 
-export { STATE_DIR, PID_FILE, STATE_FILE };
+export function writeInjectRequest(request: VoiceInjectRequest): void {
+  ensureStateDir();
+  writeFileSync(INJECT_FILE, JSON.stringify(request, null, 2));
+}
+
+export function readInjectRequest(): VoiceInjectRequest | null {
+  try {
+    const parsed = JSON.parse(readFileSync(INJECT_FILE, "utf8")) as VoiceInjectRequest;
+    if (
+      !parsed ||
+      typeof parsed.id !== "string" ||
+      typeof parsed.text !== "string" ||
+      typeof parsed.at !== "number"
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function clearInjectRequest(): void {
+  try {
+    rmSync(INJECT_FILE, { force: true });
+  } catch {
+    /* ignore */
+  }
+}
+
+export { STATE_DIR, PID_FILE, STATE_FILE, INJECT_FILE };
