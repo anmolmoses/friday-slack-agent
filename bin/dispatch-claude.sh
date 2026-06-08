@@ -373,6 +373,7 @@ if ! "$TMUX_BIN" has-session -t "$TMUX_SESSION" 2>/dev/null; then
   "$TMUX_BIN" new-session -d -s "$TMUX_SESSION" -c "$CWD" -x 220 -y 60
 
   "$TMUX_BIN" send-keys -t "$TMUX_SESSION" \
+    "unset ANTHROPIC_API_KEY" Enter \
     "export FRIDAY_DISPATCHED=1" Enter \
     "export FRIDAY_DISPATCH_JOB_ID=$(printf %q "$JOB_ID")" Enter \
     "export FRIDAY_DISPATCH_LOG=$(printf %q "$LOG_FILE")" Enter \

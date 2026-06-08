@@ -38,6 +38,12 @@ export function spawnClaude(
     ...(botToken ? { SLACK_BOT_TOKEN: botToken } : {}),
   };
 
+  // CRITICAL: never leak an Anthropic API key into the child. When the Claude
+  // CLI sees ANTHROPIC_API_KEY it bills the metered API instead of the Max
+  // subscription — which silently drains API credits on every spawned turn.
+  // Voice-vision keeps its key under FRIDAY_VISION_ANTHROPIC_KEY instead.
+  delete env.ANTHROPIC_API_KEY;
+
   const proc = Bun.spawn(argv, { cwd, stdout: "pipe", stderr: "pipe", env });
 
   const listeners: Array<(event: StreamEvent) => void> = [];

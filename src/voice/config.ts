@@ -352,7 +352,11 @@ export function loadVoiceConfig(): VoiceConfig {
     autoIdleAfterTurn: bool("FRIDAY_VOICE_AUTO_IDLE_AFTER_TURN", false),
     hudEnabled: bool("FRIDAY_VOICE_HUD", true),
     hudPort: Number(process.env.FRIDAY_VOICE_HUD_PORT ?? "3030"),
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+    // Deliberately NOT ANTHROPIC_API_KEY: that name makes the Claude CLI bill
+    // the metered API instead of the Max subscription, and the spawner/dispatch
+    // paths inherit the whole env. Keep voice-vision's key under its own name.
+    anthropicApiKey:
+      process.env.FRIDAY_VISION_ANTHROPIC_KEY ?? process.env.ANTHROPIC_API_KEY,
     visionGroundingModel:
       process.env.FRIDAY_VOICE_VISION_MODEL ?? "claude-sonnet-4-6",
     slackBotToken: process.env.SLACK_BOT_TOKEN,

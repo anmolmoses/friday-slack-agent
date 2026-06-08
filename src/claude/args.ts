@@ -96,32 +96,17 @@ function loadPersonaContent(): string {
   return cachedPersonaContent;
 }
 
-export function buildClaudeArgs(
+/**
+ * Compose Friday's full system context — persona + agent instructions + memory
+ * system instructions + recent-memory snapshot + associative recall — as one
+ * string. Shared by both brains: the Claude spawner writes it to an
+ * --append-system-prompt-file; the Codex spawner prepends it to the first-turn
+ * prompt. Returns "" when nothing is available.
+ */
+export function buildSystemContext(
   session: ThreadSession,
-  prompt: string,
-  config: Config["claude"],
-  agentDef?: AgentDefinition | null,
   memoryContext?: string,
-): string[] {
-  const args: string[] = [
-    "-p",
-    prompt,
-    "--output-format",
-    "stream-json",
-    "--verbose",
-    "--max-turns",
-    String(config.maxTurns),
-  ];
-
-  if (session.sessionId) {
-    args.push("--resume", session.sessionId);
-  }
-
-  // Build a combined system prompt file:
-  //   1. Full persona (IDENTITY + SOUL + AGENTS + USER) — authoritative identity
-  //   2. Agent-specific instructions (if any)
-  //   3. Memory system instructions
-  // All go in --append-system-prompt-file so Claude treats them as system-level directives.
+): string {
   const memoryDir = path.join(FRIDAY_ROOT, "memory");
   const parts: string[] = [];
 
@@ -150,10 +135,39 @@ export function buildClaudeArgs(
   // Associative recall for this message (engram), if enabled. Empty when off.
   if (memoryContext) parts.push(memoryContext);
 
-  if (parts.length > 0) {
+  return parts.join("\n\n");
+}
+
+export function buildClaudeArgs(
+  session: ThreadSession,
+  prompt: string,
+  config: Config["claude"],
+  agentDef?: AgentDefinition | null,
+  memoryContext?: string,
+): string[] {
+  const args: string[] = [
+    "-p",
+    prompt,
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--max-turns",
+    String(config.maxTurns),
+  ];
+
+  if (session.sessionId) {
+    args.push("--resume", session.sessionId);
+  }
+
+  // Build a combined system prompt file (persona + agent + memory), written to
+  // --append-system-prompt-file so Claude treats it as system-level directives.
+  const memoryDir = path.join(FRIDAY_ROOT, "memory");
+  const systemContext = buildSystemContext(session, memoryContext);
+
+  if (systemContext) {
     mkdirSync(PROMPT_TMP_DIR, { recursive: true });
     const promptFile = path.join(PROMPT_TMP_DIR, `${session.threadId}.md`);
-    writeFileSync(promptFile, parts.join("\n\n"));
+    writeFileSync(promptFile, systemContext);
     args.push("--append-system-prompt-file", promptFile);
   }
 

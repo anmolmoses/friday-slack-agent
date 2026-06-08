@@ -2469,7 +2469,7 @@ end tell
     if (!this.cfg.anthropicApiKey) {
       return {
         error:
-          "Claude vision grounding is unavailable: set ANTHROPIC_API_KEY in .env to enable find_and_click.",
+          "Claude vision grounding is unavailable: set FRIDAY_VISION_ANTHROPIC_KEY in .env to enable find_and_click.",
       };
     }
     const shot = await this.captureScreen();

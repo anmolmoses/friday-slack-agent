@@ -25,6 +25,21 @@ export interface Config {
     maxTimeoutMs: number;
     permissionMode: string;
   };
+  /**
+   * Which engine drives Friday's per-Slack-message brain (chat, memory writes,
+   * doc writing, planning, deciding to dispatch). Coding is always handed off to
+   * Claude via bin/dispatch-claude.sh regardless of this setting.
+   *   "codex"  → `codex exec` on the ChatGPT subscription (default)
+   *   "claude" → `claude -p` on the Max subscription (original behavior)
+   * Flip with FRIDAY_BRAIN to revert instantly without code changes.
+   */
+  brain: {
+    engine: "codex" | "claude";
+    /** Codex model when engine=codex. Mirrors ~/.codex/config.toml default. */
+    codexModel: string;
+    /** Reasoning effort for the codex brain (overrides config.toml's xhigh). */
+    codexReasoning: string;
+  };
   repos: RepoConfig[];
   session: {
     staleTimeoutMs: number;
@@ -74,6 +89,12 @@ export function loadConfig(): Config {
       // Absolute ceiling regardless of activity: 30 min per turn.
       maxTimeoutMs: Number(optional("CLAUDE_MAX_TIMEOUT_MS", "1800000")),
       permissionMode: optional("CLAUDE_PERMISSION_MODE", "bypassPermissions"),
+    },
+    brain: {
+      engine:
+        optional("FRIDAY_BRAIN", "codex") === "claude" ? "claude" : "codex",
+      codexModel: optional("FRIDAY_CODEX_MODEL", "gpt-5.5"),
+      codexReasoning: optional("FRIDAY_CODEX_REASONING", "medium"),
     },
     repos: JSON.parse(optional("REPOS", "[]")) as RepoConfig[],
     session: {

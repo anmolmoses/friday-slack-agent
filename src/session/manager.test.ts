@@ -106,6 +106,7 @@ import { InMemorySessionStore } from "./store/memory.ts";
 const testConfig: Config = {
   slack: { botToken: "xoxb-test", appToken: "xapp-test", signingSecret: "s" },
   claude: { maxTurns: 25, timeoutMs: 300000, maxTimeoutMs: 1800000, permissionMode: "bypassPermissions" },
+  brain: { engine: "claude", codexModel: "gpt-5.5", codexReasoning: "medium" },
   http: { port: 3000, enabled: false },
   repos: [
     { name: "friday", path: "/tmp/friday", defaultBase: "main" },

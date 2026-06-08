@@ -12,6 +12,7 @@ import type { AgentDefinition } from "../agents/loader.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
 import { createSession } from "./types.ts";
 import { spawnClaude as defaultSpawnClaude } from "../claude/spawner.ts";
+import { spawnCodex } from "../codex/spawner.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
 import { buildPromptPreamble, invalidateThreadCache } from "../slack/thread-context.ts";
 import { downloadSlackFiles } from "../slack/files.ts";
@@ -61,7 +62,13 @@ export class SessionManager {
   constructor(store: SessionStore, config: Config, spawnClaude?: SpawnClaudeFn) {
     this.store = store;
     this.config = config;
-    this.spawnClaude = spawnClaude ?? defaultSpawnClaude;
+    // Brain selection: Codex (ChatGPT sub) drives chat/memory/docs by default;
+    // coding is still dispatched to Claude. Flip via FRIDAY_BRAIN=claude. An
+    // explicit override (tests) always wins.
+    const defaultBrain =
+      config.brain.engine === "codex" ? spawnCodex : defaultSpawnClaude;
+    this.spawnClaude = spawnClaude ?? defaultBrain;
+    log.info("manager", `brain engine: ${config.brain.engine}`);
   }
 
   async handleMessage(event: SlackMessageEvent): Promise<void> {
