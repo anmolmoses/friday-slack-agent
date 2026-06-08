@@ -207,12 +207,11 @@ if [ "$IS_DISPATCH" = "1" ]; then
 
   # Ask-Anmol sentinel routing — when the dispatched Claude wraps a
   # blocking question in <ask-anmol>...</ask-anmol> (or <cant-resolve>
-  # or <needs-input>), the question goes to Anmol's DM, NOT to the
-  # originating Slack thread. The thread author (e.g. UD) shouldn't see
-  # Friday's investigation scaffolding — only outcomes. Per Anmol's
-  # 2026-05-07 directive after the recurring-event bug: thread stays
-  # clean until there's a real deliverable (PRs, fix summary, or a
-  # decision to drop). See feedback_dm-on-blocking-decisions.md.
+  # or <needs-input>), the question is posted to BOTH the originating
+  # Slack thread AND Anmol's DM. Per Anmol's 2026-06-08 directive: DM in
+  # addition to the thread reply, not instead of it — a question that only
+  # lands in a DM is too easy to miss, and the thread author often holds the
+  # missing info. See feedback_dm-on-blocking-decisions.md.
   ASK_ANMOL_USER="U0AKP5PAWEB"
   SLACK_DM="$REPO_ROOT/bin/slack-dm.sh"
   ASK_QUESTION=""
@@ -229,9 +228,9 @@ if m:
   fi
 
   if [ -n "$ASK_QUESTION" ]; then
-    # DM Anmol with the question + originating thread URL. Suppress the
-    # thread post — FINAL_TEXT is consumed by the DM, not by the public
-    # reply.
+    # DM Anmol with the question + originating thread URL, AND post the
+    # question into the originating thread (set MSG, which the post step
+    # below uses). Thread + DM — neither path suppresses the other.
     DM_BODY="Dispatched Claude is blocked and needs your input.
 
 Thread: $THREAD_URL
@@ -243,24 +242,19 @@ $ASK_QUESTION
 
 Reply here with the answer; relay it into the tmux session via bin/dispatch-claude.sh, or just paste directly into the live tmux pane."
     {
-      printf "[followup] job=%s ASK-ANMOL detected (%d chars) — DMing %s, suppressing thread post\n" \
+      printf "[followup] job=%s ASK-ANMOL detected (%d chars) — DMing %s + posting to thread\n" \
         "${FRIDAY_DISPATCH_JOB_ID:-unknown}" "${#ASK_QUESTION}" "$ASK_ANMOL_USER"
       if [ -x "$SLACK_DM" ]; then
         printf "%s" "$DM_BODY" | "$SLACK_DM" "$ASK_ANMOL_USER" 2>&1 || true
       else
-        printf "ERROR: %s not executable — falling back to thread post\n" "$SLACK_DM"
+        printf "ERROR: %s not executable — DM skipped; thread post still happens\n" "$SLACK_DM"
       fi
-      printf "[followup] done %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      printf "[followup] dm done %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     } >> "$LOG" 2>&1
 
-    # Best-effort fallback: if slack-dm.sh wasn't usable, still post to
-    # the thread so the question doesn't vanish. Otherwise the dispatched
-    # Claude just emitted a question into the void.
-    if [ ! -x "$SLACK_DM" ]; then
-      MSG="$ASK_QUESTION"
-    else
-      FINAL_TEXT=""  # consumed by DM; do not also post to thread
-    fi
+    # Post the question to the originating thread too. MSG takes precedence
+    # over FINAL_TEXT in the post step below.
+    MSG="$ASK_QUESTION"
   fi
 
   # Scrape GitHub PR URLs that appeared anywhere in the transcript (assistant

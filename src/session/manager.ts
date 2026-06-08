@@ -15,7 +15,7 @@ import { spawnClaude as defaultSpawnClaude } from "../claude/spawner.ts";
 import { spawnCodex } from "../codex/spawner.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
 import { buildPromptPreamble, invalidateThreadCache } from "../slack/thread-context.ts";
-import { downloadSlackFiles } from "../slack/files.ts";
+import { downloadSlackFiles, collectThreadImageFiles } from "../slack/files.ts";
 import { generateMcpConfig } from "../claude/mcp-config.ts";
 import { buildStandupPreamble } from "../standup/handler.ts";
 import { isVibesChannel, inferRepoFromText } from "../slack/routing.ts";
@@ -634,21 +634,40 @@ export class SessionManager {
         }
       }
 
-      // Download image files from Slack and append their paths to the prompt
-      if (files && files.length > 0) {
-        try {
+      // Download image files from Slack and append their paths to the prompt.
+      // Scan the WHOLE thread, not just the triggering message: the reporter
+      // often attaches the screenshot to the root message while Friday is
+      // @mentioned in a later reply with no file. Missing that image is what
+      // leaves a dispatched Claude blocked with no screenshot to disambiguate.
+      try {
+        const triggerFiles = files ?? [];
+        const threadFiles = this.slackApp
+          ? await collectThreadImageFiles(
+              this.slackApp,
+              session.channel,
+              session.threadId,
+            )
+          : [];
+        // Dedupe by url (the trigger message is also part of the thread fetch).
+        const seen = new Set<string>();
+        const allFiles = [...triggerFiles, ...threadFiles].filter((f) => {
+          if (seen.has(f.url)) return false;
+          seen.add(f.url);
+          return true;
+        });
+        if (allFiles.length > 0) {
           const localPaths = await downloadSlackFiles(
-            files,
+            allFiles,
             session.threadId,
             this.config.slack.botToken,
           );
           if (localPaths.length > 0) {
             const pathList = localPaths.map((p) => `- ${p}`).join("\n");
-            prompt += `\n\nThe user shared images. They are saved at these paths — use the Read tool to view them:\n${pathList}`;
+            prompt += `\n\nImages shared in this thread are saved at these paths — use the Read tool to view them, and when you dispatch work to Claude, pass these absolute paths in the prompt:\n${pathList}`;
           }
-        } catch (err) {
-          console.error("[manager] Failed to download Slack files:", err);
         }
+      } catch (err) {
+        console.error("[manager] Failed to download Slack files:", err);
       }
 
       // Ensure today's daily note exists
