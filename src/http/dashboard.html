@@ -200,12 +200,20 @@
   .wt-list { display: flex; flex-direction: column; gap: 2px; }
   .wt-row {
     display: grid;
-    grid-template-columns: 16px minmax(70px,1fr) minmax(120px,2fr) minmax(80px,1fr) 64px;
+    grid-template-columns: 16px minmax(70px,1fr) minmax(120px,2fr) minmax(80px,1fr) 64px 20px;
     gap: 10px; align-items: center;
     font-family: var(--mono); font-size: 11.5px; color: var(--fg-3);
     padding: 3px 6px; border-radius: 4px;
   }
   .wt-row:hover { background: var(--bg-1); }
+  .wt-row .wt-purge {
+    border: none; background: none; cursor: pointer; padding: 0;
+    color: var(--fg-5); font-size: 12px; line-height: 1; text-align: center;
+    opacity: 0; transition: opacity .12s, color .12s;
+  }
+  .wt-row:hover .wt-purge { opacity: 1; }
+  .wt-row .wt-purge:hover { color: var(--red); }
+  .wt-row .wt-purge:disabled { cursor: default; opacity: .5; }
   .wt-row.dirty { background: var(--red-soft); }
   .wt-row .wt-state { color: var(--green); text-align: center; }
   .wt-row.dirty .wt-state { color: var(--red); }
@@ -953,6 +961,38 @@ document.addEventListener('click', (e) => {
 // Delegated click handler: per-thread STOP (kill run + mute) / RESUME (unmute).
 // Cards re-render on every SSE tick, so delegation is the only stable hook.
 document.addEventListener('click', async (e) => {
+  const purgeBtn = e.target.closest('.wt-purge');
+  if (purgeBtn) {
+    const repoName = purgeBtn.dataset.repo;
+    const tid = purgeBtn.dataset.tid;
+    const dirty = purgeBtn.dataset.dirty === '1';
+    if (!repoName || !tid) return;
+    const warn = dirty
+      ? `<br><br><b style="color:var(--red)">This worktree is DIRTY</b> — it has uncommitted changes that will be permanently discarded.`
+      : '';
+    const ok = await openModal('Purge worktree',
+      `Force-remove the <b>${escapeHtml(repoName)}</b> worktree for thread <b>${escapeHtml(tid)}</b>?${warn}<br><br>Removes the worktree dir and its <code>slack/${escapeHtml(tid)}</code> branch.`);
+    if (!ok) return;
+    purgeBtn.disabled = true;
+    purgeBtn.textContent = '…';
+    try {
+      const r = await fetch('/api/worktree/purge', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoName, threadId: tid }),
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || 'purge failed');
+      // Optimistic: drop the row now; next SSE snapshot confirms the new picture.
+      const row = purgeBtn.closest('.wt-row');
+      if (row) row.remove();
+    } catch (err) {
+      alert('purge failed: ' + err.message);
+      purgeBtn.disabled = false;
+      purgeBtn.textContent = '✕';
+    }
+    return;
+  }
+
   const stopBtn = e.target.closest('.thread-stop');
   const resumeBtn = e.target.closest('.thread-resume');
   if (!stopBtn && !resumeBtn) return;
@@ -1128,6 +1168,7 @@ function renderWorktreePanel(state) {
         <span class="wt-branch" title="${escapeHtml(w.branch || '')}">${escapeHtml(w.branch || '—')}</span>
         <span class="wt-chan">${escapeHtml(repoChan)}</span>
         <span class="wt-disk">${fmtBytes(w.diskBytes)}</span>
+        <button class="wt-purge" data-repo="${escapeHtml(w.repoName)}" data-tid="${escapeHtml(w.threadId)}" data-dirty="${w.dirty ? '1' : ''}" title="purge this worktree (free ${fmtBytes(w.diskBytes)})">✕</button>
       </div>`;
     }).join('');
   el.innerHTML = `

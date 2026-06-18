@@ -16,6 +16,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, readdirSy
 import path from "node:path";
 import { log } from "../logger.ts";
 import type { SessionManager } from "../session/manager.ts";
+import type { WorktreeManager } from "../worktree/manager.ts";
 import { setThreadMeta } from "./dashboard-state.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../..");
@@ -377,6 +378,38 @@ export async function handleThreadMute(req: Request, manager: SessionManager): P
   setThreadMeta(body.threadId, { muted: result.muted });
   log.info("dashboard", `thread mute ${body.threadId} → ${result.muted}`);
   return Response.json({ ok: true, ...result });
+}
+
+/**
+ * Manually purge a single worktree (dashboard "✕" button). Force-removes the
+ * worktree dir + its slack branch via WorktreeManager.removeWorktree — this
+ * works on DIRTY worktrees too (uncommitted changes are discarded), so the
+ * client confirms first. Refreshes the dashboard's worktree picture after.
+ */
+export async function handleWorktreePurge(
+  req: Request,
+  worktreeManager: WorktreeManager,
+  refreshWorktrees: () => Promise<void>,
+): Promise<Response> {
+  let body: { repoName?: string; threadId?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "invalid JSON body" }, { status: 400 });
+  }
+  if (!body.repoName || !body.threadId) {
+    return Response.json({ error: "repoName and threadId required" }, { status: 400 });
+  }
+  try {
+    await worktreeManager.removeWorktree(body.repoName, body.threadId);
+    await refreshWorktrees();
+    log.info("dashboard", `worktree purged ${body.repoName}/${body.threadId}`);
+    return Response.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn("dashboard", `worktree purge failed ${body.repoName}/${body.threadId}: ${msg}`);
+    return Response.json({ ok: false, error: msg }, { status: 500 });
+  }
 }
 
 export async function handleKillProcess(req: Request): Promise<Response> {

@@ -325,7 +325,13 @@ bootWatchdog.unref();
   //   /events   → SSE stream of dashboard updates
   if (config.http.enabled) {
     const { startHttpServer } = await import("./http/server.ts");
-    startHttpServer({ store, config, sessionManager });
+    startHttpServer({
+      store,
+      config,
+      sessionManager,
+      worktreeManager,
+      refreshWorktrees: refreshWorktreeSummary,
+    });
   }
 
   monitorSocketHealth(app);

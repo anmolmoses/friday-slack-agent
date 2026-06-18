@@ -8,7 +8,9 @@ import { handleLogs } from "./routes/logs.ts";
 import { handleMemoryList, handleMemoryRead } from "./routes/memory.ts";
 import { handleEngramGraph, handleEngramRecall, handleEngramReindex, handleEngramDream } from "./routes/engram.ts";
 import { handleChatSend, handleChatStream } from "./routes/chat.ts";
+import { handleBuildathonPing, handleBuildathonChat, handleBuildathonStream } from "./routes/buildathon.ts";
 import { ChatManager } from "./chat-manager.ts";
+import { BuildathonManager } from "./buildathon-manager.ts";
 import { getSnapshot, subscribe, type DashboardEvent } from "./dashboard-state.ts";
 import {
   handleListFiles,
@@ -20,8 +22,10 @@ import {
   handleKillProcess,
   handleThreadKill,
   handleThreadMute,
+  handleWorktreePurge,
 } from "./dashboard-api.ts";
 import type { SessionManager } from "../session/manager.ts";
+import type { WorktreeManager } from "../worktree/manager.ts";
 import { clearPersonaCache, getPersonaState } from "../claude/args.ts";
 import { log } from "../logger.ts";
 
@@ -33,6 +37,9 @@ function cors(res: Response): Response {
   res.headers.set("Access-Control-Allow-Origin", "*");
   res.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.headers.set("Access-Control-Allow-Headers", "Content-Type");
+  // Chrome private-network access: lets public HTTPS pages (growthx.club docs)
+  // reach this localhost server once the user grants the permission prompt.
+  res.headers.set("Access-Control-Allow-Private-Network", "true");
   return res;
 }
 
@@ -40,9 +47,12 @@ export function startHttpServer(deps: {
   store: SessionStore;
   config: Config;
   sessionManager: SessionManager;
+  worktreeManager: WorktreeManager;
+  refreshWorktrees: () => Promise<void>;
 }): void {
-  const { store, config, sessionManager } = deps;
+  const { store, config, sessionManager, worktreeManager, refreshWorktrees } = deps;
   const chatManager = new ChatManager(config);
+  const buildathonManager = new BuildathonManager();
 
   const server = Bun.serve({
     port: config.http.port,
@@ -110,6 +120,13 @@ export function startHttpServer(deps: {
           res = await handleEngramReindex();
         } else if (url.pathname === "/api/engram/dream" && req.method === "POST") {
           res = await handleEngramDream(req);
+        } else if (url.pathname === "/api/buildathon/ping") {
+          res = handleBuildathonPing();
+        } else if (url.pathname === "/api/buildathon/chat" && req.method === "POST") {
+          const body = await req.json();
+          res = await handleBuildathonChat(buildathonManager, body);
+        } else if (url.pathname === "/api/buildathon/stream") {
+          res = handleBuildathonStream(buildathonManager, url.searchParams);
         } else if (url.pathname === "/api/chat" && req.method === "POST") {
           const body = await req.json();
           res = await handleChatSend(chatManager, body);
@@ -144,6 +161,8 @@ export function startHttpServer(deps: {
           res = await handleThreadKill(req, sessionManager);
         } else if (url.pathname === "/api/thread/mute" && req.method === "POST") {
           res = await handleThreadMute(req, sessionManager);
+        } else if (url.pathname === "/api/worktree/purge" && req.method === "POST") {
+          res = await handleWorktreePurge(req, worktreeManager, refreshWorktrees);
         } else if (url.pathname === "/events") {
           const stream = new ReadableStream({
             start(controller) {
