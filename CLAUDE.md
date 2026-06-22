@@ -18,6 +18,7 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 |---|---|
 | What skills/agents/commands does each target repo have? | [docs/repo-capabilities.md](docs/repo-capabilities.md) |
 | How does Friday work a specific repo (build/bug/PR/release)? | `docs/workflows/<repo>/` — e.g. [gx-client-expo](docs/workflows/gx-client-expo/README.md) |
+| Run gx-admin + gx-backend locally, e2e-test the UI, report to #fridaytest? | [docs/workflows/local-e2e/README.md](docs/workflows/local-e2e/README.md) · runbook: [memory/runbooks/repos/local-e2e.md](memory/runbooks/repos/local-e2e.md) |
 | Where do Friday's repo clones live (her workspace)? | [docs/features/friday-workspace.md](docs/features/friday-workspace.md) |
 | System architecture, data flow, module dependencies? | [docs/architecture.md](docs/architecture.md) |
 | How does Slack event handling work? | [docs/features/slack-event-handler.md](docs/features/slack-event-handler.md) |
@@ -33,6 +34,7 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 | How does process lifecycle and error handling work? | [docs/features/process-lifecycle.md](docs/features/process-lifecycle.md) |
 | Project setup, config, directory structure? | [docs/features/project-setup.md](docs/features/project-setup.md) |
 | Known limitations and open questions? | [docs/features/v2-backlog.md](docs/features/v2-backlog.md) |
+| How does Friday self-improve (Loop 4 / hill-climbing)? | [docs/features/hill-climb.md](docs/features/hill-climb.md) |
 | Code index for a specific module? | `docs/code_index/<module>.md` (created as modules are built) |
 | Ideation and planning workflow? | [docs/workflows/ideation.md](docs/workflows/ideation.md) |
 | Building and iteration workflow? | [docs/workflows/building.md](docs/workflows/building.md) |
@@ -77,6 +79,8 @@ Slack Bot Server (Node.js / Bun)
 14. **Pure functions over framework ceremony.** If a library's core value is bypassed, replace it with the simplest implementation. A 20-line function beats a dependency you're working around.
 15. **Test against real infrastructure, mock at boundaries.** Mock Slack API and Claude CLI at system boundaries. Don't mock internal session management or message routing.
 16. **Vibes channels enforce one message per turn, ≤3 lines.** In `isVibesChannel(channel)` channels (#cafeteria, #fridaytest), the post path lints Friday's reply: anything past 3 non-empty lines or that contains multi-message intent (triple-newlines, fake `[6:45 PM]` timestamps, `(continued)` markers) is truncated. **Exception: structured replies (fenced code blocks or markdown tables) skip the line cap** — they're work answers, not banter, and slicing them renders broken (the multi-message-intent flattening still applies). The Prickle thread (2026-04-01, ~20 self-deprecating posts chasing Pranav's bait) is the canonical spiral scar; the #fridaytest event-breakdown (2026-05-25, a 302-attendee table clipped to "Members: 185") is the structured-data scar that motivated the exemption. Spiral detector (`src/session/spiral.ts`) and ragebait protocol layer on top — see `docs/features/thread-context.md`. Work channels (PR review, bug triage, builds) are NOT subject to this lint.
+17. **Local e2e is DEV-only, never prod.** To run a repo locally and test it end-to-end, use `bin/local-stack.sh` (gx-admin + gx-backend today). It points the backend at the **GX-debug** cluster and **hard-aborts** if the resolved DB looks like prod, if `AWS_SECRET_MANAGER_RESOURCE_NAME` is set (it would pull prod secrets), or if `NODE_ENV=production`; it also blanks outbound senders (WhatsApp/push/calls/e-sign). Residual risk: SES email shares the AWS creds kept for S3/CloudFront reads — don't exercise email-send flows. Always run from Friday's worktree, always `down` in a trap, report to a #fridaytest thread via `bin/e2e-report.sh`. Full procedure: `memory/runbooks/repos/local-e2e.md`.
+18. **Every feature is self-tested with VISUAL evidence before it's done (gx-admin, gx-backend).** Anmol's standing rule: anything Friday builds/fixes in a repo with a local e2e harness is NOT done until the change has been exercised **through the running UI** (Playwright) and **screenshots are posted to a #fridaytest thread**. Typecheck + tests + a green diff are necessary but not sufficient — "it should work" is not proof. Dispatched build/frontend agents have the playwright MCP and must do this in-session; the DoD lives in `.claude/agents/{frontend,build}.md` and `memory/runbooks/repos/_workflow.md`, and every dispatch prompt for these repos must restate it. Never report done without the evidence. Expand to client-next/mobile as those get a harness.
 
 ## Project Structure
 
@@ -168,6 +172,33 @@ Items 3-5 can partially parallelize. Items 6-9 can be built in any order once se
 bun run dev                     # Start bot server with hot reload (--watch)
 bun run build                   # Build for production
 bun run typecheck               # Type checking without emit
+
+# Self-test — verify a change to Friday's OWN code before claiming it works (docs/features/self-test.md)
+bun run check                   # typecheck + full unit suite (bun test)
+bun run selftest "<prompt>"     # drive ONE real turn end-to-end, OFFLINE (no Slack); exits 0=response 1=fail
+#   bun run dev boots Slack Socket Mode and would answer real messages — unsafe for testing.
+#   selftest boots the exact turn pipeline (route → brain spawn → stream → respond) against an
+#   in-memory store + synthetic event, no slackApp wired. Flags: --verbose --brain claude
+#   --channel C.. --repo NAME --timeout MS. A leading ! in the prompt is parsed as a command.
+
+# Local dev e2e — run gx-admin + gx-backend locally against DEV (GX-debug), drive the UI, report to #fridaytest
+#   Runbook: memory/runbooks/repos/local-e2e.md · Design: docs/workflows/local-e2e/README.md
+bin/local-stack.sh up --backend-cwd <path> [--admin-cwd <path>] [--backend-port 8000] [--no-admin]
+bin/local-stack.sh down | status        # tear down (frees ports, restores admin .env.local) / liveness
+bin/e2e-report.sh start "<title>"       # open a #fridaytest thread, prints its ts (the handle)
+bin/e2e-report.sh update <ts> "<msg>"   # threaded progress update (bypasses the vibes 3-line lint)
+bin/e2e-report.sh shot   <ts> <file>    # upload a screenshot into the thread
+#   SAFETY: local-stack HARD-BLOCKS prod (DB must be GX-debug; aborts on prod DB / AWS secret / NODE_ENV=production)
+#   and blanks outbound senders. Residual: SES email shares AWS creds — don't exercise email-send flows.
+
+# Hill-climbing — Loop 4: turn finished-run traces into proposed harness improvements (docs/features/hill-climb.md)
+#   Runs automatically (detached) after every Friday run via hooks/dispatch-followup.sh, alongside memory extraction.
+bun run hill-climb list         # pending harness-change proposals (memory/harness-proposals/pending/)
+bun run hill-climb show <id>    # read one (signal · evidence · proposed edit · why it compounds)
+bun run hill-climb apply <id>   # a sub-agent implements the exact edit → moves to applied/  (your one-tap approval)
+bun run hill-climb reject <id> "reason"
+bun run hill-climb scan         # cross-run: mine recent daily notes for RECURRING patterns (cron; recurring-blocker detector)
+#   Nothing auto-edits behavior config — every change is a reviewed proposal. Opt out per-run: FRIDAY_DISABLE_HILL_CLIMB=1.
 
 # Slack bot management
 bun run cleanup                 # Clean stale worktrees and sessions

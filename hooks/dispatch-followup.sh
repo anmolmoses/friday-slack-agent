@@ -378,4 +378,28 @@ Be terse. Do not narrate. Do not write more than one memory file per run."
     >> "$EXTRACT_LOG_TARGET" 2>&1
 fi
 
+# Loop 4 — hill-climbing. Same trigger as memory extraction (every Friday-owned
+# run with assistant text), but instead of saving a FACT it proposes a change to
+# the HARNESS config (runbooks / agent-defs / dispatch rules / guards). Detached,
+# bounded; bin/hill-climb.ts fences its own claude children. Opt-out:
+# FRIDAY_DISABLE_HILL_CLIMB=1. Proposals queue under memory/harness-proposals/pending/.
+if [ "${FRIDAY_DISABLE_HILL_CLIMB:-0}" != "1" ] && [ "$TRANSCRIPT_HAS_TEXT" = "1" ]; then
+  BUN_BIN="${BUN_BIN:-/Users/anmol/.bun/bin/bun}"
+  [ -x "$BUN_BIN" ] || BUN_BIN="$(command -v bun || true)"
+  if [ -n "$BUN_BIN" ]; then
+    HC_LOG="$REPO_ROOT/logs/dispatch/${JOB_TAG:-spawn-${CLAUDE_SESSION_ID:-unknown}}.hillclimb.log"
+    (
+      cd "$REPO_ROOT"
+      unset FRIDAY_DISPATCHED FRIDAY_SPAWNED FRIDAY_DISPATCH_JOB_ID \
+            FRIDAY_DISPATCH_LOG FRIDAY_DISPATCH_THREAD_SAFE \
+            FRIDAY_DISPATCH_SESSION_ID_FILE FRIDAY_SPAWN_CWD
+      export FRIDAY_DISABLE_FOLLOWUP=1
+      "$BUN_BIN" "$REPO_ROOT/bin/hill-climb.ts" analyze "$TRANSCRIPT_PATH" >> "$HC_LOG" 2>&1
+    ) &
+    disown $! 2>/dev/null || true
+    printf "[followup] hill-climb analyze spawned transcript=%s log=%s\n" "$TRANSCRIPT_PATH" "$HC_LOG" \
+      >> "$EXTRACT_LOG_TARGET" 2>&1
+  fi
+fi
+
 exit 0

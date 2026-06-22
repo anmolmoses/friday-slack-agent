@@ -366,6 +366,50 @@ dispatch_headless() {
   disown 2>/dev/null || true
 }
 
+# ── tmux server health (macOS TCC / EPERM self-heal) ─────────────────────────
+# A tmux server captures its filesystem-access (TCC) context when it first
+# forks, and Friday's dispatch server is long-lived — reused across threads for
+# days. Once its grant for ~/Documents goes stale (a macOS TCC reset, an OS
+# update, or simply the server outliving the context that launched it), EVERY
+# interactive `claude` launch inside it dies with `error: An internal error
+# occurred (EPERM)`. We then silently fall to headless and the visible REPL +
+# live prompt injection never appear — the bug this guard fixes. (2026-06-18
+# diag: the Jun-3 server EPERM'd in the clone root AND the worktree, while /tmp
+# and a freshly-forked server booted fine; even a plain shell `cat` of a
+# ~/Documents file failed in the stale server.)
+#
+# Detect a stale server by probing whether a throwaway pane can READ a file
+# under ~/Documents; if it can't, recycle the whole server so the next
+# new-session forks fresh under THIS invocation's (healthy) TCC context.
+# Killing a stale server is safe: its panes are all dead/EPERM'd shells (no
+# interactive REPL ever boots on a stale server), and the headless fallback
+# runs setsid-detached, surviving the kill.
+tmux_server_healthy() {
+  "$TMUX_BIN" list-sessions >/dev/null 2>&1 || return 0   # no server yet → a fresh fork will be healthy
+  local probe="friday-tcc-probe"
+  local marker="$STATE_DIR/tcc-probe.$$"
+  "$TMUX_BIN" kill-session -t "$probe" 2>/dev/null || true
+  rm -f "$marker"
+  "$TMUX_BIN" new-session -d -s "$probe" -c /tmp -x 80 -y 24 2>/dev/null || return 0
+  sleep 0.3   # let the probe shell reach its prompt before sending
+  "$TMUX_BIN" send-keys -t "$probe" -l \
+    "cat $(printf %q "$REPO_ROOT/package.json") >/dev/null 2>&1 && echo ok > $(printf %q "$marker") || echo no > $(printf %q "$marker")"
+  "$TMUX_BIN" send-keys -t "$probe" C-m
+  local deadline=$(( $(date +%s) + 4 )) res=""
+  while [ $(date +%s) -lt $deadline ]; do
+    [ -s "$marker" ] && { res="$(cat "$marker" 2>/dev/null)"; break; }
+    sleep 0.2
+  done
+  "$TMUX_BIN" kill-session -t "$probe" 2>/dev/null || true
+  rm -f "$marker"
+  [ "$res" = "ok" ]
+}
+
+if ! tmux_server_healthy; then
+  echo "dispatch: tmux server can't read ~/Documents (macOS TCC stale) — recycling so the interactive REPL can boot instead of EPERM-ing to headless" >&2
+  "$TMUX_BIN" kill-server 2>/dev/null || true
+fi
+
 TUI_OK=1
 if ! "$TMUX_BIN" has-session -t "$TMUX_SESSION" 2>/dev/null; then
   # First-time setup: create session (CWD already resolved to the per-thread

@@ -37,6 +37,26 @@ After completing work, before declaring done:
 5. **Second-order effects.** If you changed a schema, who reads it? If you changed a service method, who calls it?
 6. **Two clean passes.** Run verification twice.
 
+## Definition of Done — PROVE IT WORKS (MANDATORY for gx-admin / gx-backend)
+
+Typecheck + tests are necessary but **not sufficient**. For any change to a repo with a local
+e2e harness (today: **gx-backend**, **gx-admin-client**), the task is NOT done until you've
+exercised the actual change **end-to-end through the running app** and posted **visual evidence**
+(a screenshot of the admin UI showing the result, or the verified API response/effect). A green
+diff is not done. (Anmol's standing rule: every feature Friday builds, she tests herself and
+justifies with screenshots.)
+
+Follow **`memory/runbooks/repos/local-e2e.md`**. In short:
+
+1. `TS=$(/Users/anmol/Documents/GitHub/Friday/bin/e2e-report.sh start "🧪 <task>")` — open a report thread.
+2. Boot the stack (DEV/GX-debug — prod is hard-blocked), backend from **your worktree**:
+   `/Users/anmol/Documents/GitHub/Friday/bin/local-stack.sh up --backend-cwd <your-worktree> --admin-cwd /Users/anmol/Documents/GitHub/friday-workspace/gx-admin-client`
+   Arrange teardown first: `trap '/Users/anmol/Documents/GitHub/Friday/bin/local-stack.sh down' EXIT`.
+3. Exercise the changed flow: hit the endpoint (note the `/api/v1` prefix) and/or drive the admin
+   UI with the **playwright** MCP to the screen your change affects. Assert the new behavior.
+4. **Screenshot / capture the result** and post to the thread: `bin/e2e-report.sh shot "$TS" <abs.png> "<what it shows>"`.
+5. Report PASS/FAIL with evidence, then commit/push/PR. Never claim done without proof.
+
 ## Anti-Patterns
 
 - Skipping feature docs. Read them before coding.
