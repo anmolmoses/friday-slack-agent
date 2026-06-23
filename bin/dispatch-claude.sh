@@ -83,6 +83,77 @@ _link_node_modules() {
   ln -s "$s" "$t" 2>/dev/null || true
 }
 
+# Give the worktree a REAL top-level node_modules instead of a symlink to the
+# clone's. WHY: this repo is an npm-workspaces monorepo — inside node_modules the
+# workspace packages (@growthx-club/*) are symlinks into the repo's own
+# packages/* and apps/*. If the worktree's node_modules is just a symlink to the
+# clone's, those workspace links resolve to the CLONE's source, so a change made
+# in the worktree to a workspace package is invisible at runtime (the "shadowing"
+# bug: 2026-06-22 cloudfront upload-paths → "Invalid asset type" 500 even though
+# the worktree had the fix). Here we build a real node_modules: every external
+# dep is symlinked to the clone's copy (no reinstall, instant), but each
+# workspace-package link is recreated pointing at the WORKTREE's own source.
+# Returns non-zero on any structural failure so the caller can fall back to the
+# old whole-tree symlink — dispatch must never break over this.
+_provision_node_modules() {
+  local src="$1" dst="$2"      # clone root, worktree dir
+  [ -d "$src/node_modules" ] || return 0
+  [ -e "$dst/node_modules" ] && return 0      # already provisioned
+  (
+    set +e
+    shopt -s dotglob nullglob
+    local snm="$src/node_modules" out="$dst/node_modules"
+    mkdir -p "$out" || exit 1
+    # Echo "packages/X" | "apps/X" if $1 is a symlink resolving into the clone's
+    # workspace source, else return non-zero. Cheap for non-symlinks (the common
+    # case) — bails at the -L test before spawning a subshell.
+    _ws_rel() {
+      local lnk="$1" raw abs
+      [ -L "$lnk" ] || return 1
+      raw="$(readlink "$lnk")" || return 1
+      abs="$(cd "$(dirname "$lnk")" 2>/dev/null && cd "$(dirname "$raw")" 2>/dev/null \
+             && printf '%s/%s' "$(pwd -P)" "$(basename "$raw")")" || return 1
+      case "$abs" in
+        "$src"/packages/*|"$src"/apps/*) printf '%s' "${abs#"$src"/}" ;;
+        *) return 1 ;;
+      esac
+    }
+    local entry name child cname rel has_ws
+    for entry in "$snm"/*; do
+      name="$(basename "$entry")"
+      case "$name" in
+        @*)  # scope dir — may mix workspace links with external packages
+          has_ws=""
+          for child in "$entry"/*; do
+            if _ws_rel "$child" >/dev/null 2>&1; then has_ws=1; break; fi
+          done
+          if [ -n "$has_ws" ]; then
+            mkdir -p "$out/$name" || exit 1
+            for child in "$entry"/*; do
+              cname="$(basename "$child")"
+              if rel="$(_ws_rel "$child")"; then
+                ln -s "$dst/$rel" "$out/$name/$cname" 2>/dev/null || true   # → worktree source
+              else
+                ln -s "$child" "$out/$name/$cname" 2>/dev/null || true       # → clone (external)
+              fi
+            done
+          else
+            ln -s "$entry" "$out/$name" 2>/dev/null || true                  # whole external scope
+          fi
+          ;;
+        *)
+          if rel="$(_ws_rel "$entry")"; then
+            ln -s "$dst/$rel" "$out/$name" 2>/dev/null || true               # unscoped workspace pkg
+          else
+            ln -s "$entry" "$out/$name" 2>/dev/null || true                  # external dep / .bin / .cache
+          fi
+          ;;
+      esac
+    done
+    exit 0
+  )
+}
+
 _provision_worktree() {
   local src="$1" dst="$2"      # clone root, worktree dir
   # env files (root + apps/*) — quick copies, never fatal.
@@ -95,9 +166,14 @@ _provision_worktree() {
       mkdir -p "$dst/apps/$app" 2>/dev/null || true
       for f in "$d".env* "$d"*.pem; do [ -f "$f" ] && cp "$f" "$dst/apps/$app/" 2>/dev/null || true; done
     done ) >/dev/null 2>&1 || true
-  # node_modules — symlink from the clone (root + each workspace subdir) so
-  # deps resolve without a per-worktree install.
-  _link_node_modules "$src/node_modules" "$dst/node_modules"
+  # node_modules — real top-level dir with external deps symlinked to the clone
+  # and workspace packages repointed at the worktree (fixes the shadowing bug);
+  # falls back to the old whole-tree symlink if that fails. Then symlink any
+  # nested per-workspace node_modules from the clone (rare, but some packages
+  # carry their own).
+  if ! _provision_node_modules "$src" "$dst"; then
+    _link_node_modules "$src/node_modules" "$dst/node_modules"
+  fi
   for d in "$src"/apps/*/ "$src"/packages/*/; do
     [ -d "${d}node_modules" ] || continue
     rel="${d#$src/}"

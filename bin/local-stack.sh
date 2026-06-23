@@ -44,6 +44,72 @@ KILL_KEYS=(
   BOLD_SIGN_API_KEY BOLD_SIGN_API_KEY_PROD
 )
 
+# Where we record the node_modules workspace-package symlinks we repoint, so `down`
+# (or a defensive `up`) can restore them.
+PKG_MIRROR_BAK="$STATE_DIR/pkg-symlink-bak.tsv"
+
+# ---- worktree workspace-package mirroring ----
+# When the backend boots from a git worktree, its node_modules is symlinked to the
+# CLONE's node_modules, where each monorepo workspace package (packages/*) is itself
+# a symlink into the CLONE's source — NOT the worktree's. So a change made in the
+# worktree to a workspace package is SHADOWED: the running backend loads the stale
+# clone copy and may 500 (scar: 2026-06-22 cloudfront upload-paths → "Invalid asset
+# type"). Fix: repoint each clone node_modules package symlink at the worktree's copy
+# for the duration of the run. Restored on `down`. No source files are mutated — only
+# symlink targets, backed up to $PKG_MIRROR_BAK.
+abs_symlink_target() { # link -> absolute path of its target (handles relative targets)
+  local link="$1" tgt; tgt="$(readlink "$link" 2>/dev/null)" || return 1
+  ( cd "$(dirname "$link")" 2>/dev/null && cd "$(dirname "$tgt")" 2>/dev/null \
+      && printf '%s/%s\n' "$(pwd -P)" "$(basename "$tgt")" )
+}
+
+restore_mirrored_packages() {
+  [ -f "$PKG_MIRROR_BAK" ] || return 0
+  local n=0 link orig
+  while IFS=$'\t' read -r link orig; do
+    [ -n "$link" ] || continue
+    if [ -L "$link" ] || [ -e "$link" ]; then rm -rf "$link"; fi
+    ln -s "$orig" "$link" && n=$((n+1))
+  done < "$PKG_MIRROR_BAK"
+  rm -f "$PKG_MIRROR_BAK"
+  [ "$n" -gt 0 ] && echo "▶ restored $n mirrored workspace-package symlink(s)"
+}
+
+mirror_worktree_packages() { # BACKEND_CWD
+  local BACKEND_CWD="$1"
+  case "$BACKEND_CWD" in */.claude/worktrees/*) ;; *) return 0;; esac   # only for worktrees
+  # If the worktree has its OWN real node_modules (dispatch-claude.sh now
+  # provisions one with workspace links pointing at the worktree), nothing is
+  # shadowed — the backend already loads worktree packages. Only the legacy
+  # symlinked-node_modules worktrees need the clone-side mirror.
+  if [ -d "$BACKEND_CWD/node_modules" ] && [ ! -L "$BACKEND_CWD/node_modules" ]; then
+    echo "▶ worktree has a real node_modules — workspace packages already resolve to it (no mirror needed)"
+    return 0
+  fi
+  local CLONE_ROOT="${BACKEND_CWD%%/.claude/worktrees/*}"
+  local NM="$CLONE_ROOT/node_modules"
+  [ -d "$NM" ] && [ -d "$BACKEND_CWD/packages" ] || return 0
+  restore_mirrored_packages          # defensive: clear any stale mirror first
+  : > "$PKG_MIRROR_BAK"
+  local swapped=0 link abstgt rel wt orig
+  while IFS= read -r link; do
+    abstgt="$(abs_symlink_target "$link")" || continue
+    case "$abstgt" in "$CLONE_ROOT"/packages/*) ;; *) continue;; esac   # workspace pkg only
+    rel="${abstgt#"$CLONE_ROOT"/}"                                      # e.g. packages/libraries/cloudfront
+    wt="$BACKEND_CWD/$rel"
+    [ -d "$wt" ] || continue                                           # worktree has this package
+    [ "$(cd "$wt" && pwd -P)" = "$abstgt" ] && continue                # already same dir → skip
+    orig="$(readlink "$link")"
+    printf '%s\t%s\n' "$link" "$orig" >> "$PKG_MIRROR_BAK"
+    rm "$link" && ln -s "$wt" "$link" && swapped=$((swapped+1))
+  done < <(find "$NM" -maxdepth 2 -type l 2>/dev/null)
+  if [ "$swapped" -gt 0 ]; then
+    echo "▶ mirrored $swapped worktree workspace-package(s) into the clone's node_modules (shadowing fixed)"
+  else
+    rm -f "$PKG_MIRROR_BAK"
+  fi
+}
+
 up() {
   local BACKEND_CWD="" ADMIN_CWD="" BACKEND_PORT="8000" RUN_ADMIN=1
   while [ $# -gt 0 ]; do
@@ -113,6 +179,9 @@ up() {
               | sed -E "s/getAssetPath\(['\"]([^'\"]+)['\"]\)/\1/" | sort -u)
     [ "$stubbed" -gt 0 ] && echo "▶ stubbed $stubbed missing .gitignored asset(s) so boot can proceed"
   fi
+
+  # ---------- mirror worktree workspace packages (fix clone shadowing) ----------
+  mirror_worktree_packages "$BACKEND_CWD"
 
   # ---------- boot backend ----------
   # Run the backend app's tsx directly (apps/backend `npm run dev` = `tsx watch app.ts`),
@@ -212,7 +281,7 @@ kill_port() { # kill whatever LISTENs on a port — the reliable backstop for or
 }
 
 down() {
-  [ -f "$STATE_FILE" ] || { echo "no stack state — nothing to tear down"; return 0; }
+  [ -f "$STATE_FILE" ] || { restore_mirrored_packages; echo "no stack state — nothing to tear down"; return 0; }
   local BPID APID BPORT APORT ENVBAK ACWD
   BPID=$(jq -r '.backend.pid // empty' "$STATE_FILE")
   APID=$(jq -r '.admin.pid // empty' "$STATE_FILE")
@@ -229,6 +298,7 @@ down() {
   if [ -n "$ENVBAK" ] && [ -f "$ENVBAK" ]; then
     mv "$ENVBAK" "$ACWD/.env.local" && echo "restored admin .env.local"
   fi
+  restore_mirrored_packages
   rm -f "$STATE_FILE"
   echo "✓ stack down"
 }
