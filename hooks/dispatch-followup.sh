@@ -185,6 +185,34 @@ if [ -n "$COUNT_FILE" ] && [ -n "$CUR_COUNT" ] && [ "$CUR_COUNT" -gt "$PREV_COUN
   printf "%s" "$CUR_COUNT" > "$COUNT_FILE"
 fi
 
+# ── Incomplete-work guard ────────────────────────────────────────────────────
+# If the run was cut off mid-action (max-turns / timeout / crash) and left the
+# files it edited uncommitted, say so in the thread instead of letting the work
+# vanish behind an interim "applying the fixes…" line. Fires in BOTH dispatch
+# and spawn modes (spawn's per-message claude -p is exactly what stalled on
+# 2026-06-22, leaving PR #839's blocker fix stranded + unpushed for hours).
+# hooks/incomplete-work-guard.py holds the precise signal: it only fires when the
+# run's LAST assistant message was a bare tool call (no closing text) AND the
+# specific files it edited are still uncommitted — so it never alarms on an
+# intentional mid-task pause (those end with text) or on already-committed work.
+if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL:-}" ] && [ -n "${SLACK_THREAD_TS:-}" ]; then
+  INCOMPLETE_REPORT="$(python3 "$REPO_ROOT/hooks/incomplete-work-guard.py" "$TRANSCRIPT_PATH" 2>/dev/null || true)"
+  if [ -n "$INCOMPLETE_REPORT" ]; then
+    TS_NO_DOT_G="${SLACK_THREAD_TS/./}"
+    GUARD_URL="https://teamgrowthx.slack.com/archives/$SLACK_CHANNEL/p$TS_NO_DOT_G"
+    GUARD_MSG="⚠️ This run looks INCOMPLETE — it ended mid-action (likely max-turns or a timeout) with uncommitted, unpushed work:
+
+$INCOMPLETE_REPORT
+
+The changes are saved locally but NOT committed or pushed. Reply and I'll pick it up and finish, or re-run the task."
+    {
+      printf "[followup] job=%s INCOMPLETE-WORK guard fired:\n%s\n" "${FRIDAY_DISPATCH_JOB_ID:-spawn}" "$INCOMPLETE_REPORT"
+      printf "%s" "$GUARD_MSG" | "$SLACK_REPLY" "$GUARD_URL" 2>&1 || true
+      printf "[followup] incomplete-notice posted %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } >> "$LOG" 2>&1
+  fi
+fi
+
 if [ "$IS_DISPATCH" = "1" ]; then
   # Friday returns these sentinels when she's already posted via the
   # friday-slack MCP and the final assistant text is purely a marker.

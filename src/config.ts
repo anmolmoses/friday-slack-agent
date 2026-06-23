@@ -82,7 +82,14 @@ export function loadConfig(): Config {
       signingSecret: optional("SLACK_SIGNING_SECRET", ""),
     },
     claude: {
-      maxTurns: Number(optional("CLAUDE_MAX_TURNS", "25")),
+      // 50, not 25: a real multi-step task (e.g. "fix 4 PR review comments
+      // across 2 files, test, commit, push") easily spends 20+ turns just
+      // reading context, then gets cut off mid-edit — the 2026-06-22 PR #839
+      // stall. The timeoutMs/maxTimeoutMs below still bound wall-clock, so a
+      // higher turn ceiling only helps legitimate long tasks finish; the
+      // incomplete-work guard (hooks/incomplete-work-guard.py) catches whatever
+      // still truncates. Override with CLAUDE_MAX_TURNS.
+      maxTurns: Number(optional("CLAUDE_MAX_TURNS", "50")),
       // Inactivity window: 10 min of silence (gives long single tool calls —
       // builds, sub-agent dispatch — room to finish). Resets on every event.
       timeoutMs: Number(optional("CLAUDE_TIMEOUT_MS", "600000")),
